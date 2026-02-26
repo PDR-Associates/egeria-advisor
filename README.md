@@ -15,6 +15,8 @@ The accuracy of the results is still only fair at best. I see hallucinations and
 feedback to make ongoing improvements. There are many more integrations to do and updates to some of the
 newer frameworks and technologies. Its an interesting start to an ongoing experiment.
 
+Feedback and comments are welcome. Please share your thoughts and suggestions to help improve the system.
+
 
 ## Overview
 

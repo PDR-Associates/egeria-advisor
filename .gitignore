@@ -205,3 +205,4 @@ tmp/
 temp/
 *.tmp
 config/mcp_servers.json
+/docs/history/

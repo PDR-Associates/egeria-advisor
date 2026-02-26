@@ -51,7 +51,7 @@ When `enable_mlflow=True` (default), the agent tracks the following metrics for 
 {
     "accuracy_relevance_avg": float,       # Average relevance score from RAG
     "accuracy_relevance_count": int,       # Number of relevance scores
-    # Future: user feedback scores
+    # future: user feedback scores
     "accuracy_feedback_avg": float,
     "accuracy_feedback_count": int
 }

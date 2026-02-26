@@ -147,14 +147,14 @@ cursor.execute('''
     )
 ''')
 
-with open('data/feedback/user_feedback.jsonl', 'r') as f:
-    for line in f:
-        entry = json.loads(line)
-        cursor.execute(
-            'INSERT INTO feedback VALUES (?, ?, ?, ?, ?, ?)',
-            (entry['timestamp'], entry['query'], entry['query_type'],
-             entry['rating'], entry.get('user_comment'), entry.get('session_id'))
-        )
+with open('../../data/feedback/user_feedback.jsonl', 'r') as f:
+   for line in f:
+      entry = json.loads(line)
+      cursor.execute(
+         'INSERT INTO feedback VALUES (?, ?, ?, ?, ?, ?)',
+         (entry['timestamp'], entry['query'], entry['query_type'],
+          entry['rating'], entry.get('user_comment'), entry.get('session_id'))
+      )
 
 conn.commit()
 ```
@@ -589,9 +589,9 @@ stats = collector.get_feedback_stats()
 
 ## References
 
-- [Phase 8 Improvements](PHASE8_ROUTING_QUALITY_IMPROVEMENTS.md)
-- [Query Routing Guide](QUERY_ROUTING_GUIDE.md)
-- [System Architecture](SYSTEM_ARCHITECTURE.md)
+- [Phase 8 Improvements](docs/history/PHASE8_ROUTING_QUALITY_IMPROVEMENTS.md)
+- [Query Routing Guide](docs/user-docs/QUERY_ROUTING_GUIDE.md)
+- [System Architecture](docs/design/SYSTEM_ARCHITECTURE.md)
 
 ---
 

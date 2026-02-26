@@ -109,7 +109,7 @@
 **Duration**: 1-2 days  
 **Deliverables**:
 - ✅ Architecture document ([`egeria-advisor-plan.md`](egeria-advisor-plan.md))
-- ✅ MLflow tracking guide ([`mlflow-experiment-tracking-guide.md`](mlflow-experiment-tracking-guide.md))
+- ✅ MLflow tracking guide ([`mlflow-experiment-tracking-guide.md`](../user-docs/mlflow-experiment-tracking-guide.md))
 - ✅ Implementation roadmap (this document)
 
 **Next Steps**: Begin Phase 2
@@ -635,7 +635,7 @@ ADVISOR_DATA_PATH=/home/dwolfson/localGit/egeria-v6/egeria-python
 
 ### Documentation
 - [Main Architecture Plan](egeria-advisor-plan.md)
-- [MLflow Tracking Guide](mlflow-experiment-tracking-guide.md)
+- [MLflow Tracking Guide](../user-docs/mlflow-experiment-tracking-guide.md)
 - [Egeria Project](https://egeria-project.org)
 
 ### Tools

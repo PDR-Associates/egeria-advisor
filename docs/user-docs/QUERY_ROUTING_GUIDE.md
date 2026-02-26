@@ -332,4 +332,4 @@ The system is smart, but explicit keywords ensure you get the best results from 
 
 ---
 
-**Need Help?** Check the [Phase 2 Implementation Complete](PHASE2_IMPLEMENTATION_COMPLETE.md) document for technical details.
+**Need Help?** Check the [Phase 2 Implementation Complete](../history/PHASE2_IMPLEMENTATION_COMPLETE.md) document for technical details.

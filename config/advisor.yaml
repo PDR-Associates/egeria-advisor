@@ -21,20 +21,23 @@ data_sources:
 vector_store:
   host: localhost
   port: 19530
-  collections:
-    - code_snippets
-    - examples
-    - documentation
-    - api_signatures
+  # Collections are defined in advisor/collection_config.py
+  # Active collections (6 total):
+  #   1. pyegeria - Python SDK code and tests
+  #   2. pyegeria_cli - Hey Egeria CLI commands
+  #   3. pyegeria_drE - Dr. Egeria markdown translator
+  #   4. egeria_java - Java codebase (OMAS, OMAG, OMRS)
+  #   5. egeria_docs - Documentation, guides, tutorials
+  #   6. egeria_workspaces - Jupyter notebooks, examples, configs
 
 llm:
   provider: ollama
   base_url: http://localhost:11434
   models:
-    query: llama3.1:8b          # Fast model for queries
-    code: llama3.1:8b            # Code-specialized model (fallback)
-    conversation: llama3.1:8b    # General conversation
-    maintenance: llama3.1:8b     # Code analysis (fallback)
+    query: mistral:7b
+    code: codellama:7b
+    conversation: phi3:3.8b
+    maintenance: codellama:7b   # Code analysis (fallback)
   parameters:
     temperature: 0.3             # Lowered from 0.7 for factual answers
     max_tokens: 3000             # Increased from 2000
@@ -62,7 +65,7 @@ rag:
   chunk_overlap: 50
   retrieval:
     top_k: 10              # Increased from 5 for more sources
-    min_score: 0.3         # Lowered to 0.3 for exponential score formula (exp(-distance))
+    min_score: 0.30        # Keep at 0.30 - file type boosting handles quality
     rerank: false
   context:
     max_length: 6000       # Increased from 4000 for more context

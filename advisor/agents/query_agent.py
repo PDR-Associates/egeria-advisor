@@ -4,11 +4,14 @@ Query Agent using BeeAI Framework.
 
 from typing import Dict, Any, Optional
 from loguru import logger
+import time
 
 from beeai_framework.agents.react.agent import ReActAgent
 from beeai_framework.memory import UnconstrainedMemory
 from advisor.agents.backend import BeeAIBackend
 from advisor.tools.rag_tool import RAGTool
+from advisor.mlflow_tracking import get_mlflow_tracker
+from advisor.metrics_collector import get_metrics_collector, QueryMetric
 
 
 class QueryAgent:
@@ -28,6 +31,10 @@ class QueryAgent:
             tools=self.tools,
             memory=self.memory
         )
+        
+        # Initialize monitoring
+        self.mlflow_tracker = get_mlflow_tracker()
+        self.metrics_collector = get_metrics_collector()
 
     async def process(self, query: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
@@ -35,23 +42,74 @@ class QueryAgent:
 
         Args:
             query: User's question
+            context: Optional context information
 
         Returns:
             Response dictionary
         """
         logger.info(f"QueryAgent (BeeAI) processing: {query}")
+        
+        start_time = time.time()
+        success = True
+        error_message = None
+        response_text = ""
 
         try:
-            response = await self.agent.run(prompt=query)
-            return {
-                "agent": self.name,
-                "response": response.output.text,
-                "confidence": 1.0 # Placeholder
-            }
+            # Track with MLflow
+            with self.mlflow_tracker.track_operation(
+                operation_name="query_agent_process",
+                params={
+                    "agent": self.name,
+                    "query_length": len(query),
+                    "has_context": context is not None
+                },
+                track_resources=True,
+                track_accuracy=False
+            ) as tracker:
+                response = await self.agent.run(prompt=query)
+                response_text = response.output.text
+                
+                # Log metrics
+                tracker.log_metrics({
+                    "response_length": len(response_text),
+                    "processing_time_ms": (time.time() - start_time) * 1000
+                })
+                
+                result = {
+                    "agent": self.name,
+                    "response": response_text,
+                    "confidence": 1.0  # Placeholder
+                }
+                
+                return result
+                
         except Exception as e:
+            success = False
+            error_message = str(e)
             logger.error(f"QueryAgent failed: {e}")
-            return {
+            
+            result = {
                 "agent": self.name,
                 "response": "I encountered an error processing your request.",
-                "error": str(e)
+                "error": error_message
             }
+            
+            return result
+            
+        finally:
+            # Record query metric
+            latency_ms = (time.time() - start_time) * 1000
+            metric = QueryMetric(
+                timestamp=time.time(),
+                query_text=query[:200],  # Truncate for storage
+                collection_name=self.name,
+                latency_ms=latency_ms,
+                cache_hit=False,
+                success=success,
+                error_message=error_message,
+                result_count=1 if success else 0,
+                embedding_time_ms=None,
+                search_time_ms=None,
+                llm_time_ms=latency_ms
+            )
+            self.metrics_collector.record_query(metric)

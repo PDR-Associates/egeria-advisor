@@ -28,6 +28,7 @@ dependencies = [
     "loguru>=0.7.0",
     "radon>=6.0.1",        # Code metrics (CC, MI, Halstead)
     "pygount>=1.6.1",      # Accurate line counting
+    "psutil>=5.9.0",       # System metrics
 ]
 
 [project.optional-dependencies]
@@ -38,6 +39,12 @@ dev = [
     "black>=24.0.0",
     "ruff>=0.1.0",
     "mypy>=1.8.0",
+]
+
+dashboard = [
+    "streamlit>=1.30.0",
+    "plotly>=5.18.0",
+    "pandas>=2.1.0",
 ]
 
 [project.scripts]

@@ -7,14 +7,21 @@ using MLflow for observability and performance monitoring.
 
 import mlflow
 from mlflow.tracking import MlflowClient
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, TYPE_CHECKING
 from loguru import logger
 from contextlib import contextmanager
 import time
 import psutil
 import os
+import json
+import uuid
 
 from advisor.config import settings
+
+if TYPE_CHECKING:
+    from advisor.query_classifier import QueryClassification
+    from advisor.collection_metrics import CollectionRetrievalMetrics
+    from advisor.assembly_metrics import DocumentAssemblyMetrics
 
 
 class ResourceMonitor:
@@ -372,6 +379,253 @@ class MLflowTracker:
             logger.debug(f"Set {len(tags)} tags")
         except Exception as e:
             logger.warning(f"Failed to set tags: {e}")
+    
+    def track_query_lifecycle(
+        self,
+        query_id: str,
+        query_text: str,
+        classification: 'QueryClassification',
+        collection_metrics: List['CollectionRetrievalMetrics'],
+        assembly_metrics: 'DocumentAssemblyMetrics',
+        llm_time_ms: float,
+        llm_tokens_input: int,
+        llm_tokens_output: int,
+        total_latency_ms: float,
+        cache_hit: bool = False,
+        user_feedback_score: Optional[float] = None,
+        hallucination_detected: bool = False
+    ):
+        """
+        Track complete query lifecycle in MLflow.
+        
+        Args:
+            query_id: Unique query identifier
+            query_text: User query text
+            classification: Query classification result
+            collection_metrics: List of per-collection metrics
+            assembly_metrics: Document assembly metrics
+            llm_time_ms: LLM generation time
+            llm_tokens_input: Input tokens to LLM
+            llm_tokens_output: Output tokens from LLM
+            total_latency_ms: Total end-to-end latency
+            cache_hit: Whether result was from cache
+            user_feedback_score: Optional user feedback (1-5)
+            hallucination_detected: Whether hallucination was detected
+        """
+        if not self.enabled:
+            return
+        
+        try:
+            # Create run name
+            run_name = f"query_{classification.query_type.value}_{query_id[:8]}"
+            
+            # Create tags
+            tags = {
+                "query_id": query_id,
+                "query_type": classification.query_type.value,
+                "query_topics": ",".join([t.value for t in classification.topics]),
+                "routing_strategy": assembly_metrics.collections_searched[0] if assembly_metrics.collections_searched else "unknown",
+                "collections_searched": ",".join(assembly_metrics.collections_searched),
+                "primary_collection": assembly_metrics.get_primary_collection() or "unknown",
+                "cache_hit": str(cache_hit),
+                "hallucination_detected": str(hallucination_detected),
+            }
+            
+            with self.start_run(run_name=run_name, tags=tags) as run:
+                if not run:
+                    return
+                
+                # Log parameters
+                params = {
+                    "query_type": classification.query_type.value,
+                    "classification_confidence": classification.confidence,
+                    "num_collections_searched": len(assembly_metrics.collections_searched),
+                }
+                self.log_params(params)
+                
+                # Log classification metrics
+                metrics = {
+                    "classification_confidence": classification.confidence,
+                }
+                
+                # Log per-collection metrics
+                for coll_metrics in collection_metrics:
+                    prefix = f"collection_{coll_metrics.collection_name}_"
+                    metrics.update({
+                        f"{prefix}search_time_ms": coll_metrics.search_time_ms,
+                        f"{prefix}chunks_retrieved": float(coll_metrics.chunks_retrieved),
+                        f"{prefix}chunks_above_threshold": float(coll_metrics.chunks_above_threshold),
+                        f"{prefix}chunks_in_final": float(coll_metrics.chunks_in_final_context),
+                        f"{prefix}avg_score": coll_metrics.avg_score,
+                        f"{prefix}max_score": coll_metrics.max_score,
+                        f"{prefix}precision": coll_metrics.get_precision(),
+                        f"{prefix}contribution_rate": coll_metrics.get_contribution_rate(),
+                    })
+                    
+                    if coll_metrics.avg_rank_in_final > 0:
+                        metrics[f"{prefix}avg_rank_in_final"] = coll_metrics.avg_rank_in_final
+                
+                # Log assembly metrics
+                metrics.update({
+                    "assembly_reranking_time_ms": assembly_metrics.reranking_time_ms,
+                    "assembly_chunks_retrieved": float(assembly_metrics.total_chunks_retrieved),
+                    "assembly_chunks_used": float(assembly_metrics.total_chunks_used),
+                    "assembly_utilization_rate": assembly_metrics.get_utilization_rate(),
+                    "assembly_context_length_chars": float(assembly_metrics.context_length_chars),
+                    "assembly_context_truncated": float(assembly_metrics.context_truncated),
+                    "assembly_diversity_score": assembly_metrics.chunk_diversity_score,
+                    "assembly_overlap_score": assembly_metrics.collection_overlap_score,
+                })
+                
+                # Log LLM metrics
+                metrics.update({
+                    "llm_time_ms": llm_time_ms,
+                    "llm_tokens_input": float(llm_tokens_input),
+                    "llm_tokens_output": float(llm_tokens_output),
+                })
+                
+                # Log total metrics
+                metrics.update({
+                    "total_latency_ms": total_latency_ms,
+                    "cache_hit": float(cache_hit),
+                })
+                
+                # Log quality metrics if available
+                if user_feedback_score is not None:
+                    metrics["user_feedback_score"] = user_feedback_score
+                
+                metrics["hallucination_detected"] = float(hallucination_detected)
+                
+                self.log_metrics(metrics)
+                
+                # Log artifacts
+                self._log_query_artifacts(
+                    query_id,
+                    query_text,
+                    classification,
+                    collection_metrics,
+                    assembly_metrics
+                )
+                
+                logger.info(f"Logged query lifecycle to MLflow: {query_id}")
+                
+        except Exception as e:
+            logger.error(f"Failed to track query lifecycle: {e}")
+    
+    def _log_query_artifacts(
+        self,
+        query_id: str,
+        query_text: str,
+        classification: 'QueryClassification',
+        collection_metrics: List['CollectionRetrievalMetrics'],
+        assembly_metrics: 'DocumentAssemblyMetrics'
+    ):
+        """
+        Log query artifacts to MLflow.
+        
+        Args:
+            query_id: Query identifier
+            query_text: Query text
+            classification: Classification result
+            collection_metrics: Collection metrics
+            assembly_metrics: Assembly metrics
+        """
+        try:
+            # Query details
+            query_details = {
+                "query_id": query_id,
+                "query_text": query_text,
+                "query_type": classification.query_type.value,
+                "query_topics": [t.value for t in classification.topics],
+                "classification_confidence": classification.confidence,
+                "matched_patterns": classification.matched_patterns,
+                "matched_terms": {
+                    topic.value: terms
+                    for topic, terms in classification.matched_terms.items()
+                },
+            }
+            self.log_dict(query_details, "query_details.json")
+            
+            # Routing decision
+            routing_decision = {
+                "collections_searched": assembly_metrics.collections_searched,
+                "primary_collection": assembly_metrics.get_primary_collection(),
+                "expected_collections": classification.matched_patterns,  # Placeholder
+            }
+            self.log_dict(routing_decision, "routing_decision.json")
+            
+            # Collection results
+            collection_results = {}
+            for coll_metrics in collection_metrics:
+                collection_results[coll_metrics.collection_name] = {
+                    "search_time_ms": coll_metrics.search_time_ms,
+                    "chunks_retrieved": coll_metrics.chunks_retrieved,
+                    "chunks_above_threshold": coll_metrics.chunks_above_threshold,
+                    "chunks_in_final": coll_metrics.chunks_in_final_context,
+                    "avg_score": coll_metrics.avg_score,
+                    "max_score": coll_metrics.max_score,
+                    "min_score": coll_metrics.min_score,
+                    "score_distribution": coll_metrics.score_distribution,
+                    "precision": coll_metrics.get_precision(),
+                    "contribution_rate": coll_metrics.get_contribution_rate(),
+                }
+            self.log_dict(collection_results, "collection_results.json")
+            
+            # Assembly summary
+            assembly_summary = {
+                "collections_contributed": assembly_metrics.collections_contributed,
+                "file_type_boosts": assembly_metrics.file_type_boosts_applied,
+                "file_type_distribution": assembly_metrics.file_type_distribution,
+                "total_chunks_retrieved": assembly_metrics.total_chunks_retrieved,
+                "total_chunks_used": assembly_metrics.total_chunks_used,
+                "utilization_rate": assembly_metrics.get_utilization_rate(),
+                "diversity_score": assembly_metrics.chunk_diversity_score,
+                "overlap_score": assembly_metrics.collection_overlap_score,
+            }
+            self.log_dict(assembly_summary, "assembly_summary.json")
+            
+        except Exception as e:
+            logger.warning(f"Failed to log query artifacts: {e}")
+    
+    def track_collection_performance(
+        self,
+        collection_name: str,
+        metrics_summary: Dict[str, Any]
+    ):
+        """
+        Track per-collection performance summary.
+        
+        Args:
+            collection_name: Name of the collection
+            metrics_summary: Summary metrics dict
+        """
+        if not self.enabled:
+            return
+        
+        try:
+            run_name = f"collection_summary_{collection_name}"
+            tags = {
+                "collection_name": collection_name,
+                "metric_type": "collection_summary",
+            }
+            
+            with self.start_run(run_name=run_name, tags=tags) as run:
+                if not run:
+                    return
+                
+                # Convert all values to float for MLflow
+                metrics = {}
+                for key, value in metrics_summary.items():
+                    if isinstance(value, (int, float)):
+                        metrics[key] = float(value)
+                
+                self.log_metrics(metrics)
+                self.log_dict(metrics_summary, f"{collection_name}_summary.json")
+                
+                logger.info(f"Logged collection performance for {collection_name}")
+                
+        except Exception as e:
+            logger.error(f"Failed to track collection performance: {e}")
 
 
 # Global tracker instance

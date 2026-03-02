@@ -48,9 +48,9 @@ class MultiCollectionStore:
     def search_with_routing(
         self,
         query: str,
-        top_k: int = 5,
+        top_k: Optional[int] = None,
         max_collections: int = 3,
-        min_score: float = 0.0,
+        min_score: Optional[float] = None,
         filters: Optional[Dict[str, Any]] = None
     ) -> MultiCollectionSearchResult:
         """
@@ -58,9 +58,9 @@ class MultiCollectionStore:
         
         Args:
             query: Query text
-            top_k: Number of results per collection
+            top_k: Number of results per collection (uses collection default if None)
             max_collections: Maximum collections to search
-            min_score: Minimum similarity score threshold
+            min_score: Minimum similarity score threshold (uses collection default if None)
             filters: Optional metadata filters
             
         Returns:
@@ -82,13 +82,23 @@ class MultiCollectionStore:
         def search_collection(collection_name: str) -> Tuple[str, List[SearchResult]]:
             """Search a single collection (for parallel execution)."""
             try:
+                # Get collection-specific parameters
+                collection_meta = get_collection(collection_name)
+                collection_top_k = top_k if top_k is not None else (collection_meta.default_top_k if collection_meta else 5)
+                collection_min_score = min_score if min_score is not None else (collection_meta.min_score if collection_meta else 0.0)
+                
+                logger.debug(f"Searching {collection_name} with top_k={collection_top_k}, min_score={collection_min_score}")
+                
                 results = self.vector_store.search(
                     collection_name=collection_name,
                     query_text=query,
-                    top_k=top_k,
+                    top_k=collection_top_k,
                     filters=filters
                 )
-                return (collection_name, results)
+                
+                # Filter by collection-specific min_score
+                filtered_results = [r for r in results if r.score >= collection_min_score]
+                return (collection_name, filtered_results)
             except Exception as e:
                 logger.error(f"Error searching collection {collection_name}: {e}")
                 return (collection_name, [])
@@ -105,10 +115,9 @@ class MultiCollectionStore:
             for future in as_completed(future_to_collection):
                 collection_name, results = future.result()
                 
-                # Track results per collection
+                # Track results per collection (already filtered by collection-specific min_score)
                 for result in results:
-                    if result.score >= min_score:
-                        all_results.append((collection_name, result))
+                    all_results.append((collection_name, result))
                 
                 # Calculate average score for this collection
                 if results:
@@ -120,7 +129,7 @@ class MultiCollectionStore:
         merged_results = self._merge_and_rerank(
             all_results,
             collection_scores,
-            top_k=top_k
+            top_k=top_k or 5  # Use default if None
         )
         
         return MultiCollectionSearchResult(
@@ -134,8 +143,8 @@ class MultiCollectionStore:
         self,
         query: str,
         collection_names: List[str],
-        top_k: int = 5,
-        min_score: float = 0.0,
+        top_k: Optional[int] = None,
+        min_score: Optional[float] = None,
         filters: Optional[Dict[str, Any]] = None
     ) -> MultiCollectionSearchResult:
         """
@@ -144,8 +153,8 @@ class MultiCollectionStore:
         Args:
             query: Query text
             collection_names: List of collection names to search
-            top_k: Number of results per collection
-            min_score: Minimum similarity score threshold
+            top_k: Number of results per collection (uses collection default if None)
+            min_score: Minimum similarity score threshold (uses collection default if None)
             filters: Optional metadata filters
             
         Returns:
@@ -158,15 +167,23 @@ class MultiCollectionStore:
         
         for collection_name in collection_names:
             try:
+                # Get collection-specific parameters
+                collection_meta = get_collection(collection_name)
+                collection_top_k = top_k if top_k is not None else (collection_meta.default_top_k if collection_meta else 5)
+                collection_min_score = min_score if min_score is not None else (collection_meta.min_score if collection_meta else 0.0)
+                
+                logger.debug(f"Searching {collection_name} with top_k={collection_top_k}, min_score={collection_min_score}")
+                
                 results = self.vector_store.search(
                     collection_name=collection_name,
                     query_text=query,
-                    top_k=top_k,
+                    top_k=collection_top_k,
                     filters=filters
                 )
                 
+                # Filter by collection-specific min_score
                 for result in results:
-                    if result.score >= min_score:
+                    if result.score >= collection_min_score:
                         all_results.append((collection_name, result))
                 
                 if results:
@@ -180,7 +197,7 @@ class MultiCollectionStore:
         merged_results = self._merge_and_rerank(
             all_results,
             collection_scores,
-            top_k=top_k
+            top_k=top_k or 5  # Use default if None
         )
         
         return MultiCollectionSearchResult(
@@ -215,7 +232,7 @@ class MultiCollectionStore:
         if not all_results:
             return []
         
-        # Calculate combined scores
+        # Calculate combined scores with file type boosting
         scored_results: List[Tuple[float, SearchResult, str]] = []
         
         for collection_name, result in all_results:
@@ -229,12 +246,27 @@ class MultiCollectionStore:
             # Get collection average score
             collection_avg = collection_scores.get(collection_name, 0.5)
             
+            # File type boosting for code quality
+            file_path = result.metadata.get("file_path", "")
+            file_boost = 1.0
+            
+            # Boost test files significantly (best working examples)
+            if "/test" in file_path.lower() or file_path.endswith("_test.py"):
+                file_boost = 1.3
+            # Boost Python code files
+            elif file_path.endswith(".py"):
+                file_boost = 1.15
+            # Penalize markdown documentation (unless it's the only option)
+            elif file_path.endswith(".md"):
+                file_boost = 0.85
+            
             # Combined score: 60% result score, 25% collection quality, 15% priority
+            # Then apply file type boost
             combined_score = (
                 0.60 * result.score +
                 0.25 * collection_avg +
                 0.15 * priority_weight
-            )
+            ) * file_boost
             
             scored_results.append((combined_score, result, collection_name))
         

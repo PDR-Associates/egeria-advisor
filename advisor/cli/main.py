@@ -61,6 +61,11 @@ console = Console()
     help='Enable/disable MLflow tracking'
 )
 @click.option(
+    '--feedback/--no-feedback',
+    default=True,
+    help='Enable/disable user feedback collection'
+)
+@click.option(
     '--debug', '-d',
     is_flag=True,
     help='Show debug/trace messages (loguru INFO level)'
@@ -80,6 +85,7 @@ def cli(
     no_color: bool,
     verbose: bool,
     track: bool,
+    feedback: bool,
     debug: bool,
     agent: bool
 ):
@@ -127,6 +133,7 @@ def cli(
         'show_citations': not no_citations,
         'verbose': verbose,
         'track_metrics': track,
+        'enable_feedback': feedback,
         'debug': debug,
         'agent_mode': agent,
     }
@@ -277,6 +284,14 @@ def start_interactive(options: dict):
     
     # Standard RAG mode
     # Show welcome banner
+    feedback_status = "enabled" if options.get('enable_feedback', True) else "disabled"
+    feedback_commands = ""
+    if options.get('enable_feedback', True):
+        feedback_commands = (
+            "  [cyan]/feedback[/cyan] - Provide feedback on last response\n"
+            "  [cyan]/stats[/cyan]    - Show feedback statistics\n"
+        )
+    
     console.print(Panel(
         "[bold cyan]Egeria Advisor - Interactive Mode[/bold cyan]\n\n"
         "Ask questions about Egeria concepts, get code examples, and receive guidance.\n\n"
@@ -284,7 +299,9 @@ def start_interactive(options: dict):
         "  [cyan]/help[/cyan]     - Show help\n"
         "  [cyan]/clear[/cyan]    - Clear conversation context\n"
         "  [cyan]/history[/cyan]  - Show query history\n"
+        f"{feedback_commands}"
         "  [cyan]/exit[/cyan]     - Exit (or Ctrl+D)\n\n"
+        f"[dim]Feedback collection: {feedback_status}[/dim]\n"
         "[dim]Type your question and press Enter[/dim]",
         border_style="cyan"
     ))

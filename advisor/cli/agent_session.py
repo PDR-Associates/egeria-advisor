@@ -7,6 +7,7 @@ This module provides an interactive session using the ConversationAgent.
 import sys
 import json
 import asyncio
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -19,10 +20,12 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.markdown import Markdown
 from rich.table import Table
+from rich.prompt import Prompt, Confirm
 
 from advisor.agents.conversation_agent import create_agent
 from advisor.mcp_agent import initialize_mcp_agent, shutdown_mcp_agent, get_mcp_agent
 from advisor.mcp_client import MCPTool
+from advisor.feedback_collector import get_feedback_collector
 
 
 class AgentInteractiveSession:
@@ -34,6 +37,8 @@ class AgentInteractiveSession:
         '/clear': 'Clear conversation history',
         '/history': 'Show conversation history',
         '/stats': 'Show agent statistics',
+        '/feedback': 'Provide feedback on last response',
+        '/fstats': 'Show feedback statistics',
         '/exit': 'Exit interactive mode',
         '/quit': 'Exit interactive mode',
         '/verbose': 'Toggle verbose mode',
@@ -63,11 +68,18 @@ class AgentInteractiveSession:
         
         # Session state
         self.running = True
+        self.last_query: Optional[str] = None
+        self.last_response: Optional[Dict[str, Any]] = None
         
         # Options
         self.verbose = options.get('verbose', False)
         self.show_citations = options.get('show_citations', True)
         self.mcp_enabled = options.get('enable_mcp', True)
+        self.enable_feedback = options.get('enable_feedback', True)
+        
+        # Feedback system
+        self.feedback_collector = get_feedback_collector() if self.enable_feedback else None
+        self.session_id = str(uuid.uuid4())[:8]
         
         # Initialize agents
         self.agent = None
@@ -101,7 +113,10 @@ class AgentInteractiveSession:
                 transient=True
             ) as progress:
                 progress.add_task("Initializing agent...", total=None)
-                self.agent = create_agent(max_history=10, cache_size=100, rag_top_k=5)
+                # MLflow disabled - context manager conflicts with LRU cache
+                # Increased rag_top_k from 5 to 10 for better code example retrieval
+                # See docs/design/PERFORMANCE_AND_QUALITY_ANALYSIS.md for details
+                self.agent = create_agent(max_history=10, cache_size=100, rag_top_k=10, enable_mlflow=False)
         except Exception as e:
             self.console.print(f"[red]✗ Failed to initialize agent:[/red] {e}")
             if self.verbose:
@@ -203,6 +218,13 @@ class AgentInteractiveSession:
             status = "enabled" if self.show_citations else "disabled"
             self.console.print(f"[green]✓[/green] Citations {status}")
         
+        # Feedback commands
+        elif cmd == '/feedback':
+            self._handle_feedback_command()
+        
+        elif cmd == '/fstats':
+            self._show_feedback_stats()
+        
         # MCP tool commands
         elif cmd == '/tools':
             self._show_tools()
@@ -247,6 +269,10 @@ class AgentInteractiveSession:
                 # Execute query with agent
                 result = self.agent.run(query, use_rag=True)
                 
+                # Store for feedback
+                self.last_query = query
+                self.last_response = result
+                
                 # Display response
                 self.console.print(Panel(
                     Markdown(result["content"]),
@@ -287,6 +313,11 @@ class AgentInteractiveSession:
         help_text += "  [cyan]/stats[/cyan]       - Show agent statistics\n"
         help_text += "  [cyan]/verbose[/cyan]     - Toggle verbose mode\n"
         help_text += "  [cyan]/citations[/cyan]   - Toggle citation display\n"
+        
+        if self.feedback_collector:
+            help_text += "\n[bold]Feedback:[/bold]\n"
+            help_text += "  [cyan]/feedback[/cyan]    - Provide feedback on last response\n"
+            help_text += "  [cyan]/fstats[/cyan]      - Show feedback statistics\n"
         
         # Always show MCP commands with availability indicator
         help_text += "\n[bold]MCP Tools:"
@@ -565,6 +596,125 @@ class AgentInteractiveSession:
             table.add_row("Avg Execution Time", f"{avg_time:.2f}s")
         
         self.console.print(table)
+    
+    def _handle_feedback_command(self):
+        """Handle /feedback command to provide feedback on last response."""
+        if not self.feedback_collector:
+            self.console.print("[yellow]Feedback collection is disabled[/yellow]")
+            return
+        
+        if not self.last_response or not self.last_query:
+            self.console.print("[yellow]No previous response to provide feedback on[/yellow]")
+            return
+        
+        # Show last query and response summary
+        self.console.print("\n[bold cyan]Last Query:[/bold cyan]")
+        self.console.print(f"  {self.last_query}")
+        self.console.print(f"\n[bold cyan]Response:[/bold cyan]")
+        response_preview = self.last_response.get('content', '')[:200]
+        self.console.print(f"  {response_preview}...")
+        self.console.print()
+        
+        # Ask for rating
+        self.console.print("[cyan]Was this answer helpful?[/cyan]")
+        self.console.print("  [green]1[/green] - Yes, very helpful 👍")
+        self.console.print("  [yellow]2[/yellow] - Somewhat helpful")
+        self.console.print("  [red]3[/red] - Not helpful 👎")
+        
+        rating_input = Prompt.ask("Your rating", choices=["1", "2", "3"], default="1")
+        
+        # Map to rating
+        rating_map = {"1": "positive", "2": "neutral", "3": "negative"}
+        rating = rating_map[rating_input]
+        
+        # Collect additional feedback for negative ratings
+        feedback_text = None
+        user_comment = None
+        
+        if rating == "negative":
+            self.console.print("\n[yellow]What was the problem?[/yellow]")
+            self.console.print("  [cyan]1[/cyan] - Wrong information")
+            self.console.print("  [cyan]2[/cyan] - Incomplete answer")
+            self.console.print("  [cyan]3[/cyan] - Poor quality")
+            self.console.print("  [cyan]4[/cyan] - Other")
+            
+            problem_choice = Prompt.ask("Choose", choices=["1", "2", "3", "4"], default="4")
+            
+            problem_map = {
+                "1": "Wrong information provided",
+                "2": "Answer was incomplete",
+                "3": "Poor quality response",
+                "4": "Other issue"
+            }
+            feedback_text = problem_map[problem_choice]
+        
+        # Ask for optional comment
+        if rating in ["negative", "neutral"]:
+            self.console.print("\n[cyan]Any additional comments?[/cyan] [dim](optional)[/dim]")
+            comment = Prompt.ask("Comment", default="")
+            if comment:
+                user_comment = comment
+        
+        # Record feedback
+        try:
+            # Extract collections from sources
+            collections_searched = []
+            if self.last_response.get("sources"):
+                collections_searched = list(set(
+                    source.get("collection", "unknown") 
+                    for source in self.last_response["sources"]
+                ))
+            
+            self.feedback_collector.record_feedback(
+                query=self.last_query,
+                query_type="agent",
+                collections_searched=collections_searched,
+                response_length=len(self.last_response.get('content', '')),
+                rating=rating,
+                feedback_text=feedback_text,
+                user_comment=user_comment,
+                session_id=self.session_id
+            )
+            self.console.print("[green]✓[/green] Thank you for your feedback!")
+        except Exception as e:
+            self.console.print(f"[red]✗[/red] Failed to record feedback: {e}")
+    
+    def _show_feedback_stats(self):
+        """Show feedback statistics."""
+        if not self.feedback_collector:
+            self.console.print("[yellow]Feedback collection is disabled[/yellow]")
+            return
+        
+        try:
+            stats = self.feedback_collector.get_feedback_stats()
+            
+            if stats['total'] == 0:
+                self.console.print("[dim]No feedback recorded yet[/dim]")
+                return
+            
+            # Create statistics table
+            table = Table(title="Feedback Statistics", show_header=True, header_style="bold cyan")
+            table.add_column("Metric", style="cyan")
+            table.add_column("Value", justify="right")
+            
+            table.add_row("Total Feedback", str(stats['total']))
+            table.add_row("Positive", f"[green]{stats['positive']}[/green]")
+            table.add_row("Negative", f"[red]{stats['negative']}[/red]")
+            table.add_row("Neutral", f"[yellow]{stats.get('neutral', 0)}[/yellow]")
+            table.add_row("Satisfaction Rate", f"{stats['satisfaction_rate']:.1%}")
+            
+            self.console.print()
+            self.console.print(table)
+            
+            # Show by query type if available
+            if stats.get('by_query_type'):
+                self.console.print("\n[bold cyan]By Query Type:[/bold cyan]")
+                for qtype, data in stats['by_query_type'].items():
+                    satisfaction = data.get('positive', 0) / data['total'] if data['total'] > 0 else 0
+                    self.console.print(f"  {qtype:20} - {data['total']:3} queries ({satisfaction:.1%} positive)")
+        
+        except Exception as e:
+            self.console.print(f"[red]✗[/red] Failed to get feedback stats: {e}")
     
     
     async def _init_mcp_agent(self):

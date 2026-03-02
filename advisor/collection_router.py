@@ -134,7 +134,7 @@ class CollectionRouter:
             # Apply intent-based boosting (only if not already boosted by collection name)
             if intent_boost == 0.0:
                 if detected_intent == "documentation" and collection.content_type.value == "documentation":
-                    intent_boost = 10.0  # Strong boost for docs when "documentation" mentioned
+                    intent_boost = 15.0  # Very strong boost for docs when "documentation" mentioned
                 elif detected_intent == "example" and collection.content_type.value == "examples":
                     intent_boost = 8.0
                 elif detected_intent == "cli" and "cli" in collection.name:

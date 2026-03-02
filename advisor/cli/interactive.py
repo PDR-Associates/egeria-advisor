@@ -5,6 +5,7 @@ This module provides an interactive session with command history and context pre
 """
 
 import sys
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -15,8 +16,11 @@ from prompt_toolkit.completion import WordCompleter
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.prompt import Prompt, Confirm
+from rich.table import Table
 
 from advisor.cli.formatters import ResponseFormatter
+from advisor.feedback_collector import get_feedback_collector
 
 
 class InteractiveSession:
@@ -31,6 +35,8 @@ class InteractiveSession:
         '/quit': 'Exit interactive mode',
         '/verbose': 'Toggle verbose mode',
         '/citations': 'Toggle citation display',
+        '/feedback': 'Provide feedback on last response',
+        '/stats': 'Show feedback statistics',
     }
     
     def __init__(self, rag_system, options: Dict[str, Any], console: Console):
@@ -54,11 +60,18 @@ class InteractiveSession:
         self.context: List[Dict[str, str]] = []
         self.history: List[Dict[str, Any]] = []
         self.running = True
+        self.last_response: Optional[Dict[str, Any]] = None
+        self.last_query: Optional[str] = None
         
         # Options
         self.verbose = options.get('verbose', False)
         self.show_citations = options.get('show_citations', True)
         self.track_metrics = options.get('track_metrics', True)
+        self.enable_feedback = options.get('enable_feedback', True)
+        
+        # Feedback system
+        self.feedback_collector = get_feedback_collector() if self.enable_feedback else None
+        self.session_id = str(uuid.uuid4())[:8]
         
         # Set up prompt session
         history_file = Path.home() / '.egeria_advisor_history'
@@ -153,6 +166,12 @@ class InteractiveSession:
             status = "enabled" if self.show_citations else "disabled"
             self.console.print(f"[green]✓[/green] Citations {status}")
         
+        elif cmd == '/feedback':
+            self._handle_feedback_command()
+        
+        elif cmd == '/stats':
+            self._show_feedback_stats()
+        
         else:
             self.console.print(f"[yellow]Unknown command:[/yellow] {cmd}")
             self.console.print("[dim]Type /help for available commands[/dim]")
@@ -186,6 +205,10 @@ class InteractiveSession:
                     track_metrics=self.track_metrics
                 )
                 
+                # Store last query and response for feedback
+                self.last_query = query
+                self.last_response = result
+                
                 # Add to history
                 self.history.append({
                     'query': query,
@@ -205,6 +228,10 @@ class InteractiveSession:
                 
                 # Display result
                 self.formatter.display(result, self.console)
+                
+                # Optionally prompt for feedback
+                if self.enable_feedback and self.feedback_collector:
+                    self._prompt_for_feedback()
             
             except Exception as e:
                 self.console.print(f"[red]✗ Error:[/red] {e}")
@@ -247,6 +274,162 @@ class InteractiveSession:
     
     def _show_history(self):
         """Show query history."""
+    def _prompt_for_feedback(self):
+        """Prompt user for feedback on the last response."""
+        if not self.last_response or not self.last_query:
+            return
+        
+        self.console.print()
+        self.console.print("[dim]─[/dim]" * 70)
+        
+        # Ask if they want to provide feedback
+        provide_feedback = Confirm.ask(
+            "[cyan]Would you like to provide feedback on this response?[/cyan]",
+            default=False
+        )
+        
+        if not provide_feedback:
+            return
+        
+        # Ask for rating
+        self.console.print("\n[cyan]Was this answer helpful?[/cyan]")
+        self.console.print("  [green]1[/green] - Yes, very helpful 👍")
+        self.console.print("  [yellow]2[/yellow] - Somewhat helpful")
+        self.console.print("  [red]3[/red] - Not helpful 👎")
+        
+        rating_input = Prompt.ask("Your rating", choices=["1", "2", "3"], default="1")
+        
+        # Map to rating
+        rating_map = {"1": "positive", "2": "neutral", "3": "negative"}
+        rating = rating_map[rating_input]
+        
+        # Collect additional feedback for negative ratings
+        feedback_text = None
+        suggested_collection = None
+        user_comment = None
+        
+        if rating == "negative":
+            self.console.print("\n[yellow]What was the problem?[/yellow]")
+            self.console.print("  [cyan]1[/cyan] - Wrong information")
+            self.console.print("  [cyan]2[/cyan] - Incomplete answer")
+            self.console.print("  [cyan]3[/cyan] - Wrong collection searched")
+            self.console.print("  [cyan]4[/cyan] - Poor code example")
+            self.console.print("  [cyan]5[/cyan] - Other")
+            
+            problem_choice = Prompt.ask("Choose", choices=["1", "2", "3", "4", "5"], default="5")
+            
+            problem_map = {
+                "1": "Wrong information provided",
+                "2": "Answer was incomplete",
+                "3": "Searched wrong collection",
+                "4": "Code example was poor quality",
+                "5": "Other issue"
+            }
+            feedback_text = problem_map[problem_choice]
+            
+            # Ask for suggested collection if routing issue
+            if problem_choice == "3":
+                self.console.print("\n[cyan]Which collection should have been searched?[/cyan]")
+                self.console.print("[dim]Available: pyegeria, pyegeria_cli, pyegeria_drE,[/dim]")
+                self.console.print("[dim]           egeria_java, egeria_docs, egeria_workspaces[/dim]")
+                suggested = Prompt.ask("Suggested collection", default="")
+                if suggested:
+                    suggested_collection = suggested
+        
+        # Ask for optional comment
+        if rating in ["negative", "neutral"]:
+            self.console.print("\n[cyan]Any additional comments?[/cyan] [dim](optional)[/dim]")
+            comment = Prompt.ask("Comment", default="")
+            if comment:
+                user_comment = comment
+        
+        # Record feedback
+        if not self.feedback_collector:
+            self.console.print("[yellow]Feedback collection is disabled[/yellow]")
+            return
+        
+        try:
+            self.feedback_collector.record_feedback(
+                query=self.last_query,
+                query_type=self.last_response.get('query_type', 'unknown'),
+                collections_searched=self.last_response.get('collections_searched', []),
+                response_length=len(self.last_response.get('response', '')),
+                rating=rating,
+                feedback_text=feedback_text,
+                suggested_collection=suggested_collection,
+                user_comment=user_comment,
+                session_id=self.session_id
+            )
+            self.console.print("[green]✓[/green] Thank you for your feedback!")
+        except Exception as e:
+            self.console.print(f"[red]✗[/red] Failed to record feedback: {e}")
+    
+    def _handle_feedback_command(self):
+        """Handle /feedback command to provide feedback on last response."""
+        if not self.feedback_collector:
+            self.console.print("[yellow]Feedback collection is disabled[/yellow]")
+            return
+        
+        if not self.last_response or not self.last_query:
+            self.console.print("[yellow]No previous response to provide feedback on[/yellow]")
+            return
+        
+        # Show last query and response summary
+        self.console.print("\n[bold cyan]Last Query:[/bold cyan]")
+        self.console.print(f"  {self.last_query}")
+        self.console.print(f"\n[bold cyan]Response:[/bold cyan]")
+        response_preview = self.last_response.get('response', '')[:200]
+        self.console.print(f"  {response_preview}...")
+        self.console.print()
+        
+        # Prompt for feedback
+        self._prompt_for_feedback()
+    
+    def _show_feedback_stats(self):
+        """Show feedback statistics."""
+        if not self.feedback_collector:
+            self.console.print("[yellow]Feedback collection is disabled[/yellow]")
+            return
+        
+        try:
+            stats = self.feedback_collector.get_feedback_stats()
+            
+            if stats['total'] == 0:
+                self.console.print("[dim]No feedback recorded yet[/dim]")
+                return
+            
+            # Create statistics table
+            table = Table(title="Feedback Statistics", show_header=True, header_style="bold cyan")
+            table.add_column("Metric", style="cyan")
+            table.add_column("Value", justify="right")
+            
+            table.add_row("Total Feedback", str(stats['total']))
+            table.add_row("Positive", f"[green]{stats['positive']}[/green]")
+            table.add_row("Negative", f"[red]{stats['negative']}[/red]")
+            table.add_row("Neutral", f"[yellow]{stats.get('neutral', 0)}[/yellow]")
+            table.add_row("Satisfaction Rate", f"{stats['satisfaction_rate']:.1%}")
+            
+            self.console.print()
+            self.console.print(table)
+            
+            # Show by query type if available
+            if stats.get('by_query_type'):
+                self.console.print("\n[bold cyan]By Query Type:[/bold cyan]")
+                for qtype, data in stats['by_query_type'].items():
+                    satisfaction = data.get('positive', 0) / data['total'] if data['total'] > 0 else 0
+                    self.console.print(f"  {qtype:20} - {data['total']:3} queries ({satisfaction:.1%} positive)")
+            
+            # Show routing corrections if any
+            if stats.get('routing_corrections'):
+                self.console.print(f"\n[bold yellow]Routing Corrections:[/bold yellow] {len(stats['routing_corrections'])}")
+                for correction in stats['routing_corrections'][:5]:  # Show first 5
+                    self.console.print(f"  • {correction['query'][:50]}...")
+                    self.console.print(f"    [dim]Searched: {', '.join(correction['searched'])}[/dim]")
+                    self.console.print(f"    [dim]Suggested: {correction['suggested']}[/dim]")
+        
+        except Exception as e:
+            self.console.print(f"[red]✗[/red] Failed to get feedback stats: {e}")
+    
         if not self.history:
             self.console.print("[dim]No queries in history[/dim]")
             return

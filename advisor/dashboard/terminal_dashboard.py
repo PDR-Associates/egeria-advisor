@@ -164,7 +164,7 @@ def create_recent_queries_table(collector) -> Table:
 
 
 def create_dashboard_layout() -> Layout:
-    """Create the dashboard layout."""
+    """Create the dashboard layout with focus on queries and collections."""
     layout = Layout()
     
     layout.split_column(
@@ -173,19 +173,22 @@ def create_dashboard_layout() -> Layout:
         Layout(name="footer", size=3)
     )
     
+    # Main body: 70% queries/collections, 30% stats/system
     layout["body"].split_row(
-        Layout(name="left"),
-        Layout(name="right")
+        Layout(name="main", ratio=7),
+        Layout(name="sidebar", ratio=3)
     )
     
-    layout["left"].split_column(
-        Layout(name="collections"),
-        Layout(name="queries")
+    # Main area: Recent queries (60%) and collections (40%)
+    layout["main"].split_column(
+        Layout(name="queries", ratio=6),
+        Layout(name="collections", ratio=4)
     )
     
-    layout["right"].split_column(
-        Layout(name="stats"),
-        Layout(name="system")
+    # Sidebar: Compact stats and system
+    layout["sidebar"].split_column(
+        Layout(name="stats", ratio=5),
+        Layout(name="system", ratio=5)
     )
     
     return layout
@@ -200,16 +203,16 @@ def update_dashboard(layout: Layout, collector):
     )
     layout["header"].update(header)
     
-    # Collections
-    layout["collections"].update(create_collection_health_table(collector))
-    
-    # Recent queries
+    # Recent queries (larger, more prominent)
     layout["queries"].update(create_recent_queries_table(collector))
     
-    # Query stats
+    # Collections (more compact)
+    layout["collections"].update(create_collection_health_table(collector))
+    
+    # Query stats (compact)
     layout["stats"].update(create_query_stats_panel(collector))
     
-    # System metrics
+    # System metrics (compact)
     layout["system"].update(create_system_metrics_panel(collector))
     
     # Footer

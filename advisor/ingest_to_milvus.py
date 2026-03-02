@@ -10,7 +10,7 @@ Also provides CodeIngester for directly ingesting code files from repositories.
 import json
 import hashlib
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from loguru import logger
 import sys
 
@@ -382,20 +382,32 @@ if __name__ == "__main__":
 class CodeIngester:
     """Ingest code files directly from repositories into Milvus."""
     
-    def __init__(self, collection_name: str, chunk_size: int = 1000, chunk_overlap: int = 200):
+    def __init__(self, collection_name: str, chunk_size: Optional[int] = None, chunk_overlap: Optional[int] = None):
         """
         Initialize code ingester.
         
         Args:
             collection_name: Name of the Milvus collection
-            chunk_size: Size of text chunks
-            chunk_overlap: Overlap between chunks
+            chunk_size: Size of text chunks (defaults to collection-specific value)
+            chunk_overlap: Overlap between chunks (defaults to collection-specific value)
         """
+        from advisor.collection_config import get_collection
+        
         self.collection_name = collection_name
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
         self.vector_store = get_vector_store()
         self.embedding_generator = get_embedding_generator()
+        
+        # Get collection-specific parameters if not provided
+        collection_meta = get_collection(collection_name)
+        if collection_meta:
+            self.chunk_size = chunk_size if chunk_size is not None else collection_meta.chunk_size
+            self.chunk_overlap = chunk_overlap if chunk_overlap is not None else collection_meta.chunk_overlap
+            logger.info(f"Using collection-specific parameters: chunk_size={self.chunk_size}, chunk_overlap={self.chunk_overlap}")
+        else:
+            # Fallback to defaults if collection not found
+            self.chunk_size = chunk_size if chunk_size is not None else 1000
+            self.chunk_overlap = chunk_overlap if chunk_overlap is not None else 200
+            logger.warning(f"Collection {collection_name} not found in config, using defaults")
         
         logger.info(f"Initialized CodeIngester for collection: {collection_name}")
     

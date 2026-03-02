@@ -9,8 +9,11 @@ import requests
 from typing import Optional, Dict, Any, List
 from loguru import logger
 import json
+import time
 
 from advisor.config import settings, get_full_config
+from advisor.mlflow_tracking import get_mlflow_tracker
+from advisor.metrics_collector import get_metrics_collector, QueryMetric
 
 
 class OllamaClient:
@@ -20,7 +23,7 @@ class OllamaClient:
         self,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
-        timeout: int = 60
+        timeout: int = 180
     ):
         """
         Initialize Ollama client.
@@ -28,7 +31,7 @@ class OllamaClient:
         Args:
             base_url: Ollama API base URL
             model: Default model to use
-            timeout: Request timeout in seconds
+            timeout: Request timeout in seconds (default 180 for slow CPU inference)
         """
         config = get_full_config()
         llm_config = config.get("llm")
@@ -44,6 +47,12 @@ class OllamaClient:
             "top_k": llm_config.parameters.top_k,
             "repeat_penalty": llm_config.parameters.repeat_penalty
         }
+        
+        # Initialize monitoring
+        # Note: MLflow tracking disabled in LLM client due to context manager conflicts
+        # Tracking should be done at agent/CLI layer instead
+        self.mlflow_tracker = None  # Disabled - causes "generator didn't stop after throw()"
+        self.metrics_collector = get_metrics_collector()
         
         logger.info(f"Initialized Ollama client: {self.base_url}")
         logger.info(f"Default model: {self.default_model}")
@@ -96,6 +105,10 @@ class OllamaClient:
             Generated text
         """
         model = model or self.default_model
+        start_time = time.time()
+        success = True
+        error_message = None
+        generated_text = ""
         
         # Build request payload
         payload = {
@@ -123,6 +136,8 @@ class OllamaClient:
         logger.debug(f"Prompt length: {len(prompt)} chars")
         
         try:
+            # MLflow tracking removed - causes context manager conflicts
+            # Tracking should be done at agent/CLI layer
             response = requests.post(
                 f"{self.base_url}/api/generate",
                 json=payload,
@@ -138,21 +153,44 @@ class OllamaClient:
                         data = json.loads(line)
                         if "response" in data:
                             full_response += data["response"]
-                return full_response
+                generated_text = full_response
             else:
                 # Handle non-streaming response
                 data = response.json()
                 generated_text = data.get("response", "")
-                
-                logger.debug(f"Generated {len(generated_text)} chars")
-                return generated_text
+            
+            # Log timing info
+            generation_time_ms = (time.time() - start_time) * 1000
+            logger.debug(f"Generated {len(generated_text)} chars in {generation_time_ms:.0f}ms")
+            return generated_text
                 
         except requests.exceptions.Timeout:
-            logger.error(f"Request timed out after {self.timeout}s")
+            success = False
+            error_message = f"Request timed out after {self.timeout}s"
+            logger.error(error_message)
             raise
         except Exception as e:
+            success = False
+            error_message = str(e)
             logger.error(f"Generation failed: {e}")
             raise
+        finally:
+            # Record query metric
+            latency_ms = (time.time() - start_time) * 1000
+            metric = QueryMetric(
+                timestamp=time.time(),
+                query_text=prompt[:200],  # Truncate for storage
+                collection_name=f"llm_{model}",
+                latency_ms=latency_ms,
+                cache_hit=False,
+                success=success,
+                error_message=error_message,
+                result_count=1 if success else 0,
+                embedding_time_ms=None,
+                search_time_ms=None,
+                llm_time_ms=latency_ms
+            )
+            self.metrics_collector.record_query(metric)
     
     def chat(
         self,
@@ -178,6 +216,10 @@ class OllamaClient:
             Generated response
         """
         model = model or self.default_model
+        start_time = time.time()
+        success = True
+        error_message = None
+        response_text = ""
         
         payload = {
             "model": model,
@@ -196,9 +238,14 @@ class OllamaClient:
         
         payload["options"].update(kwargs)
         
+        # Calculate total message length
+        total_message_length = sum(len(msg.get("content", "")) for msg in messages)
+        
         logger.debug(f"Chat with {len(messages)} messages")
         
         try:
+            # MLflow tracking removed - causes context manager conflicts
+            # Tracking should be done at agent/CLI layer
             response = requests.post(
                 f"{self.base_url}/api/chat",
                 json=payload,
@@ -213,15 +260,41 @@ class OllamaClient:
                         data = json.loads(line)
                         if "message" in data and "content" in data["message"]:
                             full_response += data["message"]["content"]
-                return full_response
+                response_text = full_response
             else:
                 data = response.json()
                 message = data.get("message", {})
-                return message.get("content", "")
+                response_text = message.get("content", "")
+            
+            # Log timing info
+            generation_time_ms = (time.time() - start_time) * 1000
+            logger.debug(f"Generated {len(response_text)} chars in {generation_time_ms:.0f}ms")
+            return response_text
                 
         except Exception as e:
+            success = False
+            error_message = str(e)
             logger.error(f"Chat failed: {e}")
             raise
+        finally:
+            # Record query metric
+            latency_ms = (time.time() - start_time) * 1000
+            # Use last user message as query text
+            last_user_msg = next((msg["content"] for msg in reversed(messages) if msg.get("role") == "user"), "")
+            metric = QueryMetric(
+                timestamp=time.time(),
+                query_text=last_user_msg[:200],  # Truncate for storage
+                collection_name=f"llm_chat_{model}",
+                latency_ms=latency_ms,
+                cache_hit=False,
+                success=success,
+                error_message=error_message,
+                result_count=1 if success else 0,
+                embedding_time_ms=None,
+                search_time_ms=None,
+                llm_time_ms=latency_ms
+            )
+            self.metrics_collector.record_query(metric)
 
 
 # Global client instance

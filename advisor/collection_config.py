@@ -54,6 +54,12 @@ class CollectionMetadata:
     enabled: bool = True
     priority: int = 1  # Higher = search first
     
+    # RAG-specific parameters (NEW - Phase 2)
+    chunk_size: int = 512  # Tokens per chunk
+    chunk_overlap: int = 100  # Token overlap between chunks
+    min_score: float = 0.35  # Minimum similarity score threshold
+    default_top_k: int = 8  # Default number of results to retrieve
+    
     def matches_query(self, query_lower: str, query_terms: List[str]) -> bool:
         """
         Check if this collection is relevant for a query.
@@ -90,7 +96,12 @@ PYEGERIA_COLLECTION = CollectionMetadata(
     related_collections=["pyegeria_cli", "pyegeria_drE", "egeria_docs"],
     include_patterns=["*.py", "*.md"],
     exclude_patterns=["**/__pycache__/**", "**/deprecated/**", "**/.pytest_cache/**"],
-    priority=10  # High priority for Python queries
+    priority=10,  # High priority for Python queries
+    # RAG parameters optimized for Python code
+    chunk_size=512,  # Standard for code
+    chunk_overlap=100,  # 20% overlap
+    min_score=0.35,  # Moderate threshold
+    default_top_k=10  # More results for code queries
 )
 
 PYEGERIA_CLI_COLLECTION = CollectionMetadata(
@@ -107,7 +118,12 @@ PYEGERIA_CLI_COLLECTION = CollectionMetadata(
     related_collections=["pyegeria", "egeria_docs"],
     include_patterns=["*.py", "*.md"],
     exclude_patterns=["**/__pycache__/**"],
-    priority=9
+    priority=9,
+    # RAG parameters optimized for CLI code
+    chunk_size=512,  # Standard for code
+    chunk_overlap=100,  # 20% overlap
+    min_score=0.35,  # Moderate threshold
+    default_top_k=10  # More results for code queries
 )
 
 PYEGERIA_DRE_COLLECTION = CollectionMetadata(
@@ -126,7 +142,12 @@ PYEGERIA_DRE_COLLECTION = CollectionMetadata(
     related_collections=["pyegeria", "egeria_docs"],
     include_patterns=["*.py", "*.md"],
     exclude_patterns=["**/__pycache__/**"],
-    priority=8
+    priority=8,
+    # RAG parameters optimized for markdown processing code
+    chunk_size=512,  # Standard for code
+    chunk_overlap=100,  # 20% overlap
+    min_score=0.35,  # Moderate threshold
+    default_top_k=8  # Standard results
 )
 
 # Phase 2: Java + Docs + Workspaces Collections
@@ -147,12 +168,17 @@ EGERIA_JAVA_COLLECTION = CollectionMetadata(
     include_patterns=["*.java", "*.md"],
     exclude_patterns=["**/target/**", "**/build/**", "**/.gradle/**"],
     priority=7,
-    enabled=True  # Phase 2 - ENABLED
+    enabled=True,  # Phase 2 - ENABLED
+    # RAG parameters optimized for Java code (larger chunks)
+    chunk_size=768,  # Larger for Java methods
+    chunk_overlap=150,  # ~20% overlap
+    min_score=0.35,  # Moderate threshold
+    default_top_k=8  # Standard results
 )
 
 EGERIA_DOCS_COLLECTION = CollectionMetadata(
     name="egeria_docs",
-    description="Egeria documentation - guides, tutorials, concepts",
+    description="Egeria documentation - guides, tutorials, concepts (TO BE SPLIT)",
     source_repo="https://github.com/odpi/egeria-docs.git",
     source_paths=["."],
     content_type=ContentType.DOCUMENTATION,
@@ -163,13 +189,19 @@ EGERIA_DOCS_COLLECTION = CollectionMetadata(
         "egeria-docs", "egeria-documentation",  # Add specific collection identifiers
         # Add common Egeria concepts that should route to docs
         "omas", "omag", "omrs", "ocf", "oif",  # Architecture terms
-        "architecture", "design", "overview"
+        "architecture", "design", "overview",
+        "myprofile", "my-profile", "my profile"  # Add myProfile variants
     ],
     related_collections=["pyegeria", "egeria_java", "egeria_workspaces"],
     include_patterns=["*.md", "*.rst"],
     exclude_patterns=["**/node_modules/**", "**/.git/**"],
-    priority=6,
-    enabled=True  # Phase 2 - ENABLED
+    priority=11,  # Higher than pyegeria (10) to prioritize docs when mentioned
+    enabled=True,  # Phase 2 - ENABLED (will be disabled after split)
+    # RAG parameters - TEMPORARY (will be replaced by split collections)
+    chunk_size=1024,  # Mixed content
+    chunk_overlap=200,  # ~20% overlap
+    min_score=0.38,  # Lower threshold for docs
+    default_top_k=8  # Standard results
 )
 
 EGERIA_WORKSPACES_COLLECTION = CollectionMetadata(
@@ -187,7 +219,90 @@ EGERIA_WORKSPACES_COLLECTION = CollectionMetadata(
     include_patterns=["*.ipynb", "*.py", "*.md", "*.yaml", "*.yml"],
     exclude_patterns=["**/node_modules/**", "**/.git/**", "**/venv/**"],
     priority=5,
-    enabled=True  # Phase 2 - ENABLED
+    enabled=True,  # Phase 2 - ENABLED
+    # RAG parameters optimized for examples and tutorials
+    chunk_size=1536,  # Large for complete examples
+    chunk_overlap=300,  # ~20% overlap
+    min_score=0.38,  # Lower threshold for examples
+    default_top_k=6  # Fewer results for examples
+)
+
+
+# Phase 2b: Split egeria_docs into specialized collections
+EGERIA_CONCEPTS_COLLECTION = CollectionMetadata(
+    name="egeria_concepts",
+    description="Egeria core concepts - short definitions and explanations",
+    source_repo="https://github.com/odpi/egeria-docs.git",
+    source_paths=["site/docs/concepts"],
+    content_type=ContentType.DOCUMENTATION,
+    language=Language.MARKDOWN,
+    domain_terms=[
+        "concept", "definition", "what is", "explain",
+        "metadata", "governance", "lineage", "catalog",
+        "asset", "glossary", "classification", "relationship"
+    ],
+    related_collections=["egeria_types", "egeria_general", "pyegeria"],
+    include_patterns=["*.md"],
+    exclude_patterns=["**/node_modules/**", "**/.git/**"],
+    priority=12,  # Highest priority for concept queries
+    enabled=False,  # Will be enabled after ingestion
+    # RAG parameters optimized for short concept definitions
+    chunk_size=768,  # Medium chunks for concepts
+    chunk_overlap=150,  # ~20% overlap
+    min_score=0.45,  # High threshold for precise concepts
+    default_top_k=5  # Fewer, more precise results
+)
+
+EGERIA_TYPES_COLLECTION = CollectionMetadata(
+    name="egeria_types",
+    description="Egeria type system - detailed type definitions and schemas",
+    source_repo="https://github.com/odpi/egeria-docs.git",
+    source_paths=["site/docs/types"],
+    content_type=ContentType.DOCUMENTATION,
+    language=Language.MARKDOWN,
+    domain_terms=[
+        "type", "schema", "attribute", "property",
+        "entity", "relationship-type", "classification-type",
+        "typedef", "type-definition", "type-system"
+    ],
+    related_collections=["egeria_concepts", "egeria_general", "egeria_java"],
+    include_patterns=["*.md"],
+    exclude_patterns=["**/node_modules/**", "**/.git/**"],
+    priority=11,  # High priority for type queries
+    enabled=False,  # Will be enabled after ingestion
+    # RAG parameters optimized for detailed type definitions
+    chunk_size=1024,  # Larger chunks for complete type definitions
+    chunk_overlap=200,  # ~20% overlap
+    min_score=0.42,  # High threshold for type precision
+    default_top_k=6  # Moderate results for types
+)
+
+EGERIA_GENERAL_COLLECTION = CollectionMetadata(
+    name="egeria_general",
+    description="Egeria general docs - tutorials, guides, and how-tos",
+    source_repo="https://github.com/odpi/egeria-docs.git",
+    source_paths=["site/docs"],  # All docs except concepts/ and types/
+    content_type=ContentType.DOCUMENTATION,
+    language=Language.MARKDOWN,
+    domain_terms=[
+        "tutorial", "guide", "how-to", "walkthrough",
+        "getting-started", "setup", "configuration",
+        "deployment", "installation", "usage"
+    ],
+    related_collections=["egeria_concepts", "egeria_types", "egeria_workspaces"],
+    include_patterns=["*.md"],
+    exclude_patterns=[
+        "**/node_modules/**", "**/.git/**",
+        "**/concepts/**",  # Exclude concepts (separate collection)
+        "**/types/**"      # Exclude types (separate collection)
+    ],
+    priority=9,  # Lower priority than concepts/types
+    enabled=False,  # Will be enabled after ingestion
+    # RAG parameters optimized for tutorials and guides
+    chunk_size=1536,  # Large chunks for complete tutorials
+    chunk_overlap=300,  # ~20% overlap
+    min_score=0.38,  # Lower threshold for broader content
+    default_top_k=8  # More results for general queries
 )
 
 
@@ -197,7 +312,10 @@ ALL_COLLECTIONS: Dict[str, CollectionMetadata] = {
     "pyegeria_cli": PYEGERIA_CLI_COLLECTION,
     "pyegeria_drE": PYEGERIA_DRE_COLLECTION,
     "egeria_java": EGERIA_JAVA_COLLECTION,
-    "egeria_docs": EGERIA_DOCS_COLLECTION,
+    "egeria_docs": EGERIA_DOCS_COLLECTION,  # Will be disabled after split
+    "egeria_concepts": EGERIA_CONCEPTS_COLLECTION,  # NEW
+    "egeria_types": EGERIA_TYPES_COLLECTION,  # NEW
+    "egeria_general": EGERIA_GENERAL_COLLECTION,  # NEW
     "egeria_workspaces": EGERIA_WORKSPACES_COLLECTION,
 }
 

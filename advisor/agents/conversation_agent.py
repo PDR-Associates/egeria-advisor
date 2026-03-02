@@ -32,7 +32,7 @@ class ConversationAgent:
         self,
         max_history: int = 10,
         cache_size: int = 100,
-        rag_top_k: int = 5,
+        rag_top_k: int = 10,
         enable_mlflow: bool = True
     ):
         """
@@ -45,7 +45,7 @@ class ConversationAgent:
         cache_size : int, optional
             LRU cache size for responses (default: 100)
         rag_top_k : int, optional
-            Number of RAG results to retrieve (default: 5)
+            Number of RAG results to retrieve (default: 10, increased for better code examples)
         enable_mlflow : bool, optional
             Enable MLflow tracking (default: True)
         """
@@ -84,43 +84,9 @@ class ConversationAgent:
         dict
             Response with content, metadata, and sources
         """
-        start_time = time.time()
-        
-        # Track with MLflow if enabled
-        if self.enable_mlflow and self.mlflow_tracker:
-            with self.mlflow_tracker.track_operation(
-                operation_name="agent_query",
-                params={
-                    "query_length": len(query),
-                    "use_rag": use_rag,
-                    "conversation_turn": len(self.conversation_history) + 1,
-                    "max_history": self.max_history
-                },
-                track_resources=True,
-                track_accuracy=True
-            ) as tracker:
-                # Use cached version for repeated queries
-                response = self._cached_run(query, use_rag)
-                
-                # Add relevance scores from sources
-                if response.get("sources"):
-                    for source in response["sources"]:
-                        if isinstance(source, dict) and 'score' in source:
-                            tracker.add_relevance(source['score'])
-                
-                # Log metrics
-                duration = time.time() - start_time
-                tracker.log_metrics({
-                    "agent_response_length": len(response["content"]),
-                    "agent_num_sources": len(response.get("sources", [])),
-                    "agent_rag_used": 1.0 if response.get("rag_used") else 0.0,
-                    "agent_cache_hit": 1.0 if response.get("cache_hit") else 0.0,
-                    "agent_duration_seconds": duration,
-                    "agent_conversation_length": len(self.conversation_history)
-                })
-        else:
-            # Use cached version for repeated queries
-            response = self._cached_run(query, use_rag)
+        # Use cached version for repeated queries
+        # MLflow tracking is now inside _run_uncached to avoid context manager/cache conflicts
+        response = self._cached_run(query, use_rag)
         
         # Add to conversation history
         self.conversation_history.append({
@@ -140,7 +106,40 @@ class ConversationAgent:
         Internal method for processing queries (uncached).
         
         This is wrapped by LRU cache in __init__.
+        MLflow tracking is done here to avoid context manager/cache conflicts.
         """
+        start_time = time.time()
+        sources = []
+        context = ""
+        
+        # Track with MLflow if enabled
+        if self.enable_mlflow and self.mlflow_tracker:
+            with self.mlflow_tracker.track_operation(
+                operation_name="agent_query",
+                params={
+                    "query_length": len(query),
+                    "use_rag": use_rag,
+                    "conversation_turn": len(self.conversation_history) + 1,
+                    "max_history": self.max_history
+                },
+                track_resources=True,
+                track_accuracy=True
+            ) as tracker:
+                # Process query with tracking
+                result = self._process_query_internal(query, use_rag, start_time, tracker)
+                return result
+        else:
+            # Process query without tracking
+            return self._process_query_internal(query, use_rag, start_time, None)
+    
+    def _process_query_internal(
+        self,
+        query: str,
+        use_rag: bool,
+        start_time: float,
+        tracker: Any = None
+    ) -> Dict[str, Any]:
+        """Internal query processing logic."""
         sources = []
         context = ""
         
@@ -194,6 +193,24 @@ Answer:"""
             prompt=prompt,
             max_tokens=1500
         )
+        
+        # Log metrics if tracker available
+        if tracker:
+            # Add relevance scores from sources
+            for source in sources:
+                if isinstance(source, dict) and 'score' in source:
+                    tracker.add_relevance(source['score'])
+            
+            # Log metrics
+            duration = time.time() - start_time
+            tracker.log_metrics({
+                "agent_response_length": len(response_text),
+                "agent_num_sources": len(sources),
+                "agent_rag_used": 1.0 if use_rag else 0.0,
+                "agent_cache_hit": 0.0,  # Always 0 in uncached path
+                "agent_duration_seconds": duration,
+                "agent_conversation_length": len(self.conversation_history)
+            })
         
         return {
             "content": response_text,

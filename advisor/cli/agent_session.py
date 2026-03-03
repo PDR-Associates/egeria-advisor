@@ -113,10 +113,11 @@ class AgentInteractiveSession:
                 transient=True
             ) as progress:
                 progress.add_task("Initializing agent...", total=None)
-                # MLflow disabled - context manager conflicts with LRU cache
+                # MLflow tracking now works with LRU cache (fixed in conversation_agent.py)
                 # Increased rag_top_k from 5 to 10 for better code example retrieval
                 # See docs/design/PERFORMANCE_AND_QUALITY_ANALYSIS.md for details
-                self.agent = create_agent(max_history=10, cache_size=100, rag_top_k=10, enable_mlflow=False)
+                enable_mlflow = self.options.get('track', True)  # Respect CLI --track flag
+                self.agent = create_agent(max_history=10, cache_size=100, rag_top_k=10, enable_mlflow=enable_mlflow)
         except Exception as e:
             self.console.print(f"[red]✗ Failed to initialize agent:[/red] {e}")
             if self.verbose:

@@ -196,7 +196,7 @@ EGERIA_DOCS_COLLECTION = CollectionMetadata(
     include_patterns=["*.md", "*.rst"],
     exclude_patterns=["**/node_modules/**", "**/.git/**"],
     priority=11,  # Higher than pyegeria (10) to prioritize docs when mentioned
-    enabled=True,  # Phase 2 - ENABLED (will be disabled after split)
+    enabled=False,  # DISABLED - Replaced by specialized collections
     # RAG parameters - TEMPORARY (will be replaced by split collections)
     chunk_size=1024,  # Mixed content
     chunk_overlap=200,  # ~20% overlap
@@ -245,7 +245,7 @@ EGERIA_CONCEPTS_COLLECTION = CollectionMetadata(
     include_patterns=["*.md"],
     exclude_patterns=["**/node_modules/**", "**/.git/**"],
     priority=12,  # Highest priority for concept queries
-    enabled=False,  # Will be enabled after ingestion
+    enabled=True,  # ENABLED - Phase 2b
     # RAG parameters optimized for short concept definitions
     chunk_size=768,  # Medium chunks for concepts
     chunk_overlap=150,  # ~20% overlap
@@ -269,7 +269,7 @@ EGERIA_TYPES_COLLECTION = CollectionMetadata(
     include_patterns=["*.md"],
     exclude_patterns=["**/node_modules/**", "**/.git/**"],
     priority=11,  # High priority for type queries
-    enabled=False,  # Will be enabled after ingestion
+    enabled=True,  # ENABLED - Phase 2b
     # RAG parameters optimized for detailed type definitions
     chunk_size=1024,  # Larger chunks for complete type definitions
     chunk_overlap=200,  # ~20% overlap
@@ -297,7 +297,7 @@ EGERIA_GENERAL_COLLECTION = CollectionMetadata(
         "**/types/**"      # Exclude types (separate collection)
     ],
     priority=9,  # Lower priority than concepts/types
-    enabled=False,  # Will be enabled after ingestion
+    enabled=True,  # ENABLED - Phase 2b
     # RAG parameters optimized for tutorials and guides
     chunk_size=1536,  # Large chunks for complete tutorials
     chunk_overlap=300,  # ~20% overlap

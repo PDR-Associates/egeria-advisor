@@ -139,7 +139,7 @@ def main():
     parser.add_argument(
         "--repo-path",
         type=Path,
-        default=Path.home() / "localGit" / "egeria-v6" / "egeria-docs",
+        default=Path("data/repos/egeria-docs"),
         help="Path to egeria-docs repository"
     )
     parser.add_argument(

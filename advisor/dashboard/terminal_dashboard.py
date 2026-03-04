@@ -31,48 +31,47 @@ console = Console()
 def create_collection_health_table(collector) -> Table:
     """Create table showing collection health with RAG parameters."""
     table = Table(title="Collection Health & Parameters", show_header=True, header_style="bold cyan")
-    table.add_column("Collection", style="cyan", width=18)
-    table.add_column("Status", justify="center", width=10)
-    table.add_column("Entities", justify="right", style="magenta", width=8)
-    table.add_column("Chunk", justify="right", style="yellow", width=6)
-    table.add_column("Score", justify="right", style="green", width=6)
-    table.add_column("Top-K", justify="right", style="blue", width=6)
+    table.add_column("Collection", style="cyan")
+    table.add_column("Status", justify="center")
+    table.add_column("Entities", justify="right", style="magenta")
+    table.add_column("Chunk", justify="right", style="yellow")
+    table.add_column("Score", justify="right", style="green")
+    table.add_column("Top-K", justify="right", style="bold cyan")
     
+    # Get current health data from database
     health_data = collector.get_collection_health()
+    health_map = {h['collection_name']: h for h in health_data}
     
-    if not health_data:
-        # Show enabled collections with parameters
-        for collection in get_enabled_collections():
-            table.add_row(
-                collection.name,
-                "🟡 Unknown",
-                "-",
-                str(collection.chunk_size),
-                f"{collection.min_score:.2f}",
-                str(collection.default_top_k)
-            )
-    else:
-        for health in health_data:
-            # Get collection config for parameters
-            coll_config = get_collection(health['collection_name'])
-            
+    # Iterate over all enabled collections to ensure they are all shown
+    for collection in get_enabled_collections():
+        health = health_map.get(collection.name)
+        
+        if health:
             # Status emoji
-            if health['status'] == 'healthy':
+            status_val = health.get('status', 'healthy')
+            if status_val == 'healthy':
                 status = "🟢 OK"
-            elif health['status'] == 'degraded':
+            elif status_val == 'empty':
+                status = "🟢 OK"  # Collections exist but have no data yet
+            elif status_val == 'degraded':
                 status = "🟡 Warn"
             else:
                 status = "🔴 Crit"
             
-            # Add row with parameters
-            table.add_row(
-                health['collection_name'],
-                status,
-                f"{health['entity_count']:,}",
-                str(coll_config.chunk_size) if coll_config else "-",
-                f"{coll_config.min_score:.2f}" if coll_config else "-",
-                str(coll_config.default_top_k) if coll_config else "-"
-            )
+            entities = f"{health['entity_count']:,}"
+        else:
+            status = "🟢 Ready"
+            entities = "-"
+            
+        # Add row with parameters and health (if available)
+        table.add_row(
+            collection.name,
+            status,
+            entities,
+            str(collection.chunk_size),
+            f"{collection.min_score:.2f}",
+            str(collection.default_top_k)
+        )
     
     return table
 
@@ -127,9 +126,17 @@ def create_system_metrics_panel(collector) -> Panel:
     
     # GPU (if available)
     if metrics.gpu_percent is not None:
-        gpu_color = "green" if metrics.gpu_percent < 70 else "yellow" if metrics.gpu_percent < 90 else "red"
-        content.append(f"GPU: ", style="white")
-        content.append(f"{metrics.gpu_percent:.1f}%\n", style=f"bold {gpu_color}")
+        import torch
+        is_mps = hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
+        
+        if is_mps and not torch.cuda.is_available():
+            # Show active for Apple Silicon (utilization hard to get)
+            content.append(f"GPU: ", style="white")
+            content.append(f"Apple Silicon (MPS)\n", style="bold green")
+        else:
+            gpu_color = "green" if metrics.gpu_percent < 70 else "yellow" if metrics.gpu_percent < 90 else "red"
+            content.append(f"GPU: ", style="white")
+            content.append(f"{metrics.gpu_percent:.1f}%\n", style=f"bold {gpu_color}")
     
     content.append(f"\nDisk I/O:\n", style="bold white")
     content.append(f"  Read: {metrics.disk_io_read_mb:.2f} MB\n", style="cyan")
@@ -147,8 +154,8 @@ def create_recent_queries_table(collector) -> Table:
     table = Table(title="Recent Queries (Last 10)", show_header=True, header_style="bold cyan")
     table.add_column("Time", style="cyan", width=8)
     table.add_column("Query", style="white", width=50, no_wrap=False)  # Allow word wrap
-    table.add_column("Type", style="blue", width=10)
-    table.add_column("Collection", style="yellow", width=15)
+    table.add_column("Type", style="bold cyan", width=12)
+    table.add_column("Collection", style="yellow", width=20)
     table.add_column("Latency", justify="right", style="magenta", width=8)
     table.add_column("Status", justify="center", width=8)
     
@@ -161,23 +168,15 @@ def create_recent_queries_table(collector) -> Table:
         # Don't truncate - let it word wrap
         query_text = query['query_text']
         
-        # Try to classify query type (simplified)
-        query_lower = query['query_text'].lower()
-        if 'what is' in query_lower or 'define' in query_lower:
-            query_type = "CONCEPT"
-        elif 'type' in query_lower or 'schema' in query_lower:
-            query_type = "TYPE"
-        elif 'code' in query_lower or 'example' in query_lower:
-            query_type = "CODE"
-        elif 'how to' in query_lower or 'tutorial' in query_lower:
-            query_type = "TUTORIAL"
-        else:
-            query_type = "GENERAL"
+        # Use query type from database
+        query_type = query.get('query_type') or "GENERAL"
+        if len(query_type) > 12:
+            query_type = query_type[:9] + "..."
         
         # Collection name
-        collection = query['collection_name'] or "N/A"
-        if len(collection) > 15:
-            collection = collection[:12] + "..."
+        collection = query.get('collection_name') or "N/A"
+        if len(collection) > 18:
+            collection = collection[:15] + "..."
         
         # Latency
         latency = f"{query['latency_ms']:.0f}ms"

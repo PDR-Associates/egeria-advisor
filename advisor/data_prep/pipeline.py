@@ -437,7 +437,7 @@ def main():
     parser.add_argument(
         "source_path",
         nargs="?",
-        default="/home/dwolfson/localGit/egeria-v6/egeria-python",
+        default="/Users/dwolfson/localGit/egeria-v6/egeria-python",
         help="Path to egeria-python repository"
     )
     parser.add_argument(

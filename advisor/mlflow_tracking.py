@@ -190,13 +190,14 @@ class MLflowTracker:
             self.enabled = False
     
     @contextmanager
-    def start_run(self, run_name: Optional[str] = None, tags: Optional[Dict[str, str]] = None):
+    def start_run(self, run_name: Optional[str] = None, tags: Optional[Dict[str, str]] = None, nested: bool = True):
         """
         Context manager for MLflow runs.
         
         Args:
             run_name: Name for the run
             tags: Tags to add to the run
+            nested: Whether to allow nested runs
             
         Yields:
             MLflow run object
@@ -206,12 +207,12 @@ class MLflowTracker:
             return
         
         try:
-            with mlflow.start_run(run_name=run_name, tags=tags) as run:
-                logger.info(f"Started MLflow run: {run.info.run_id}")
+            with mlflow.start_run(run_name=run_name, tags=tags, nested=nested) as run:
+                logger.debug(f"Started MLflow run: {run.info.run_id} (nested={nested})")
                 yield run
         except Exception as e:
             logger.error(f"MLflow run failed: {e}")
-            yield None
+            raise
     
     def log_params(self, params: Dict[str, Any]):
         """Log parameters to MLflow."""
@@ -315,16 +316,7 @@ class MLflowTracker:
                 
         except Exception as e:
             logger.error(f"Error tracking operation {operation_name}: {e}")
-            class DummyTracker:
-                def log_metrics(self, metrics: Dict[str, float]):
-                    pass
-                def add_feedback(self, score: float):
-                    pass
-                def add_relevance(self, score: float):
-                    pass
-                def add_confidence(self, score: float):
-                    pass
-            yield DummyTracker()
+            raise
     
     def log_metrics(self, metrics: Dict[str, float], step: Optional[int] = None):
         """Log metrics to MLflow."""

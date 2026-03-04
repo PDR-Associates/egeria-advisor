@@ -299,6 +299,8 @@ class RAGRetriever:
                 "name": result.metadata.get("name", "unnamed"),
                 "type": result.metadata.get("type", "unknown"),
                 "module": result.metadata.get("module", ""),
+                "collection": result.metadata.get("_collection") or result.metadata.get("collection", "N/A"),
+                "_collection": result.metadata.get("_collection") or result.metadata.get("collection", "N/A")
             }
             sources.append(source_dict)
 

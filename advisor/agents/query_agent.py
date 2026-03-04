@@ -97,19 +97,5 @@ class QueryAgent:
             return result
             
         finally:
-            # Record query metric
-            latency_ms = (time.time() - start_time) * 1000
-            metric = QueryMetric(
-                timestamp=time.time(),
-                query_text=query[:200],  # Truncate for storage
-                collection_name=self.name,
-                latency_ms=latency_ms,
-                cache_hit=False,
-                success=success,
-                error_message=error_message,
-                result_count=1 if success else 0,
-                embedding_time_ms=None,
-                search_time_ms=None,
-                llm_time_ms=latency_ms
-            )
-            self.metrics_collector.record_query(metric)
+            # Metrics recording done at RAGSystem layer
+            pass

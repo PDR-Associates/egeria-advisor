@@ -2,11 +2,10 @@
 
 Experimental AI-powered advisor for the Egeria Python library using local LLMs and RAG.
 The goal is to provide a useful advisor for Egeria and Pyegeria users. You should be able to ask questions about the
-concepts and code, ask for examples, find definitions etc. 
-
+concepts and code, ask for examples, find definitions etc.
 
 This is also a testbed for my experiments with AI, RAG, Agents, LLMs, and more. I am working to integrate
-*Context Intelligence* into the environment. There are experimental features and ideas that are not yet fully 
+*Context Intelligence* into the environment. There are experimental features and ideas that are not yet fully
 cooked, integrated, or tested. I view this as a testbed for building out useful AI advisors.
 
 This is a work in progress. There are known limitations and bugs, and the system is not production-ready.
@@ -17,23 +16,24 @@ newer frameworks and technologies. Its an interesting start to an ongoing experi
 
 Feedback and comments are welcome. Please share your thoughts and suggestions to help improve the system.
 
-
 ## Overview
 
 Egeria Advisor is an enterprise-grade RAG (Retrieval-Augmented Generation) system that helps users and maintainers work with the Egeria Python library by providing:
 
 ### Core Capabilities
-- **Multi-Collection Search**: 6 specialized vector collections (99,822 entities) with intelligent routing
+
+- **Multi-Collection Search**: 8 specialized repository collections (~90,000 entities) with intelligent routing
 - **Conversational Agent**: Multi-turn conversations with context and memory
-- **Code Analysis**: Deep understanding of Python code, APIs, and patterns
+- **Code Analysis**: Deep understanding of Python/Java code, APIs, and patterns
 - **Performance Optimization**: 17,997x cache speedup, parallel search, universal GPU support
-- **Experiment Tracking**: Comprehensive MLflow integration for all queries and experiments
+- **Enhanced Tracking**: MLflow integration for metrics, resource monitoring, and accuracy
 - **Incremental Updates**: 10-100x faster updates with file change tracking
 - **Real-time Monitoring**: Terminal dashboard with metrics collection
 - **Automated Maintenance**: Airflow DAGs with OpenLineage data lineage
 
 ### Key Features
-✅ **Multi-Collection Architecture**: 6 specialized collections with intelligent query routing
+
+✅ **Multi-Collection Architecture**: 8 specialized collections with intelligent query routing
 ✅ **High Performance**: 17,997x cache speedup, <1s query latency (p95)
 ✅ **Universal GPU Support**: Auto-detection for CUDA, ROCm, MPS, and CPU
 ✅ **Conversational Agent**: BeeAI framework integration with memory
@@ -47,6 +47,7 @@ Egeria Advisor is an enterprise-grade RAG (Retrieval-Augmented Generation) syste
 ## Architecture
 
 ### Technology Stack
+
 - **LLM**: Ollama (local) @ localhost:11434
   - Primary Model: llama3.1:8b (fast, general purpose)
   - Code Model: codellama:13b (code-specialized)
@@ -55,27 +56,31 @@ Egeria Advisor is an enterprise-grade RAG (Retrieval-Augmented Generation) syste
   - 384-dimensional embeddings
 - **Embeddings**: sentence-transformers/all-MiniLM-L6-v2 (local)
   - Universal device support (CUDA/ROCm/MPS/CPU)
-- **Experiment Tracking**: MLflow @ localhost:5000
+- **Experiment Tracking**: MLflow @ localhost:5025
 - **Metrics Storage**: SQLite (query metrics, collection health, system resources)
 - **Automation**: Apache Airflow 3.x with OpenLineage
 - **Agent Framework**: BeeAI for conversational interactions
 
 ### Collections
+
 | Collection | Entities | Purpose |
 |-----------|----------|---------|
-| pyegeria | 9,251 | Core Python library code |
-| pyegeria_cli | 843 | CLI commands and tools |
+| egeria_java | 59,597 | Core Java library code (OMAS, OMAG) |
+| pyegeria | 9,309 | Core Python library code |
+| egeria_workspaces | 9,264 | Jupyter notebooks and examples |
+| egeria_general | 3,317 | General documentation and tutorials |
 | pyegeria_drE | 878 | Data retrieval engine |
-| egeria_docs | 87,972 | Official documentation |
-| egeria_glossary | 878 | Glossary terms |
-| egeria_samples | 0 | Code examples |
-| **Total** | **99,822** | **All collections** |
+| pyegeria_cli | 809 | CLI commands and tools |
+| egeria_concepts | 672 | Egeria core concept definitions |
+| egeria_types | 520 | Type system and schema definitions |
+| **Total** | **~84,366** | **All repo collections** |
 
 ## Quick Start
 
 ### Prerequisites
 
 Ensure these Docker containers are running:
+
 ```bash
 # Milvus
 docker ps | grep milvus
@@ -95,7 +100,7 @@ curl http://localhost:11434/api/tags
 
 ```bash
 # Clone and navigate
-cd /home/dwolfson/localGit/egeria-v6/egeria-advisor
+cd /Users/dwolfson/localGit/egeria-v6/egeria-advisor
 
 # Create virtual environment
 python3.12 -m venv .venv
@@ -127,6 +132,7 @@ ollama pull codellama:13b
 ## Usage
 
 ### 1. Query Mode (Direct Questions)
+
 ```bash
 # Simple query
 egeria-advisor "What is a glossary term in Egeria?"
@@ -139,6 +145,7 @@ egeria-advisor --track "Show me asset management examples"
 ```
 
 ### 2. Interactive Mode (Multi-turn Conversations)
+
 ```bash
 # Start interactive session
 egeria-advisor --interactive
@@ -151,8 +158,9 @@ egeria-advisor --interactive
 ```
 
 ### 3. Agent Mode (Conversational with Memory)
+
 ```bash
-# Start agent mode
+# Start agent mode (using llama3.1:8b)
 egeria-advisor --agent
 
 # Agent remembers context across turns:
@@ -163,6 +171,7 @@ egeria-advisor --agent
 ```
 
 ### 4. Testing & Monitoring
+
 ```bash
 # Run end-to-end tests
 python scripts/test_end_to_end.py --quick
@@ -178,6 +187,7 @@ python scripts/test_incremental_indexing.py
 ```
 
 ### 5. Incremental Updates
+
 ```bash
 # Detect changes (dry-run)
 python -m advisor.incremental_indexer --collection pyegeria --dry-run
@@ -190,6 +200,7 @@ python -m advisor.incremental_indexer --all
 ```
 
 ### 6. Airflow Automation
+
 ```bash
 # Deploy DAGs
 cp airflow/dags/*.py $AIRFLOW_HOME/dags/
@@ -204,6 +215,7 @@ open http://localhost:3000
 ## Development Status
 
 ### Completed Phases ✅
+
 - ✅ **Phase 1**: Architecture & Design
 - ✅ **Phase 2**: Data Preparation Pipeline
 - ✅ **Phase 3**: Vector Store Integration (6 collections, 99,822 entities)
@@ -217,6 +229,7 @@ open http://localhost:3000
 - ✅ **Phase 11**: Automation (Airflow 3.x DAGs, OpenLineage integration)
 
 ### Production Ready 🚀
+
 - **Test Coverage**: 40 tests, 100% passing
 - **Performance**: <1s query latency (p95), 17,997x cache speedup
 - **Scalability**: 99,822 entities, parallel search, incremental updates
@@ -248,6 +261,7 @@ egeria-advisor/
 See `config/advisor.yaml` for full configuration options.
 
 Key settings:
+
 - **Data Source**: Path to egeria-python repository
 - **LLM Models**: Which Ollama models to use for each agent
 - **Vector Store**: Milvus connection settings
@@ -284,6 +298,7 @@ python scripts/test_vector_search.py
 ## Monitoring & Observability
 
 ### Terminal Dashboard
+
 ```bash
 # Start real-time monitoring dashboard
 python -m advisor.dashboard.terminal_dashboard
@@ -297,7 +312,8 @@ python -m advisor.dashboard.terminal_dashboard
 ```
 
 ### MLflow Tracking
-- **MLflow UI**: http://localhost:5000
+
+- **MLflow UI**: <http://localhost:5025>
   - View all experiments and runs
   - Compare query performance
   - Track metrics over time
@@ -305,6 +321,7 @@ python -m advisor.dashboard.terminal_dashboard
   - Monitor collection usage patterns
 
 ### Metrics Collection
+
 ```python
 from advisor.metrics_collector import get_metrics_collector, track_query
 
@@ -324,13 +341,14 @@ with track_query(collector, "What is a glossary?") as tracker:
 ```
 
 ### Airflow Monitoring
-- **Airflow UI**: http://localhost:8080
+
+- **Airflow UI**: <http://localhost:8080>
   - View DAG runs and task status
   - Monitor scheduled updates
   - Check health checks
   - Review metrics aggregation
 
-- **Marquez (OpenLineage)**: http://localhost:3000
+- **Marquez (OpenLineage)**: <http://localhost:3000>
   - Visualize data lineage graphs
   - Track data flow: repos → files → embeddings → collections
   - Monitor data quality
@@ -339,6 +357,7 @@ with track_query(collector, "What is a glossary?") as tracker:
 ## Documentation
 
 ### Architecture & Design
+
 - [System Architecture](docs/design/SYSTEM_ARCHITECTURE.md) - Complete architecture with 11 Mermaid diagrams
 - [Multi-Collection Design](docs/design/MULTI_COLLECTION_DESIGN.md) - Collection architecture and routing
 - [Incremental Indexing Design](docs/design/INCREMENTAL_INDEXING_DESIGN.md) - Fast update system (10-100x faster)
@@ -347,6 +366,7 @@ with track_query(collector, "What is a glossary?") as tracker:
 - [Airflow 3.x & OpenLineage](docs/design/AIRFLOW_V3_OPENLINEAGE.md) - Modern Airflow with data lineage
 
 ### Usage Guides
+
 - [Quick Start](docs/user-docs/QUICK_START.md) - Get started in 5 minutes
 - [Multi-Collection Usage Guide](docs/user-docs/MULTI_COLLECTION_USAGE_GUIDE.md) - How to use 6 collections effectively
 - [Testing Guide](docs/user-docs/TESTING_GUIDE.md) - Running tests, coverage, troubleshooting
@@ -355,6 +375,7 @@ with track_query(collector, "What is a glossary?") as tracker:
 - [Query Routing Guide](docs/user-docs/QUERY_ROUTING_GUIDE.md) - Intelligent query routing system
 
 ### Implementation Details
+
 - [Phase 2 Complete](docs/history/PHASE2_COMPLETE.md) - Data preparation pipeline
 - [Phase 3 Complete](docs/history/PHASE3_COMPLETE.md) - Vector store integration (99,822 entities)
 - [Phase 5 Complete](docs/history/PHASE5_BEEAI_COMPLETE.md) - Agent framework with BeeAI
@@ -365,18 +386,21 @@ with track_query(collector, "What is a glossary?") as tracker:
 ## Performance Metrics
 
 ### Query Performance
+
 - **Latency**: <1s (p95), <500ms (p50)
 - **Cache Speedup**: 17,997x for repeated queries, 4.8x for multiple queries
 - **Cache Hit Rate**: >70% in typical usage
 - **Throughput**: 100+ queries/minute
 
 ### System Scale
+
 - **Total Entities**: 99,822 across 6 collections
 - **Embedding Dimensions**: 384 (all-MiniLM-L6-v2)
 - **Index Type**: HNSW (Hierarchical Navigable Small World)
 - **Search Accuracy**: >95% relevance for domain queries
 
 ### Update Performance
+
 - **Incremental Updates**: 10-100x faster than full re-index
 - **Change Detection**: <1s for 10,000 files
 - **Parallel Processing**: 4x speedup with multi-threading
@@ -387,6 +411,7 @@ with track_query(collector, "What is a glossary?") as tracker:
 This project follows the egeria-python contribution guidelines. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ### Development Setup
+
 ```bash
 # Clone repository
 git clone https://github.com/odpi/egeria-python.git
@@ -408,9 +433,9 @@ python -m advisor.dashboard.terminal_dashboard
 
 ## Support
 
-- **Project Lead**: dan.wolfson@pdr-associates.com
-- **Egeria Community**: http://egeria-project.org/guides/community/
-- **Issues**: https://github.com/odpi/egeria-python/issues
+- **Project Lead**: <dan.wolfson@pdr-associates.com>
+- **Egeria Community**: <http://egeria-project.org/guides/community/>
+- **Issues**: <https://github.com/odpi/egeria-python/issues>
 - **Slack**: #egeria-python on LF AI & Data Slack
 
 ## License

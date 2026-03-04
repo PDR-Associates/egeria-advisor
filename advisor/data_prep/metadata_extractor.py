@@ -383,7 +383,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         test_path = Path(sys.argv[1])
     else:
-        test_path = Path("/home/dwolfson/localGit/egeria-v6/egeria-python")
+        test_path = Path("/Users/dwolfson/localGit/egeria-v6/egeria-python")
     
     extractor = MetadataExtractor(root_path=test_path)
     

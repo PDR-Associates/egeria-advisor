@@ -25,6 +25,7 @@ class QueryMetric:
     latency_ms: float
     cache_hit: bool
     success: bool
+    query_type: Optional[str] = None
     error_message: Optional[str] = None
     result_count: Optional[int] = None
     embedding_time_ms: Optional[float] = None
@@ -98,6 +99,7 @@ class MetricsCollector:
                     query_text TEXT NOT NULL,
                     collection_name TEXT,
                     latency_ms REAL NOT NULL,
+                    query_type TEXT,
                     cache_hit BOOLEAN NOT NULL,
                     success BOOLEAN NOT NULL,
                     error_message TEXT,
@@ -164,15 +166,16 @@ class MetricsCollector:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
                 INSERT INTO query_metrics
-                (timestamp, query_text, collection_name, latency_ms, cache_hit,
-                 success, error_message, result_count, embedding_time_ms,
+                (timestamp, query_text, collection_name, latency_ms, query_type, 
+                 cache_hit, success, error_message, result_count, embedding_time_ms,
                  search_time_ms, llm_time_ms)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 metric.timestamp,
                 metric.query_text,
                 metric.collection_name,
                 metric.latency_ms,
+                metric.query_type,
                 metric.cache_hit,
                 metric.success,
                 metric.error_message,
@@ -246,6 +249,10 @@ class MetricsCollector:
             import torch
             if torch.cuda.is_available():
                 gpu_percent = torch.cuda.utilization()
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                # On macOS, getting exact MPS utilization is hard without powermetrics
+                # We'll use 0.0 to indicate it's available/being used (but percentage unknown)
+                gpu_percent = 0.0
         except:
             pass
         
@@ -436,6 +443,7 @@ def track_query(collector: MetricsCollector, query_text: str,
             self.cache_hit = False
             self.success = True
             self.error_message = None
+            self.query_type = None
             self.result_count = None
             self.embedding_time_ms = None
             self.search_time_ms = None
@@ -475,6 +483,7 @@ def track_query(collector: MetricsCollector, query_text: str,
             query_text=query_text,
             collection_name=collection_name,
             latency_ms=latency_ms,
+            query_type=tracker.query_type,
             cache_hit=tracker.cache_hit,
             success=tracker.success,
             error_message=tracker.error_message,
@@ -497,3 +506,44 @@ def get_metrics_collector() -> MetricsCollector:
     if _metrics_collector is None:
         _metrics_collector = MetricsCollector()
     return _metrics_collector
+
+
+def sync_collection_health(retriever, collector):
+    """
+    Sync entity counts and health status for all enabled collections.
+    
+    Parameters
+    ----------
+    retriever : RAGRetriever or similar
+        Object with access to vector_store
+    collector : MetricsCollector
+        Collector instance for recording health
+    """
+    try:
+        from advisor.collection_config import get_enabled_collections
+        from advisor.metrics_collector import CollectionHealth
+        
+        for collection in get_enabled_collections():
+            try:
+                # Use retriever's vector store to get actual count
+                stats = retriever.vector_store.get_collection_stats(collection.name)
+                count = stats.get("num_entities", 0)
+                
+                # Record health
+                health = CollectionHealth(
+                    collection_name=collection.name,
+                    last_check=time.time(),
+                    entity_count=count,
+                    health_score=1.0 if count > 0 else 0.0,
+                    storage_size_mb=0.0,  # Could be estimated if needed
+                    last_update=time.time(),
+                    status='healthy' if count > 0 else 'empty'
+                )
+                collector.record_collection_health(health)
+            except Exception as e:
+                # Only log as debug to avoid noise if Milvus isn't fully ready
+                logger.debug(f"Could not get stats for collection {collection.name}: {e}")
+                
+        logger.debug("Successfully synced collection health metrics")
+    except Exception as e:
+        logger.warning(f"Failed to sync collection health: {e}")

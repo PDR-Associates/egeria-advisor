@@ -12,6 +12,8 @@ import time
 from advisor.llm_client import OllamaClient, get_ollama_client
 from advisor.rag_retrieval import RAGRetriever
 from advisor.mlflow_tracking import get_mlflow_tracker
+from advisor.metrics_collector import get_metrics_collector, sync_collection_health
+from advisor.analytics import get_analytics_manager
 
 
 class ConversationAgent:
@@ -55,6 +57,7 @@ class ConversationAgent:
         self.rag_top_k = rag_top_k
         self.conversation_history: List[Dict[str, str]] = []
         self.enable_mlflow = enable_mlflow
+        self.analytics = get_analytics_manager()
         
         # Initialize MLflow tracker
         if enable_mlflow:
@@ -64,6 +67,12 @@ class ConversationAgent:
             )
         else:
             self.mlflow_tracker = None
+        
+        # Sync health on startup
+        try:
+            sync_collection_health(self.rag, get_metrics_collector())
+        except Exception:
+            pass
         
         # Configure LRU cache on the run method
         self._cached_run = lru_cache(maxsize=cache_size)(self._run_uncached)
@@ -167,9 +176,25 @@ class ConversationAgent:
                 
                 context = "\n\n".join(context_parts)
         
+        # Get codebase stats for context
+        stats_summary = self.analytics.answer_quantitative_query("summary")
+        
+        # Build ecosystem context
+        ecosystem_info = """
+Egeria Ecosystem Components:
+- **Egeria**: The core Java-based metadata platform (back-end).
+- **PyEgeria**: The Python SDK/library for interacting with Egeria via REST APIs.
+- **hey_egeria**: The Command Line Interface (CLI) tool built on top of PyEgeria.
+- **Dr. Egeria (DrE)**: A tool for translating markdown documents into PyEgeria REST calls.
+"""
+
         # Build prompt with context
         if context:
-            prompt = f"""You are an expert Egeria developer assistant. Use the following context from the Egeria codebase to answer the question.
+            prompt = f"""You are an expert Egeria developer assistant. 
+{ecosystem_info}
+{stats_summary}
+
+Use the following context from the Egeria codebase to answer the question.
 
 Context:
 {context}
@@ -177,14 +202,17 @@ Context:
 Question: {query}
 
 Provide a clear, accurate answer based on the context above. Include code examples if relevant. Cite specific files when referencing information.
+If the user asks a quantitative question (e.g., "how many classes"), prefer the statistics provided above over the specific RAG snippets.
 
 Answer:"""
         else:
             prompt = f"""You are an expert Egeria developer assistant.
+{ecosystem_info}
+{stats_summary}
 
 Question: {query}
 
-Provide a helpful answer based on your knowledge of Egeria.
+Provide a helpful answer based on your knowledge of Egeria and the statistics provided above.
 
 Answer:"""
         

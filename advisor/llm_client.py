@@ -174,23 +174,9 @@ class OllamaClient:
             error_message = str(e)
             logger.error(f"Generation failed: {e}")
             raise
-        finally:
-            # Record query metric
-            latency_ms = (time.time() - start_time) * 1000
-            metric = QueryMetric(
-                timestamp=time.time(),
-                query_text=prompt[:200],  # Truncate for storage
-                collection_name=f"llm_{model}",
-                latency_ms=latency_ms,
-                cache_hit=False,
-                success=success,
-                error_message=error_message,
-                result_count=1 if success else 0,
-                embedding_time_ms=None,
-                search_time_ms=None,
-                llm_time_ms=latency_ms
-            )
-            self.metrics_collector.record_query(metric)
+            # MLflow tracking and metrics_collector removed - causes redundancy and conflicts
+            # Tracking should be done at RAGSystem layer
+            pass
     
     def chat(
         self,
@@ -277,24 +263,8 @@ class OllamaClient:
             logger.error(f"Chat failed: {e}")
             raise
         finally:
-            # Record query metric
-            latency_ms = (time.time() - start_time) * 1000
-            # Use last user message as query text
-            last_user_msg = next((msg["content"] for msg in reversed(messages) if msg.get("role") == "user"), "")
-            metric = QueryMetric(
-                timestamp=time.time(),
-                query_text=last_user_msg[:200],  # Truncate for storage
-                collection_name=f"llm_chat_{model}",
-                latency_ms=latency_ms,
-                cache_hit=False,
-                success=success,
-                error_message=error_message,
-                result_count=1 if success else 0,
-                embedding_time_ms=None,
-                search_time_ms=None,
-                llm_time_ms=latency_ms
-            )
-            self.metrics_collector.record_query(metric)
+            # Metrics recording removed - done at RAGSystem layer
+            pass
 
 
 # Global client instance

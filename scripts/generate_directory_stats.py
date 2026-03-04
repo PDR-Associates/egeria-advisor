@@ -71,13 +71,16 @@ def generate_directory_stats(
         has_docstring = bool(element.get('docstring'))
         lines = element.get('end_line_number', 0) - element.get('line_number', 0) + 1
         
-        # Convert absolute path to relative
-        if 'egeria-python/' in file_path:
-            file_path = file_path.split('egeria-python/', 1)[1]
+        # Convert absolute path to relative if it contains any of our known repos
+        for repo in ['egeria-python', 'egeria', 'egeria-docs', 'egeria-workspaces']:
+            if f'{repo}/' in file_path:
+                file_path = file_path.split(f'{repo}/', 1)[1]
+                break
         
         # Get top-level directory (first path component)
-        parts = file_path.split('/')
-        if len(parts) == 0:
+        # If the file is at the root of a repo, the parts will be just the filename
+        parts = [p for p in file_path.split('/') if p]
+        if not parts:
             continue
             
         directory = parts[0]

@@ -314,7 +314,7 @@ except Exception as e:
     logger.info("Using default settings")
     # Create settings with defaults
     settings = AdvisorSettings(
-        advisor_data_path=Path("/home/dwolfson/localGit/egeria-v6/egeria-python")
+        advisor_data_path=Path("/Users/dwolfson/localGit/egeria-v6/egeria-python")
     )
 
 

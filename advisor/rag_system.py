@@ -12,6 +12,7 @@ from advisor.llm_client import get_ollama_client
 from advisor.rag_retrieval import get_rag_retriever
 from advisor.query_processor import get_query_processor
 from advisor.mlflow_tracking import get_mlflow_tracker
+from advisor.metrics_collector import get_metrics_collector, track_query, CollectionHealth, sync_collection_health
 from advisor.analytics import get_analytics_manager
 from advisor.relationships import get_relationship_query_handler
 from advisor.config import get_full_config
@@ -31,6 +32,7 @@ class RAGSystem:
             enable_resource_monitoring=True,
             enable_accuracy_tracking=True
         )
+        self.metrics_collector = get_metrics_collector()
         self.analytics = get_analytics_manager()
         self.relationships = get_relationship_query_handler()
 
@@ -38,6 +40,13 @@ class RAGSystem:
         self.rag_config = config.get("rag")
 
         logger.info("Initialized RAG system")
+        
+        # Refresh health on startup
+        self._refresh_collection_health()
+
+    def _refresh_collection_health(self):
+        """Refresh health metrics for all enabled collections."""
+        sync_collection_health(self.retriever, self.metrics_collector)
 
     def query(
         self,
@@ -88,6 +97,10 @@ class RAGSystem:
                     "avg_relevance_score": result.get("avg_relevance_score", 0.0),
                     "context_length": result.get("context_length", 0)
                 })
+                
+                # Record in local terminal dashboard database
+                self._record_local_metrics(result)
+                
                 return result
         else:
             return self._process_query(user_query, include_context)
@@ -225,6 +238,60 @@ class RAGSystem:
         logger.info(f"Generated response: {len(response)} chars from {len(sources)} sources")
 
         return result
+
+    def _record_local_metrics(self, result: Dict[str, Any]):
+        """Record metrics in local terminal dashboard database."""
+        try:
+            # Extract primary collection name
+            collection_name = "N/A"
+            if result.get("sources"):
+                # Use the actual collection name from the first source
+                first_source = result["sources"][0]
+                # MultiCollectionStore adds '_collection' to metadata
+                if hasattr(first_source, "metadata"):
+                    collection_name = first_source.metadata.get("_collection") or first_source.metadata.get("collection", "N/A")
+                elif isinstance(first_source, dict):
+                    collection_name = first_source.get("_collection") or first_source.get("collection", "N/A")
+            
+            # Use record_query directly to avoid context manager nesting issues
+            from advisor.metrics_collector import QueryMetric
+            
+            # Map query_type to string if it's an enum
+            query_type = result.get("query_type", "GENERAL")
+            if hasattr(query_type, "value"):
+                query_type = query_type.value
+            
+            metric = QueryMetric(
+                timestamp=time.time(),
+                query_text=result["query"],
+                collection_name=collection_name,
+                latency_ms=(result.get("retrieval_time", 0) + result.get("generation_time", 0)) * 1000,
+                query_type=str(query_type).upper(),
+                cache_hit=result.get("cache_hit", False),
+                success=True,
+                result_count=result.get("num_sources", 0),
+                search_time_ms=result.get("retrieval_time", 0) * 1000,
+                llm_time_ms=result.get("generation_time", 0) * 1000
+            )
+            
+            self.metrics_collector.record_query(metric)
+                
+            # Update collection health synchronously for visibility
+            if collection_name != "N/A":
+                from advisor.collection_config import get_collection
+                coll_config = get_collection(collection_name)
+                if coll_config:
+                    self.metrics_collector.record_collection_health(CollectionHealth(
+                        collection_name=collection_name,
+                        last_check=time.time(),
+                        entity_count=result.get("num_sources", 0),
+                        health_score=1.0,
+                        storage_size_mb=0.0,
+                        last_update=time.time(),
+                        status="healthy"
+                    ))
+        except Exception as e:
+            logger.warning(f"Failed to record local metrics: {e}")
 
     def _get_system_prompt(self) -> str:
         """Get system prompt for the LLM."""

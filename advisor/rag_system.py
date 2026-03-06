@@ -255,11 +255,22 @@ class RAGSystem:
             
             # Use record_query directly to avoid context manager nesting issues
             from advisor.metrics_collector import QueryMetric
+            import json
             
             # Map query_type to string if it's an enum
             query_type = result.get("query_type", "GENERAL")
             if hasattr(query_type, "value"):
                 query_type = query_type.value
+            
+            # Prepare source metadata for storage
+            sources_data = []
+            for source in result.get("sources", []):
+                source_info = {
+                    "score": source.score if hasattr(source, "score") else source.get("score", 0.0),
+                    "collection": source.metadata.get("_collection") if hasattr(source, "metadata") else source.get("_collection", "unknown"),
+                    "file": source.metadata.get("source") if hasattr(source, "metadata") else source.get("source", "unknown")
+                }
+                sources_data.append(source_info)
             
             metric = QueryMetric(
                 timestamp=time.time(),
@@ -271,10 +282,24 @@ class RAGSystem:
                 success=True,
                 result_count=result.get("num_sources", 0),
                 search_time_ms=result.get("retrieval_time", 0) * 1000,
-                llm_time_ms=result.get("generation_time", 0) * 1000
+                llm_time_ms=result.get("generation_time", 0) * 1000,
+                avg_relevance_score=result.get("avg_relevance_score", 0.0),
+                sources_json=json.dumps(sources_data) if sources_data else None
             )
             
             self.metrics_collector.record_query(metric)
+            
+            # Log sources to MLflow if enabled
+            if sources_data and self.mlflow_tracker:
+                try:
+                    self.mlflow_tracker.log_query_sources(
+                        query_text=result["query"],
+                        sources=sources_data,
+                        avg_relevance_score=result.get("avg_relevance_score", 0.0),
+                        collection_name=collection_name
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to log sources to MLflow: {e}")
                 
             # Update collection health synchronously for visibility
             if collection_name != "N/A":

@@ -52,7 +52,7 @@ def create_collection_health_table(collector) -> Table:
             if status_val == 'healthy':
                 status = "🟢 OK"
             elif status_val == 'empty':
-                status = "🟢 OK"  # Collections exist but have no data yet
+                status = "🟢 Ready"  # Collections exist but have no data yet
             elif status_val == 'degraded':
                 status = "🟡 Warn"
             else:

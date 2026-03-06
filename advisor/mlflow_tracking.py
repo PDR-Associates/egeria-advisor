@@ -504,6 +504,56 @@ class MLflowTracker:
         except Exception as e:
             logger.error(f"Failed to track query lifecycle: {e}")
     
+    def log_query_sources(
+        self,
+        query_text: str,
+        sources: List[Dict[str, Any]],
+        avg_relevance_score: float,
+        collection_name: Optional[str] = None
+    ):
+        """
+        Log query source information and quality scores to MLflow.
+        
+        Args:
+            query_text: User query text
+            sources: List of source dictionaries with score, collection, file info
+            avg_relevance_score: Average relevance score across sources
+            collection_name: Primary collection name
+        """
+        if not self.enabled:
+            return
+        
+        try:
+            # Log as metrics
+            metrics = {
+                "num_sources": float(len(sources)),
+                "avg_relevance_score": avg_relevance_score,
+            }
+            
+            if sources:
+                scores = [s.get("score", 0.0) for s in sources]
+                metrics.update({
+                    "min_source_score": min(scores),
+                    "max_source_score": max(scores),
+                    "median_source_score": sorted(scores)[len(scores)//2] if scores else 0.0,
+                })
+            
+            self.log_metrics(metrics)
+            
+            # Log sources as artifact
+            sources_artifact = {
+                "query": query_text,
+                "collection": collection_name or "unknown",
+                "avg_score": avg_relevance_score,
+                "sources": sources
+            }
+            self.log_dict(sources_artifact, "query_sources.json")
+            
+            logger.debug(f"Logged {len(sources)} sources to MLflow")
+            
+        except Exception as e:
+            logger.warning(f"Failed to log query sources: {e}")
+    
     def _log_query_artifacts(
         self,
         query_id: str,

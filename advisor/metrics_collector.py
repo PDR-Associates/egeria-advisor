@@ -31,6 +31,8 @@ class QueryMetric:
     embedding_time_ms: Optional[float] = None
     search_time_ms: Optional[float] = None
     llm_time_ms: Optional[float] = None
+    avg_relevance_score: Optional[float] = None
+    sources_json: Optional[str] = None  # JSON string of source metadata
 
 
 @dataclass
@@ -106,7 +108,9 @@ class MetricsCollector:
                     result_count INTEGER,
                     embedding_time_ms REAL,
                     search_time_ms REAL,
-                    llm_time_ms REAL
+                    llm_time_ms REAL,
+                    avg_relevance_score REAL,
+                    sources_json TEXT
                 )
             """)
             
@@ -166,10 +170,10 @@ class MetricsCollector:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
                 INSERT INTO query_metrics
-                (timestamp, query_text, collection_name, latency_ms, query_type, 
+                (timestamp, query_text, collection_name, latency_ms, query_type,
                  cache_hit, success, error_message, result_count, embedding_time_ms,
-                 search_time_ms, llm_time_ms)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 search_time_ms, llm_time_ms, avg_relevance_score, sources_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 metric.timestamp,
                 metric.query_text,
@@ -182,7 +186,9 @@ class MetricsCollector:
                 metric.result_count,
                 metric.embedding_time_ms,
                 metric.search_time_ms,
-                metric.llm_time_ms
+                metric.llm_time_ms,
+                metric.avg_relevance_score,
+                metric.sources_json
             ))
             conn.commit()
     

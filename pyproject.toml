@@ -29,6 +29,11 @@ dependencies = [
     "radon>=6.0.1",        # Code metrics (CC, MI, Halstead)
     "pygount>=1.6.1",      # Accurate line counting
     "psutil>=5.9.0",       # System metrics
+    "onnx>=1.15.0",        # ONNX model format
+    "onnxruntime>=1.16.0", # ONNX inference (CPU)
+    "onnxscript>=0.1.0",   # Required for PyTorch to ONNX conversion
+    "transformers>=4.30.0", # For tokenizer in ONNX
+    "scikit-learn>=1.3.0", # For cosine similarity in benchmarks
 ]
 
 [project.optional-dependencies]
@@ -45,6 +50,15 @@ dashboard = [
     "streamlit>=1.30.0",
     "plotly>=5.18.0",
     "pandas>=2.1.0",
+]
+
+gpu = [
+    "onnxruntime-gpu>=1.16.0",  # NVIDIA GPU support
+]
+
+onnx-tools = [
+    "onnx>=1.15.0",
+    "onnxruntime-tools>=1.7.0",  # Model optimization tools
 ]
 
 [project.scripts]

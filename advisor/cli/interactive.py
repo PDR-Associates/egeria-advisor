@@ -274,6 +274,20 @@ class InteractiveSession:
     
     def _show_history(self):
         """Show query history."""
+        if not self.history:
+            self.console.print("[dim]No queries in history[/dim]")
+            return
+        
+        self.console.print("[bold cyan]Query History:[/bold cyan]\n")
+        
+        for i, entry in enumerate(self.history[-10:], 1):  # Last 10 queries
+            query = entry['query']
+            num_sources = len(entry.get('sources', []))
+            
+            self.console.print(f"  [cyan]{i}.[/cyan] {query}")
+            if self.verbose:
+                self.console.print(f"     [dim]({num_sources} sources)[/dim]")
+    
     def _prompt_for_feedback(self):
         """Prompt user for feedback on the last response."""
         if not self.last_response or not self.last_query:
@@ -429,20 +443,6 @@ class InteractiveSession:
         
         except Exception as e:
             self.console.print(f"[red]✗[/red] Failed to get feedback stats: {e}")
-    
-        if not self.history:
-            self.console.print("[dim]No queries in history[/dim]")
-            return
-        
-        self.console.print("[bold cyan]Query History:[/bold cyan]\n")
-        
-        for i, entry in enumerate(self.history[-10:], 1):  # Last 10 queries
-            query = entry['query']
-            num_sources = len(entry.get('sources', []))
-            
-            self.console.print(f"  [cyan]{i}.[/cyan] {query}")
-            if self.verbose:
-                self.console.print(f"     [dim]({num_sources} sources)[/dim]")
     
     def _cleanup(self):
         """Clean up session resources."""

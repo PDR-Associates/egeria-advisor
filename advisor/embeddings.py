@@ -314,15 +314,59 @@ class EmbeddingGenerator:
 
 
 # Global instance for reuse
-_embedding_generator: Optional[EmbeddingGenerator] = None
+_embedding_generator: Optional[Union[EmbeddingGenerator, 'ONNXEmbeddingGenerator']] = None
 
 
-def get_embedding_generator() -> EmbeddingGenerator:
-    """Get or create the global embedding generator instance."""
+def get_embedding_generator() -> Union[EmbeddingGenerator, 'ONNXEmbeddingGenerator']:
+    """
+    Get or create the global embedding generator instance.
+    
+    Automatically selects backend based on configuration:
+    - backend='pytorch': Use PyTorch sentence-transformers (default)
+    - backend='onnx': Use ONNX Runtime for 2-3x speedup
+    
+    Returns
+    -------
+    EmbeddingGenerator or ONNXEmbeddingGenerator
+        Embedding generator instance
+    """
     global _embedding_generator
 
     if _embedding_generator is None:
-        _embedding_generator = EmbeddingGenerator()
+        # Get configuration
+        full_config = get_full_config()
+        embedding_config = full_config.get("embeddings")
+        backend = getattr(embedding_config, "backend", "pytorch")
+        
+        if backend == "onnx":
+            # Use ONNX backend
+            try:
+                from advisor.embeddings_onnx import ONNXEmbeddingGenerator
+                
+                onnx_config = getattr(embedding_config, "onnx", {})
+                if isinstance(onnx_config, dict):
+                    onnx_model_path = onnx_config.get("model_path", "models/all-MiniLM-L6-v2.optimized.onnx")
+                    providers = onnx_config.get("providers")
+                else:
+                    onnx_model_path = getattr(onnx_config, "model_path", "models/all-MiniLM-L6-v2.optimized.onnx")
+                    providers = getattr(onnx_config, "providers", None)
+                
+                logger.info(f"Using ONNX backend: {onnx_model_path}")
+                _embedding_generator = ONNXEmbeddingGenerator(
+                    onnx_model_path=onnx_model_path,
+                    tokenizer_name=embedding_config.model,
+                    batch_size=embedding_config.batch_size,
+                    max_length=getattr(embedding_config, "max_length", 512),
+                    providers=providers
+                )
+            except Exception as e:
+                logger.warning(f"Failed to load ONNX backend: {e}")
+                logger.info("Falling back to PyTorch backend")
+                _embedding_generator = EmbeddingGenerator()
+        else:
+            # Use PyTorch backend (default)
+            logger.info("Using PyTorch backend")
+            _embedding_generator = EmbeddingGenerator()
 
     return _embedding_generator
 

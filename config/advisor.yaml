@@ -54,11 +54,16 @@ llm:
       max_tokens: 3000
 
 embeddings:
+  backend: pytorch  # pytorch or onnx
   model: sentence-transformers/all-MiniLM-L6-v2
   device: auto  # Auto-detect best device: CUDA, ROCm (AMD), MPS (Apple), or CPU
   batch_size: 64
   normalize: true
   max_length: 512
+  # ONNX-specific settings (used when backend=onnx)
+  onnx:
+    model_path: models/all-MiniLM-L6-v2.onnx
+    providers: null  # null for auto-detection, or list: ["CUDAExecutionProvider", "CPUExecutionProvider"]
 
 rag:
   chunk_size: 512

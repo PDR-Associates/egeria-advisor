@@ -8,12 +8,16 @@ using proven, tested components without external framework dependencies.
 from typing import List, Dict, Any, Optional
 from functools import lru_cache
 import time
+import asyncio
+from loguru import logger
 
 from advisor.llm_client import OllamaClient, get_ollama_client
 from advisor.rag_retrieval import RAGRetriever
 from advisor.mlflow_tracking import get_mlflow_tracker
 from advisor.metrics_collector import get_metrics_collector, sync_collection_health
 from advisor.analytics import get_analytics_manager
+from advisor.query_patterns import QueryType
+from advisor.tool_augmented_rag import should_use_tools
 
 
 class ConversationAgent:
@@ -35,7 +39,8 @@ class ConversationAgent:
         max_history: int = 10,
         cache_size: int = 100,
         rag_top_k: int = 10,
-        enable_mlflow: bool = True
+        enable_mlflow: bool = True,
+        enable_mcp: bool = True
     ):
         """
         Initialize the conversation agent.
@@ -50,6 +55,8 @@ class ConversationAgent:
             Number of RAG results to retrieve (default: 10, increased for better code examples)
         enable_mlflow : bool, optional
             Enable MLflow tracking (default: True)
+        enable_mcp : bool, optional
+            Enable MCP tool invocation (default: True)
         """
         self.llm = get_ollama_client()
         self.rag = RAGRetriever(use_multi_collection=True, enable_cache=True)
@@ -57,7 +64,19 @@ class ConversationAgent:
         self.rag_top_k = rag_top_k
         self.conversation_history: List[Dict[str, str]] = []
         self.enable_mlflow = enable_mlflow
+        self.enable_mcp = enable_mcp
         self.analytics = get_analytics_manager()
+        
+        # Initialize MCP agent if enabled
+        self.mcp_agent = None
+        if enable_mcp:
+            try:
+                from advisor.mcp_agent import get_mcp_agent
+                self.mcp_agent = get_mcp_agent()
+                logger.info("MCP agent initialized successfully")
+            except Exception as e:
+                logger.warning(f"Failed to initialize MCP agent: {e}")
+                self.enable_mcp = False
         
         # Initialize MLflow tracker
         if enable_mlflow:
@@ -151,6 +170,19 @@ class ConversationAgent:
         """Internal query processing logic."""
         sources = []
         context = ""
+        mcp_result = None
+        
+        # Check if query should use MCP tools
+        if self.enable_mcp and self.mcp_agent:
+            query_type = self._detect_query_type(query)
+            if query_type in [QueryType.REPORT, QueryType.COMMAND]:
+                logger.info(f"Query type {query_type} detected - attempting MCP tool invocation")
+                try:
+                    mcp_result = self._invoke_mcp_tools(query, query_type)
+                    if mcp_result:
+                        logger.info(f"MCP tool executed successfully: {mcp_result.get('tool_name')}")
+                except Exception as e:
+                    logger.warning(f"MCP tool invocation failed: {e}")
         
         if use_rag:
             # Retrieve relevant context from RAG
@@ -189,8 +221,12 @@ Egeria Ecosystem Components:
 """
 
         # Build prompt with context
-        if context:
-            prompt = f"""You are an expert Egeria developer assistant. 
+        mcp_context = ""
+        if mcp_result:
+            mcp_context = f"\n\nTool Execution Result:\nTool: {mcp_result.get('tool_name')}\nResult: {mcp_result.get('result')}\n"
+        
+        if context or mcp_result:
+            prompt = f"""You are an expert Egeria developer assistant.
 {ecosystem_info}
 {stats_summary}
 
@@ -198,11 +234,13 @@ Use the following context from the Egeria codebase to answer the question.
 
 Context:
 {context}
+{mcp_context}
 
 Question: {query}
 
 Provide a clear, accurate answer based on the context above. Include code examples if relevant. Cite specific files when referencing information.
 If the user asks a quantitative question (e.g., "how many classes"), prefer the statistics provided above over the specific RAG snippets.
+If a tool was executed, incorporate its results into your answer.
 
 Answer:"""
         else:
@@ -246,6 +284,93 @@ Answer:"""
             "rag_used": use_rag and len(sources) > 0,
             "cache_hit": False  # Will be True on subsequent calls due to LRU cache
         }
+    
+    def _detect_query_type(self, query: str) -> QueryType:
+        """
+        Detect query type for MCP tool routing.
+        
+        Parameters
+        ----------
+        query : str
+            User query
+            
+        Returns
+        -------
+        QueryType
+            Detected query type
+        """
+        query_lower = query.lower()
+        
+        # Check for report patterns
+        report_patterns = ["generate report", "create report", "run report", "show report",
+                          "report on", "get report", "list reports", "available reports"]
+        if any(pattern in query_lower for pattern in report_patterns):
+            return QueryType.REPORT
+        
+        # Check for command patterns
+        command_patterns = ["run command", "execute command", "invoke", "call",
+                           "run the", "execute the"]
+        if any(pattern in query_lower for pattern in command_patterns):
+            return QueryType.COMMAND
+        
+        return QueryType.GENERAL
+    
+    def _invoke_mcp_tools(self, query: str, query_type: QueryType) -> Optional[Dict[str, Any]]:
+        """
+        Invoke MCP tools based on query type.
+        
+        Parameters
+        ----------
+        query : str
+            User query
+        query_type : QueryType
+            Detected query type
+            
+        Returns
+        -------
+        dict or None
+            Tool execution result or None if no tool was invoked
+        """
+        if not self.mcp_agent:
+            return None
+        
+        try:
+            # Get available tools
+            tools = asyncio.run(self.mcp_agent.list_tools())
+            
+            if query_type == QueryType.REPORT:
+                # Look for report-related tools
+                report_tools = [t for t in tools if 'report' in t.name.lower()]
+                if report_tools:
+                    # Use the first matching tool
+                    tool = report_tools[0]
+                    logger.info(f"Invoking report tool: {tool.name}")
+                    result = asyncio.run(self.mcp_agent.call_tool(tool.name, {}))
+                    return {
+                        "tool_name": tool.name,
+                        "result": result,
+                        "success": True
+                    }
+            
+            elif query_type == QueryType.COMMAND:
+                # Look for command-related tools
+                command_tools = [t for t in tools if any(kw in t.name.lower() 
+                                for kw in ['command', 'execute', 'run'])]
+                if command_tools:
+                    tool = command_tools[0]
+                    logger.info(f"Invoking command tool: {tool.name}")
+                    result = asyncio.run(self.mcp_agent.call_tool(tool.name, {}))
+                    return {
+                        "tool_name": tool.name,
+                        "result": result,
+                        "success": True
+                    }
+        
+        except Exception as e:
+            logger.error(f"MCP tool invocation error: {e}")
+            return None
+        
+        return None
     
     def get_history(self) -> List[Dict[str, str]]:
         """

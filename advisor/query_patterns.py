@@ -19,6 +19,8 @@ class QueryType(Enum):
     DEBUGGING = "debugging"
     QUANTITATIVE = "quantitative"
     RELATIONSHIP = "relationship"
+    REPORT = "report"  # MCP report generation
+    COMMAND = "command"  # MCP command execution
     GENERAL = "general"
 
 
@@ -61,6 +63,15 @@ QUERY_PATTERNS = {
     
     # HIGH PRIORITY - Specific multi-word patterns
     PatternPriority.HIGH: {
+        QueryType.REPORT: [
+            "generate report", "create report", "run report", "show report",
+            "report on", "get report", "produce report", "make report",
+            "list reports", "available reports", "what reports"
+        ],
+        QueryType.COMMAND: [
+            "run command", "execute command", "invoke", "call",
+            "run the", "execute the", "perform", "do"
+        ],
         QueryType.QUANTITATIVE: [
             "how many", "how much", "number of", "count",
             "total", "statistics", "metrics", "size",

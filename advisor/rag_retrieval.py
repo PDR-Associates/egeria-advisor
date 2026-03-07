@@ -8,6 +8,7 @@ context for LLM queries.
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 from loguru import logger
+import asyncio
 
 from advisor.vector_store import get_vector_store
 from advisor.embeddings import get_embedding_generator
@@ -146,6 +147,37 @@ class RAGRetriever:
                 min_score=min_score,
                 use_multi=self.use_multi_collection
             )
+
+    async def retrieve_async(
+        self,
+        query: str,
+        top_k: Optional[int] = None,
+        min_score: Optional[float] = None,
+        filters: Optional[Dict[str, Any]] = None
+    ) -> List[Any]:  # Returns List[SearchResult]
+        """
+        Retrieve relevant code snippets for a query asynchronously.
+
+        Args:
+            query: User query
+            top_k: Number of results (overrides default)
+            min_score: Minimum score (overrides default)
+            filters: Optional metadata filters
+
+        Returns:
+            List of retrieved SearchResult objects
+        """
+        # For now, run the sync version in an executor to avoid blocking
+        # In the future, this could use true async Milvus operations
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            self.retrieve,
+            query,
+            top_k,
+            min_score,
+            filters
+        )
 
         return filtered_results
 

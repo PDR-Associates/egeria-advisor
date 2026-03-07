@@ -10,6 +10,8 @@ from typing import Optional, Dict, Any, List
 from loguru import logger
 import json
 import time
+import asyncio
+import aiohttp
 
 from advisor.config import settings, get_full_config
 from advisor.mlflow_tracking import get_mlflow_tracker
@@ -176,6 +178,82 @@ class OllamaClient:
             raise
             # MLflow tracking and metrics_collector removed - causes redundancy and conflicts
             # Tracking should be done at RAGSystem layer
+    async def generate_async(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        system: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        **kwargs
+    ) -> str:
+        """
+        Generate text completion asynchronously.
+        
+        Args:
+            prompt: Input prompt
+            model: Model to use (defaults to configured model)
+            system: System prompt
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens to generate
+            **kwargs: Additional parameters
+            
+        Returns:
+            Generated text
+        """
+        model = model or self.default_model
+        start_time = time.time()
+        
+        # Build request payload
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False,  # Non-streaming for simplicity
+            "options": {
+                "temperature": temperature or self.default_params["temperature"],
+                "top_p": self.default_params["top_p"],
+                "top_k": self.default_params["top_k"],
+                "repeat_penalty": self.default_params["repeat_penalty"]
+            }
+        }
+        
+        if system:
+            payload["system"] = system
+        
+        if max_tokens:
+            payload["options"]["num_predict"] = max_tokens
+        
+        # Add any additional options
+        payload["options"].update(kwargs)
+        
+        logger.debug(f"Generating async with model: {model}")
+        logger.debug(f"Prompt length: {len(prompt)} chars")
+        
+        try:
+            # Use aiohttp for async HTTP requests
+            timeout = aiohttp.ClientTimeout(total=self.timeout)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    f"{self.base_url}/api/generate",
+                    json=payload
+                ) as response:
+                    response.raise_for_status()
+                    data = await response.json()
+                    generated_text = data.get("response", "")
+            
+            # Log timing info
+            generation_time_ms = (time.time() - start_time) * 1000
+            logger.debug(f"Generated {len(generated_text)} chars in {generation_time_ms:.0f}ms (async)")
+            return generated_text
+                
+        except asyncio.TimeoutError:
+            error_message = f"Request timed out after {self.timeout}s"
+            logger.error(error_message)
+            raise
+        except Exception as e:
+            logger.error(f"Async generation failed: {e}")
+            raise
+    
             pass
     
     def chat(

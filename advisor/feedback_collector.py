@@ -300,6 +300,78 @@ class FeedbackCollector:
         
         return improvements
     
+    def log_feedback_to_mlflow(self, entry: FeedbackEntry):
+        """
+        Log feedback entry to MLflow for tracking and analysis.
+        
+        Args:
+            entry: Feedback entry to log
+        """
+        try:
+            import mlflow
+            from advisor.config import settings
+            
+            # Only log if MLflow tracking is enabled
+            if not settings.mlflow_enable_tracking:
+                return
+            
+            # Check if we're in an active run
+            active_run = mlflow.active_run()
+            if active_run is None:
+                # Start a new run for feedback logging
+                with mlflow.start_run(run_name=f"feedback_{entry.timestamp}", nested=True):
+                    self._log_feedback_data(entry)
+            else:
+                # Log to active run
+                self._log_feedback_data(entry)
+                
+        except Exception as e:
+            logger.warning(f"Failed to log feedback to MLflow: {e}")
+    
+    def _log_feedback_data(self, entry: FeedbackEntry):
+        """
+        Internal method to log feedback data to MLflow.
+        
+        Args:
+            entry: Feedback entry to log
+        """
+        import mlflow
+        
+        # Log as metrics
+        metrics = {
+            "feedback_rating_normalized": entry.get_normalized_rating(),
+            "feedback_response_length": float(entry.response_length),
+        }
+        
+        if entry.star_rating is not None:
+            metrics["feedback_star_rating"] = float(entry.star_rating)
+        
+        mlflow.log_metrics(metrics)
+        
+        # Log as parameters
+        params = {
+            "feedback_query_type": entry.query_type,
+            "feedback_rating": entry.rating,
+            "feedback_collections_count": str(len(entry.collections_searched)),
+        }
+        
+        if entry.category:
+            params["feedback_category"] = entry.category
+        
+        if entry.session_id:
+            params["feedback_session_id"] = entry.session_id
+        
+        mlflow.log_params(params)
+        
+        # Log collections as tags for easy filtering
+        for i, collection in enumerate(entry.collections_searched):
+            mlflow.set_tag(f"collection_{i}", collection)
+        
+        # Log the full feedback as a JSON artifact
+        mlflow.log_dict(entry.to_dict(), f"feedback_{entry.timestamp}.json")
+        
+        logger.debug(f"Logged feedback to MLflow: {entry.rating} rating for {entry.query_type}")
+    
     def export_feedback(self, output_file: Path) -> bool:
         """
         Export feedback to a different format.
@@ -341,61 +413,6 @@ class FeedbackCollector:
         except Exception as e:
             logger.error(f"Failed to export feedback: {e}")
     
-    def log_feedback_to_mlflow(
-        self,
-        entry: FeedbackEntry,
-        mlflow_tracker=None
-    ) -> bool:
-        """
-        Log feedback entry to MLflow for correlation with query metrics.
-        
-        Args:
-            entry: Feedback entry to log
-            mlflow_tracker: Optional MLflow tracker instance
-            
-        Returns:
-            True if logged successfully
-        """
-        try:
-            if mlflow_tracker is None:
-                from advisor.mlflow_tracking import get_mlflow_tracker
-                mlflow_tracker = get_mlflow_tracker()
-            
-            if not mlflow_tracker.enabled:
-                return False
-            
-            # Create metrics dict
-            metrics = {
-                "feedback_normalized_score": entry.get_normalized_rating(),
-            }
-            
-            if entry.star_rating is not None:
-                metrics["feedback_star_rating"] = float(entry.star_rating)
-            
-            # Log metrics
-            mlflow_tracker.log_metrics(metrics)
-            
-            # Log feedback details as artifact
-            feedback_dict = {
-                "timestamp": entry.timestamp,
-                "query": entry.query,
-                "query_type": entry.query_type,
-                "collections_searched": entry.collections_searched,
-                "rating": entry.rating,
-                "star_rating": entry.star_rating,
-                "category": entry.category,
-                "feedback_text": entry.feedback_text,
-                "user_comment": entry.user_comment,
-                "suggested_collection": entry.suggested_collection,
-            }
-            mlflow_tracker.log_dict(feedback_dict, "user_feedback.json")
-            
-            logger.debug(f"Logged feedback to MLflow: {entry.rating}")
-            return True
-            
-        except Exception as e:
-            logger.warning(f"Failed to log feedback to MLflow: {e}")
-            return False
             return False
 
 

@@ -84,9 +84,33 @@ class MultiCollectionSearchTool(BaseTool):
     
     async def _arun(self, query: str, top_k: int = 5) -> str:
         """Execute the search asynchronously."""
-        # For now, just call the sync version
-        # TODO: Implement true async retrieval
-        return self._run(query, top_k)
+        # Use the async retrieval method
+        results = await self.retriever.retrieve_async(
+            query=query,
+            top_k=top_k
+        )
+        
+        if not results:
+            return "No relevant results found."
+        
+        # Format results for the agent
+        output_lines = [f"Found {len(results)} relevant results:\n"]
+        
+        for i, result in enumerate(results, 1):
+            file_path = result.metadata.get('file_path', 'Unknown')
+            collection = result.metadata.get('collection', 'Unknown')
+            name = result.metadata.get('name', '')
+            score = result.score
+            
+            output_lines.append(f"\n{i}. [{collection}] {file_path}")
+            if name:
+                output_lines.append(f"   Element: {name}")
+            output_lines.append(f"   Relevance: {score:.3f}")
+            output_lines.append(f"   Content:\n{result.content[:500]}...")
+            if len(result.content) > 500:
+                output_lines.append("   [Content truncated]")
+        
+        return "\n".join(output_lines)
 
 
 class CodeAnalysisInput(BaseModel):

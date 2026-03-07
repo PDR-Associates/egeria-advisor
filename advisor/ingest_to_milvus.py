@@ -435,7 +435,7 @@ class CodeIngester:
         
         return chunks
     
-    def ingest_file(self, file_path: Path) -> Tuple[int, int]:
+    def ingest_file(self, file_path: Path) -> Tuple[int, int, List[str]]:
         """
         Ingest a single file.
         
@@ -443,7 +443,7 @@ class CodeIngester:
             file_path: Path to file
             
         Returns:
-            Tuple of (files_processed, chunks_created)
+            Tuple of (files_processed, chunks_created, entity_ids)
         """
         try:
             # Read file content
@@ -460,7 +460,13 @@ class CodeIngester:
             
             for i, chunk in enumerate(chunks):
                 texts.append(chunk)
-                ids.append(f"{file_path}::chunk_{i}")
+                # Generate ID with hash if path is too long (Milvus limit: 256 chars)
+                chunk_id = f"{file_path}::chunk_{i}"
+                if len(chunk_id) > 250:  # Leave margin for safety
+                    # Use hash of path + chunk index
+                    path_hash = hashlib.md5(str(file_path).encode()).hexdigest()[:16]
+                    chunk_id = f"{path_hash}::chunk_{i}"
+                ids.append(chunk_id)
                 metadata.append({
                     "file": str(file_path),
                     "chunk_index": i,
@@ -476,11 +482,11 @@ class CodeIngester:
                     metadata=metadata
                 )
             
-            return 1, len(chunks)
+            return 1, len(chunks), ids
             
         except Exception as e:
             logger.error(f"Error ingesting {file_path}: {e}")
-            return 0, 0
+            return 0, 0, []
     
     def ingest_directory(
         self,

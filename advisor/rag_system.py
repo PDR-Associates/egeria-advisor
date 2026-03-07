@@ -67,43 +67,52 @@ class RAGSystem:
         """
         logger.info(f"Processing query: {user_query[:100]}...")
 
+        # Process the query
+        result = self._process_query(user_query, include_context)
+        
+        # Always record metrics in local database (for dashboard)
+        try:
+            self._record_local_metrics(result)
+        except Exception as e:
+            logger.warning(f"Failed to record local metrics: {e}")
+        
         # Track with MLflow if enabled
         if track_metrics:
-            with self.mlflow_tracker.track_operation(
-                operation_name="rag_query",
-                params={
-                    "query_length": len(user_query),
-                    "include_context": include_context
-                },
-                track_resources=True,  # Enable resource monitoring
-                track_accuracy=True    # Enable accuracy tracking
-            ) as tracker:
-                result = self._process_query(user_query, include_context)
-                
-                # Add relevance scores from sources
-                if result.get("sources"):
-                    for source in result["sources"]:
-                        if hasattr(source, 'score'):
-                            tracker.add_relevance(source.score)
-                        elif isinstance(source, dict) and 'score' in source:
-                            tracker.add_relevance(source['score'])
-                
-                # Log all metrics
-                tracker.log_metrics({
-                    "response_length": len(result["response"]),
-                    "num_sources": result.get("num_sources", 0),
-                    "retrieval_time": result.get("retrieval_time", 0.0),
-                    "generation_time": result.get("generation_time", 0.0),
-                    "avg_relevance_score": result.get("avg_relevance_score", 0.0),
-                    "context_length": result.get("context_length", 0)
-                })
-                
-                # Record in local terminal dashboard database
-                self._record_local_metrics(result)
-                
-                return result
-        else:
-            return self._process_query(user_query, include_context)
+            try:
+                with self.mlflow_tracker.track_operation(
+                    operation_name="rag_query",
+                    params={
+                        "query_length": len(user_query),
+                        "include_context": include_context
+                    },
+                    track_resources=True,  # Enable resource monitoring
+                    track_accuracy=True    # Enable accuracy tracking
+                ) as tracker:
+                    # Add relevance scores from sources
+                    sources = result.get("sources") or []
+                    if sources:
+                        for source in sources:
+                            try:
+                                if hasattr(source, 'score') and source.score is not None:
+                                    tracker.add_relevance(source.score)
+                                elif isinstance(source, dict) and source.get('score') is not None:
+                                    tracker.add_relevance(source['score'])
+                            except Exception as e:
+                                logger.debug(f"Could not add relevance score: {e}")
+                    
+                    # Log all metrics
+                    tracker.log_metrics({
+                        "response_length": len(result.get("response", "")),
+                        "num_sources": result.get("num_sources", 0),
+                        "retrieval_time": result.get("retrieval_time", 0.0),
+                        "generation_time": result.get("generation_time", 0.0),
+                        "avg_relevance_score": result.get("avg_relevance_score", 0.0),
+                        "context_length": result.get("context_length", 0)
+                    })
+            except Exception as e:
+                logger.warning(f"MLflow tracking failed: {e}")
+        
+        return result
 
     def _process_query(
         self,

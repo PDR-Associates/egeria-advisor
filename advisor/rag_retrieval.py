@@ -147,6 +147,8 @@ class RAGRetriever:
                 min_score=min_score,
                 use_multi=self.use_multi_collection
             )
+        
+        return filtered_results
 
     async def retrieve_async(
         self,

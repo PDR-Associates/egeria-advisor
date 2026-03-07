@@ -93,6 +93,32 @@ def create_query_stats_panel(collector) -> Panel:
     content.append(f"  Avg: {stats['avg_latency_ms']:.0f}ms\n", style="yellow")
     content.append(f"  P95: {stats['p95_latency_ms']:.0f}ms\n", style="yellow")
     
+    # Add user feedback stats
+    try:
+        from advisor.feedback_collector import get_feedback_collector
+        feedback_collector = get_feedback_collector()
+        feedback_stats = feedback_collector.get_feedback_stats()
+        
+        if feedback_stats['total'] > 0:
+            content.append(f"\nUser Feedback:\n", style="bold white")
+            content.append(f"  Total: ", style="white")
+            content.append(f"{feedback_stats['total']}\n", style="cyan")
+            
+            # Satisfaction rate
+            sat_rate = feedback_stats['satisfaction_rate']
+            sat_color = "green" if sat_rate >= 0.7 else "yellow" if sat_rate >= 0.5 else "red"
+            content.append(f"  Satisfaction: ", style="white")
+            content.append(f"{sat_rate:.0%}\n", style=f"bold {sat_color}")
+            
+            # Star rating if available
+            if feedback_stats['avg_star_rating'] > 0:
+                stars = "⭐" * int(round(feedback_stats['avg_star_rating']))
+                content.append(f"  Rating: ", style="white")
+                content.append(f"{stars} ", style="yellow")
+                content.append(f"({feedback_stats['avg_star_rating']:.1f}/5)\n", style="yellow")
+    except Exception as e:
+        pass
+    
     # Add quality metrics if available
     try:
         # Try to get recent quality metrics from MLflow or validation

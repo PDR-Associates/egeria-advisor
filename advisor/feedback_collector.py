@@ -26,10 +26,29 @@ class FeedbackEntry:
     suggested_collection: Optional[str] = None  # Better collection suggestion
     session_id: Optional[str] = None
     user_comment: Optional[str] = None  # Additional user comment/explanation
+    # Phase 1 enhancements
+    star_rating: Optional[int] = None  # 1-5 star rating
+    category: Optional[str] = None  # accuracy, completeness, clarity, relevance
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return asdict(self)
+    
+    def get_normalized_rating(self) -> float:
+        """
+        Get normalized rating score (0-1).
+        
+        Returns:
+            Normalized rating between 0 and 1
+        """
+        if self.star_rating is not None:
+            return self.star_rating / 5.0
+        elif self.rating == "positive":
+            return 1.0
+        elif self.rating == "negative":
+            return 0.0
+        else:  # neutral
+            return 0.5
 
 
 class FeedbackCollector:
@@ -60,7 +79,9 @@ class FeedbackCollector:
         feedback_text: Optional[str] = None,
         suggested_collection: Optional[str] = None,
         session_id: Optional[str] = None,
-        user_comment: Optional[str] = None
+        user_comment: Optional[str] = None,
+        star_rating: Optional[int] = None,
+        category: Optional[str] = None
     ) -> bool:
         """
         Record user feedback.
@@ -74,11 +95,25 @@ class FeedbackCollector:
             feedback_text: Optional free-text feedback
             suggested_collection: User's suggested collection (if routing was wrong)
             session_id: Optional session identifier
+            user_comment: Optional user comment
+            star_rating: Optional 1-5 star rating
+            category: Optional category (accuracy, completeness, clarity, relevance)
             
         Returns:
             True if feedback was recorded successfully
         """
         try:
+            # Validate star rating if provided
+            if star_rating is not None and not (1 <= star_rating <= 5):
+                logger.warning(f"Invalid star rating {star_rating}, must be 1-5")
+                star_rating = None
+            
+            # Validate category if provided
+            valid_categories = {"accuracy", "completeness", "clarity", "relevance"}
+            if category is not None and category not in valid_categories:
+                logger.warning(f"Invalid category {category}, must be one of {valid_categories}")
+                category = None
+            
             entry = FeedbackEntry(
                 timestamp=datetime.utcnow().isoformat(),
                 query=query,
@@ -89,12 +124,17 @@ class FeedbackCollector:
                 feedback_text=feedback_text,
                 suggested_collection=suggested_collection,
                 session_id=session_id,
-                user_comment=user_comment
+                user_comment=user_comment,
+                star_rating=star_rating,
+                category=category
             )
             
             # Append to JSONL file
             with open(self.feedback_file, 'a') as f:
                 f.write(json.dumps(entry.to_dict()) + '\n')
+            
+            # Log to MLflow if available
+            self.log_feedback_to_mlflow(entry)
             
             logger.info(f"Recorded {rating} feedback for query: {query[:50]}...")
             return True
@@ -126,7 +166,12 @@ class FeedbackCollector:
             "neutral": 0,
             "by_query_type": {},
             "by_collection": {},
-            "routing_corrections": []
+            "routing_corrections": [],
+            # Phase 1 enhancements
+            "star_ratings": [],
+            "avg_star_rating": 0.0,
+            "by_category": {},
+            "category_star_ratings": {}
         }
         
         try:
@@ -138,6 +183,24 @@ class FeedbackCollector:
                     # Count by rating
                     rating = entry.get("rating", "neutral")
                     stats[rating] = stats.get(rating, 0) + 1
+                    
+                    # Track star ratings
+                    star_rating = entry.get("star_rating")
+                    if star_rating is not None:
+                        stats["star_ratings"].append(star_rating)
+                    
+                    # Track by category
+                    category = entry.get("category")
+                    if category:
+                        if category not in stats["by_category"]:
+                            stats["by_category"][category] = {
+                                "total": 0, "positive": 0, "negative": 0, "star_ratings": []
+                            }
+                        stats["by_category"][category]["total"] += 1
+                        stats["by_category"][category][rating] = \
+                            stats["by_category"][category].get(rating, 0) + 1
+                        if star_rating is not None:
+                            stats["by_category"][category]["star_ratings"].append(star_rating)
                     
                     # Count by query type
                     query_type = entry.get("query_type", "unknown")
@@ -172,6 +235,16 @@ class FeedbackCollector:
                 stats["satisfaction_rate"] = stats["positive"] / stats["total"]
             else:
                 stats["satisfaction_rate"] = 0.0
+            
+            # Calculate average star rating
+            if stats["star_ratings"]:
+                stats["avg_star_rating"] = sum(stats["star_ratings"]) / len(stats["star_ratings"])
+            
+            # Calculate average star rating by category
+            for category, data in stats["by_category"].items():
+                if data["star_ratings"]:
+                    stats["category_star_ratings"][category] = \
+                        sum(data["star_ratings"]) / len(data["star_ratings"])
             
             return stats
             
@@ -267,6 +340,62 @@ class FeedbackCollector:
             
         except Exception as e:
             logger.error(f"Failed to export feedback: {e}")
+    
+    def log_feedback_to_mlflow(
+        self,
+        entry: FeedbackEntry,
+        mlflow_tracker=None
+    ) -> bool:
+        """
+        Log feedback entry to MLflow for correlation with query metrics.
+        
+        Args:
+            entry: Feedback entry to log
+            mlflow_tracker: Optional MLflow tracker instance
+            
+        Returns:
+            True if logged successfully
+        """
+        try:
+            if mlflow_tracker is None:
+                from advisor.mlflow_tracking import get_mlflow_tracker
+                mlflow_tracker = get_mlflow_tracker()
+            
+            if not mlflow_tracker.enabled:
+                return False
+            
+            # Create metrics dict
+            metrics = {
+                "feedback_normalized_score": entry.get_normalized_rating(),
+            }
+            
+            if entry.star_rating is not None:
+                metrics["feedback_star_rating"] = float(entry.star_rating)
+            
+            # Log metrics
+            mlflow_tracker.log_metrics(metrics)
+            
+            # Log feedback details as artifact
+            feedback_dict = {
+                "timestamp": entry.timestamp,
+                "query": entry.query,
+                "query_type": entry.query_type,
+                "collections_searched": entry.collections_searched,
+                "rating": entry.rating,
+                "star_rating": entry.star_rating,
+                "category": entry.category,
+                "feedback_text": entry.feedback_text,
+                "user_comment": entry.user_comment,
+                "suggested_collection": entry.suggested_collection,
+            }
+            mlflow_tracker.log_dict(feedback_dict, "user_feedback.json")
+            
+            logger.debug(f"Logged feedback to MLflow: {entry.rating}")
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Failed to log feedback to MLflow: {e}")
+            return False
             return False
 
 

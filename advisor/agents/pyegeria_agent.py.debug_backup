@@ -468,17 +468,11 @@ class PyEgeriaAgent:
         # Generate response using LLM
         prompt = self._build_prompt(query, query_type, context)
         
-        # Check if exhaustive query (needs more tokens)
-        is_exhaustive = context.startswith('\nAll methods (')
-        max_tokens = 3000 if is_exhaustive else 800
-        
-        print(f"🔍 Using max_tokens={max_tokens} (exhaustive={is_exhaustive})")
-        
         try:
             response = self.llm_client.generate(
                 prompt=prompt,
                 temperature=0.3,  # Lower temperature for more factual responses
-                max_tokens=max_tokens
+                max_tokens=800
             )
             
             # Extract sources
@@ -507,18 +501,6 @@ class PyEgeriaAgent:
     def _build_context(self, results: List[Dict[str, Any]], query_type: str) -> str:
         """Build context string from search results based on query type."""
         context_parts = []
-        
-        # Check if this is an exhaustive query with many results (all methods for a class)
-        if len(results) > 20 and all(r.get('score', 0) == 1.0 for r in results[:5]):
-            # This is an exhaustive query - include ALL results
-            print(f"🔍 Building context for exhaustive query with {len(results)} results")
-            context_parts.append(f"\nAll methods ({len(results)} total):")
-            for i, result in enumerate(results, 1):
-                metadata = result.get('metadata', {})
-                method_name = metadata.get('name', 'unknown')
-                docstring = metadata.get('docstring', '')
-                context_parts.append(f"{i}. {method_name}: {docstring[:80] if docstring else 'No description'}")
-            return '\n'.join(context_parts)
         
         if query_type == 'class':
             classes = self.extract_class_info(results)
@@ -570,29 +552,6 @@ class PyEgeriaAgent:
     
     def _build_prompt(self, query: str, query_type: str, context: str) -> str:
         """Build prompt for LLM based on query type."""
-        
-        # Check if this is an exhaustive query (context starts with "All methods")
-        is_exhaustive = context.startswith('\nAll methods (')
-        
-        # Special instructions for exhaustive queries
-        if is_exhaustive:
-            print(f"🔍 Using exhaustive query prompt")
-            base_prompt = f"""You are an expert on the PyEgeria Python library for Egeria.
-
-User Query: {query}
-
-Complete Method List:
-{context}
-
-CRITICAL INSTRUCTIONS:
-1. You MUST list ALL {context.split('(')[1].split(' ')[0]} methods shown above
-2. Create a numbered list with EVERY method
-3. Do NOT summarize or skip any methods
-4. Format: "1. method_name: brief description"
-5. After listing all methods, you may add 1-2 detailed examples
-
-Answer with the COMPLETE list:"""
-            return base_prompt
         
         # Special instructions for class queries
         if query_type == 'class':
@@ -707,25 +666,17 @@ Answer:"""
         Returns:
             Response dictionary with answer, sources, and metadata
         """
-        print(f"🔍 PyEgeria Agent.answer() called with query: {query[:100]}...")
         logger.info(f"🔍 PyEgeria Agent.answer() called with query: {query[:100]}...")
         
         # Classify query type
         query_type = self.classify_query(query)
-        print(f"📋 Classified as: {query_type}")
         logger.info(f"📋 Classified as: {query_type}")
-        
-        # Initialize variables (may be set in different code paths)
-        results = []
-        confidence = 0.0
         
         # Check if this is an exhaustive query (wants ALL items, not just relevant ones)
         is_exhaustive = self.is_exhaustive_query(query)
-        print(f"🔎 Exhaustive query check: {is_exhaustive}")
         logger.info(f"🔎 Exhaustive query check: {is_exhaustive}")
         
         if is_exhaustive:
-            print("✓ Detected exhaustive query - using direct database query")
             logger.info("Detected exhaustive query - using direct database query")
             
             # Extract class name from query
@@ -735,47 +686,23 @@ Answer:"""
             
             if class_name:
                 # Get ALL methods for this class using direct database query
-                print(f"🔍 Calling get_all_class_methods('{class_name}')...")
                 all_methods = self.get_all_class_methods(class_name)
-                print(f"🔍 get_all_class_methods() returned {len(all_methods) if all_methods else 0} methods")
                 
                 if all_methods:
-                    # For exhaustive queries, format the response directly without LLM
-                    # (LLM times out with 45+ methods)
-                    print(f"🔍 Formatting {len(all_methods)} methods directly (bypassing LLM)")
+                    # Convert to search result format for compatibility
+                    results = [{
+                        'id': f"method_{i}",
+                        'score': 1.0,  # Direct query, all results are relevant
+                        'text': f"{m['name']}: {m['docstring'][:100] if m['docstring'] else 'No description'}",
+                        'metadata': m
+                    } for i, m in enumerate(all_methods)]
                     
-                    method_list = []
-                    for i, m in enumerate(all_methods, 1):
-                        name = m.get('name', 'unknown')
-                        doc = m.get('docstring', 'No description')
-                        # Truncate long docstrings
-                        if len(doc) > 100:
-                            doc = doc[:97] + "..."
-                        method_list.append(f"{i}. **{name}**: {doc}")
-                    
-                    answer = f"""# All Methods in {class_name}
-
-Found **{len(all_methods)} methods** in the {class_name} class:
-
-{chr(10).join(method_list)}
-
----
-
-**Note**: This is a complete list of all methods in the {class_name} class from the PyEgeria library.
-For detailed documentation on any specific method, please ask about that method individually."""
-                    
-                    # Return formatted response directly
-                    return {
-                        'answer': answer,
-                        'sources': [f"pyegeria.omvs.project_manager.{class_name}"],
-                        'query_type': 'exhaustive',
-                        'confidence': 1.0,
-                        'suggestions': [
-                            f"Ask about a specific method: 'How do I use {all_methods[0]['name']}?'",
-                            "Request code examples for any method"
-                        ]
-                    }
-                # If no methods found, fall through to semantic search below
+                    confidence = 1.0  # High confidence for direct database query
+                    logger.info(f"✓ Retrieved ALL {len(results)} methods for {class_name}")
+                else:
+                    results = []
+                    confidence = 0.0
+                    logger.warning(f"No methods found for class {class_name}")
             else:
                 # Fallback to semantic search if we can't extract class name
                 logger.warning("Could not extract class name from exhaustive query, falling back to semantic search")

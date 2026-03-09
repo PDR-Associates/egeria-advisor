@@ -741,57 +741,21 @@ class CodeIngester:
         
         logger.info(f"Found {len(files)} files matching {file_pattern}")
         
-        # Batch processing for better performance
-        batch_texts = []
-        batch_ids = []
-        batch_metadata = []
-        files_in_batch = 0
-        
+        # Process files individually to use Python parsing
         for idx, file_path in enumerate(files, 1):
             try:
-                # Read file content
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
+                # Use ingest_file which handles Python parsing vs text chunking
+                files_processed, chunks_created, entity_ids = self.ingest_file(file_path)
                 
-                # Create chunks
-                chunks = self._chunk_text(content)
+                # Note: ingest_file inserts directly, so we don't batch here
+                # This is a trade-off: better metadata extraction vs batching efficiency
+                # For Python files, we get rich metadata; for others, text chunking
                 
-                # Add to batch
-                for i, chunk in enumerate(chunks):
-                    batch_texts.append(chunk)
-                    # Generate ID with hash if path is too long (Milvus limit: 256 chars)
-                    chunk_id = f"{file_path}::chunk_{i}"
-                    if len(chunk_id) > 250:  # Leave margin for safety
-                        # Use hash of path + chunk index
-                        path_hash = hashlib.md5(str(file_path).encode()).hexdigest()[:16]
-                        chunk_id = f"{path_hash}::chunk_{i}"
-                    batch_ids.append(chunk_id)
-                    batch_metadata.append({
-                        "file_path": str(file_path),  # Changed from "file" for consistency
-                        "collection": self.collection_name,  # Add collection name at ingestion
-                        "chunk_index": i,
-                        "total_chunks": len(chunks)
-                    })
+                total_files += files_processed
+                total_chunks += chunks_created
                 
-                files_in_batch += 1
-                total_files += 1
-                total_chunks += len(chunks)
-                
-                # Insert batch when it reaches batch_size or at the end
-                if files_in_batch >= batch_size or idx == len(files):
-                    if batch_texts:
-                        logger.info(f"Inserting batch: {files_in_batch} files, {len(batch_texts)} chunks (progress: {idx}/{len(files)})")
-                        self.vector_store.insert_data(
-                            self.collection_name,
-                            texts=batch_texts,
-                            ids=batch_ids,
-                            metadata=batch_metadata
-                        )
-                        # Reset batch
-                        batch_texts = []
-                        batch_ids = []
-                        batch_metadata = []
-                        files_in_batch = 0
+                if idx % 10 == 0:  # Log progress every 10 files
+                    logger.info(f"Progress: {idx}/{len(files)} files processed, {total_chunks} chunks created")
                 
             except Exception as e:
                 logger.error(f"Error processing {file_path}: {e}")

@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script for Phase 1 feedback system enhancements.
-
-Tests star ratings, categories, MLflow integration, and dashboard display.
+Test script for Phase 1 Feedback System with sentiment analysis.
 """
 
 import sys
@@ -12,128 +10,184 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from advisor.feedback_collector import get_feedback_collector
-from loguru import logger
+from advisor.sentiment_analysis import get_sentiment_analyzer
 
-def test_feedback_enhancements():
-    """Test Phase 1 feedback enhancements."""
+
+def test_sentiment_analysis():
+    """Test sentiment analysis on various feedback comments."""
+    print("\n=== Testing Sentiment Analysis ===\n")
     
-    logger.info("Testing Phase 1 Feedback System Enhancements")
-    logger.info("=" * 60)
+    analyzer = get_sentiment_analyzer()
+    
+    test_comments = [
+        "This is amazing! The answer was exactly what I needed.",
+        "Terrible response. Completely wrong information.",
+        "I'm confused by this answer. It doesn't make sense.",
+        "Pretty good, but could be more detailed.",
+        "This is frustrating. I've asked this three times now.",
+        "Excellent work! Very helpful and clear.",
+        "",  # Empty comment
+    ]
+    
+    for comment in test_comments:
+        if comment:
+            result = analyzer.analyze(comment)
+            print(f"Comment: '{comment[:50]}...'")
+            print(f"  Sentiment: {result.sentiment} (confidence: {result.confidence:.2f})")
+            print(f"  Emotions: {', '.join(result.emotions) if result.emotions else 'None'}")
+            print(f"  Keywords: {', '.join(result.keywords_found) if result.keywords_found else 'None'}")
+            print()
+
+
+def test_feedback_collection_with_sentiment():
+    """Test feedback collection with sentiment analysis."""
+    print("\n=== Testing Feedback Collection with Sentiment ===\n")
     
     collector = get_feedback_collector()
     
-    # Test 1: Record feedback with star rating
-    logger.info("\n1. Testing star rating feedback...")
-    success = collector.record_feedback(
-        query="How do I configure Egeria?",
-        query_type="HOW_TO",
-        collections_searched=["egeria_docs"],
-        response_length=500,
-        rating="positive",
-        star_rating=5,
-        category="accuracy",
-        feedback_text="Very helpful and accurate response!"
-    )
-    logger.info(f"   Star rating feedback recorded: {success}")
+    # Simulate feedback with different sentiments
+    test_cases = [
+        {
+            "query": "How do I create a server in Egeria?",
+            "response": "To create a server, use the ServerConfig class...",
+            "rating": "positive",
+            "star_rating": 5,
+            "category_ratings": {
+                "accuracy": 5,
+                "completeness": 4,
+                "clarity": 5,
+                "relevance": 5
+            },
+            "comment": "Perfect answer! Very clear and helpful.",
+            "query_type": "how_to",
+            "collections_searched": ["egeria_docs"]
+        },
+        {
+            "query": "What is a metadata repository?",
+            "response": "A metadata repository stores metadata...",
+            "rating": "negative",
+            "star_rating": 2,
+            "category_ratings": {
+                "accuracy": 3,
+                "completeness": 2,
+                "clarity": 2,
+                "relevance": 3
+            },
+            "comment": "This is confusing and doesn't answer my question.",
+            "query_type": "concept",
+            "collections_searched": ["egeria_docs"]
+        },
+        {
+            "query": "How to configure OMAG server?",
+            "response": "Configure OMAG server using...",
+            "rating": "neutral",
+            "star_rating": 3,
+            "category_ratings": {
+                "accuracy": 3,
+                "completeness": 3,
+                "clarity": 3,
+                "relevance": 3
+            },
+            "comment": "Okay, but could use more examples.",
+            "query_type": "how_to",
+            "collections_searched": ["egeria_docs"]
+        }
+    ]
     
-    # Test 2: Record feedback with different category
-    logger.info("\n2. Testing category-based feedback...")
-    success = collector.record_feedback(
-        query="What is a repository connector?",
-        query_type="CONCEPT",
-        collections_searched=["egeria_docs"],
-        response_length=300,
-        rating="positive",
-        star_rating=4,
-        category="completeness",
-        feedback_text="Good explanation but could use more examples"
-    )
-    logger.info(f"   Category feedback recorded: {success}")
+    for i, test_case in enumerate(test_cases, 1):
+        print(f"Test Case {i}: {test_case['rating'].upper()} feedback")
+        print(f"  Query: {test_case['query']}")
+        print(f"  Star Rating: {'⭐' * test_case['star_rating']}")
+        print(f"  Comment: {test_case['comment']}")
+        
+        # Record feedback (this will trigger sentiment analysis)
+        collector.record_feedback(**test_case)
+        
+        print(f"  ✓ Feedback recorded with sentiment analysis")
+        print()
     
-    # Test 3: Record negative feedback
-    logger.info("\n3. Testing negative feedback...")
-    success = collector.record_feedback(
-        query="How to deploy Egeria on Kubernetes?",
-        query_type="HOW_TO",
-        collections_searched=["egeria_docs"],
-        response_length=200,
-        rating="negative",
-        star_rating=2,
-        category="clarity",
-        feedback_text="Response was confusing and lacked clear steps"
-    )
-    logger.info(f"   Negative feedback recorded: {success}")
+    # Get statistics
+    stats = collector.get_statistics()
+    print("\n=== Feedback Statistics ===")
+    print(f"Total feedback: {stats['total_feedback']}")
+    print(f"Average rating: {stats['average_rating']:.2f}")
+    print(f"Rating distribution:")
+    for rating, count in stats['rating_distribution'].items():
+        print(f"  {rating}: {count}")
     
-    # Test 4: Record neutral feedback without star rating
-    logger.info("\n4. Testing neutral feedback (no star rating)...")
-    success = collector.record_feedback(
-        query="What is metadata?",
-        query_type="CONCEPT",
-        collections_searched=["egeria_docs"],
-        response_length=250,
-        rating="neutral",
-        feedback_text="Okay response, nothing special"
-    )
-    logger.info(f"   Neutral feedback recorded: {success}")
+    if stats.get('average_star_rating'):
+        print(f"\nAverage star rating: {stats['average_star_rating']:.2f} ⭐")
     
-    # Test 5: Get feedback statistics
-    logger.info("\n5. Testing feedback statistics...")
-    stats = collector.get_feedback_stats()
+    if stats.get('category_averages'):
+        print("\nCategory averages:")
+        for category, avg in stats['category_averages'].items():
+            print(f"  {category}: {avg:.2f} ⭐")
+
+
+def test_batch_sentiment_analysis():
+    """Test batch sentiment analysis."""
+    print("\n=== Testing Batch Sentiment Analysis ===\n")
     
-    logger.info(f"\n   Total feedback entries: {stats['total']}")
-    logger.info(f"   Positive: {stats['positive']}")
-    logger.info(f"   Negative: {stats['negative']}")
-    logger.info(f"   Neutral: {stats['neutral']}")
-    logger.info(f"   Satisfaction rate: {stats['satisfaction_rate']:.1%}")
+    analyzer = get_sentiment_analyzer()
     
-    if stats['avg_star_rating'] > 0:
-        logger.info(f"   Average star rating: {stats['avg_star_rating']:.2f}/5.0")
-        stars = "⭐" * int(round(stats['avg_star_rating']))
-        logger.info(f"   Visual rating: {stars}")
+    feedback_entries = [
+        {
+            "comment": "Excellent response! Very helpful.",
+            "rating": "positive"
+        },
+        {
+            "comment": "This doesn't help at all.",
+            "rating": "negative"
+        },
+        {
+            "comment": "I'm not sure I understand this.",
+            "rating": "neutral"
+        },
+        {
+            "comment": "Amazing! Exactly what I needed!",
+            "rating": "positive"
+        },
+        {
+            "comment": "Frustrating. Still confused.",
+            "rating": "negative"
+        }
+    ]
     
-    # Test 6: Category statistics
-    if stats['by_category']:
-        logger.info("\n6. Category-specific statistics:")
-        for category, data in stats['by_category'].items():
-            logger.info(f"   {category.upper()}:")
-            logger.info(f"     Total: {data['total']}")
-            logger.info(f"     Positive: {data.get('positive', 0)}")
-            if category in stats['category_star_ratings']:
-                logger.info(f"     Avg stars: {stats['category_star_ratings'][category]:.2f}/5.0")
+    results = analyzer.analyze_feedback_batch(feedback_entries)
     
-    # Test 7: Validation
-    logger.info("\n7. Testing validation...")
+    print(f"Analyzed {results['total_analyzed']} feedback entries")
+    print(f"\nSentiment distribution:")
+    for sentiment, count in results['sentiment_distribution'].items():
+        print(f"  {sentiment}: {count}")
     
-    # Invalid star rating
-    success = collector.record_feedback(
-        query="Test query",
-        query_type="GENERAL",
-        collections_searched=["test"],
-        response_length=100,
-        rating="positive",
-        star_rating=10,  # Invalid - should be 1-5
-        category="accuracy"
-    )
-    logger.info(f"   Invalid star rating handled: {success}")
+    print(f"\nEmotion distribution:")
+    for emotion, count in results['emotion_distribution'].items():
+        print(f"  {emotion}: {count}")
     
-    # Invalid category
-    success = collector.record_feedback(
-        query="Test query 2",
-        query_type="GENERAL",
-        collections_searched=["test"],
-        response_length=100,
-        rating="positive",
-        star_rating=3,
-        category="invalid_category"  # Invalid
-    )
-    logger.info(f"   Invalid category handled: {success}")
+    print(f"\nAverage confidence: {results['average_confidence']:.2f}")
+
+
+def main():
+    """Run all tests."""
+    print("=" * 60)
+    print("Phase 1 Feedback System with Sentiment Analysis - Test Suite")
+    print("=" * 60)
     
-    logger.info("\n" + "=" * 60)
-    logger.info("✅ Phase 1 Feedback System Tests Complete!")
-    logger.info("\nNext steps:")
-    logger.info("1. Run the dashboard to see feedback stats: ./scripts/run_dashboard.sh")
-    logger.info("2. Check MLflow UI for logged feedback metrics")
-    logger.info("3. Review feedback file: data/feedback/user_feedback.jsonl")
+    try:
+        test_sentiment_analysis()
+        test_feedback_collection_with_sentiment()
+        test_batch_sentiment_analysis()
+        
+        print("\n" + "=" * 60)
+        print("✓ All tests completed successfully!")
+        print("=" * 60)
+        
+    except Exception as e:
+        print(f"\n✗ Test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
 
 if __name__ == "__main__":
-    test_feedback_enhancements()
+    main()

@@ -12,6 +12,14 @@ from pathlib import Path
 import json
 from loguru import logger
 
+# Import sentiment analyzer
+try:
+    from advisor.sentiment_analysis import get_sentiment_analyzer
+    SENTIMENT_AVAILABLE = True
+except ImportError:
+    SENTIMENT_AVAILABLE = False
+    logger.warning("Sentiment analysis not available")
+
 
 @dataclass
 class FeedbackEntry:
@@ -129,12 +137,29 @@ class FeedbackCollector:
                 category=category
             )
             
+            # Perform sentiment analysis on comments if available
+            sentiment_result = None
+            if SENTIMENT_AVAILABLE and user_comment:
+                try:
+                    analyzer = get_sentiment_analyzer()
+                    sentiment_result = analyzer.analyze(user_comment)
+                    logger.debug(f"Sentiment analysis: {sentiment_result.sentiment} ({sentiment_result.confidence:.2f})")
+                except Exception as e:
+                    logger.warning(f"Sentiment analysis failed: {e}")
+            
             # Append to JSONL file
+            entry_dict = entry.to_dict()
+            if sentiment_result:
+                entry_dict['sentiment'] = sentiment_result.sentiment
+                entry_dict['sentiment_confidence'] = sentiment_result.confidence
+                entry_dict['sentiment_emotion'] = sentiment_result.emotion
+                entry_dict['sentiment_keywords'] = sentiment_result.keywords_found
+            
             with open(self.feedback_file, 'a') as f:
-                f.write(json.dumps(entry.to_dict()) + '\n')
+                f.write(json.dumps(entry_dict) + '\n')
             
             # Log to MLflow if available
-            self.log_feedback_to_mlflow(entry)
+            self.log_feedback_to_mlflow(entry, sentiment_result)
             
             logger.info(f"Recorded {rating} feedback for query: {query[:50]}...")
             return True
@@ -300,12 +325,13 @@ class FeedbackCollector:
         
         return improvements
     
-    def log_feedback_to_mlflow(self, entry: FeedbackEntry):
+    def log_feedback_to_mlflow(self, entry: FeedbackEntry, sentiment_result=None):
         """
         Log feedback entry to MLflow for tracking and analysis.
         
         Args:
             entry: Feedback entry to log
+            sentiment_result: Optional sentiment analysis result
         """
         try:
             import mlflow
@@ -320,20 +346,21 @@ class FeedbackCollector:
             if active_run is None:
                 # Start a new run for feedback logging
                 with mlflow.start_run(run_name=f"feedback_{entry.timestamp}", nested=True):
-                    self._log_feedback_data(entry)
+                    self._log_feedback_data(entry, sentiment_result)
             else:
                 # Log to active run
-                self._log_feedback_data(entry)
+                self._log_feedback_data(entry, sentiment_result)
                 
         except Exception as e:
             logger.warning(f"Failed to log feedback to MLflow: {e}")
     
-    def _log_feedback_data(self, entry: FeedbackEntry):
+    def _log_feedback_data(self, entry: FeedbackEntry, sentiment_result=None):
         """
         Internal method to log feedback data to MLflow.
         
         Args:
             entry: Feedback entry to log
+            sentiment_result: Optional sentiment analysis result
         """
         import mlflow
         
@@ -345,6 +372,10 @@ class FeedbackCollector:
         
         if entry.star_rating is not None:
             metrics["feedback_star_rating"] = float(entry.star_rating)
+        
+        # Add sentiment metrics if available
+        if sentiment_result:
+            metrics["feedback_sentiment_confidence"] = sentiment_result.confidence
         
         mlflow.log_metrics(metrics)
         
@@ -361,14 +392,29 @@ class FeedbackCollector:
         if entry.session_id:
             params["feedback_session_id"] = entry.session_id
         
+        # Add sentiment parameters if available
+        if sentiment_result:
+            params["feedback_sentiment"] = sentiment_result.sentiment
+            params["feedback_sentiment_confidence"] = f"{sentiment_result.confidence:.2f}"
+            if sentiment_result.emotions:
+                params["feedback_emotions"] = ", ".join(sentiment_result.emotions)
+        
         mlflow.log_params(params)
         
         # Log collections as tags for easy filtering
         for i, collection in enumerate(entry.collections_searched):
             mlflow.set_tag(f"collection_{i}", collection)
         
-        # Log the full feedback as a JSON artifact
-        mlflow.log_dict(entry.to_dict(), f"feedback_{entry.timestamp}.json")
+        # Log the full feedback as a JSON artifact with sentiment data
+        feedback_dict = entry.to_dict()
+        if sentiment_result:
+            feedback_dict["sentiment"] = {
+                "sentiment": sentiment_result.sentiment,
+                "confidence": sentiment_result.confidence,
+                "emotions": sentiment_result.emotions,
+                "keywords_found": sentiment_result.keywords_found
+            }
+        mlflow.log_dict(feedback_dict, f"feedback_{entry.timestamp}.json")
         
         logger.debug(f"Logged feedback to MLflow: {entry.rating} rating for {entry.query_type}")
     

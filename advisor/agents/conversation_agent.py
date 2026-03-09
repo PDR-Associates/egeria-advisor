@@ -18,6 +18,7 @@ from advisor.metrics_collector import get_metrics_collector, sync_collection_hea
 from advisor.analytics import get_analytics_manager
 from advisor.query_patterns import QueryType
 from advisor.tool_augmented_rag import should_use_tools
+from advisor.agents.pyegeria_agent import get_pyegeria_agent
 
 
 class ConversationAgent:
@@ -171,6 +172,83 @@ class ConversationAgent:
         sources = []
         context = ""
         mcp_result = None
+        
+        # Check if query should use CLI Command Agent
+        try:
+            from advisor.cli_integration import get_cli_router
+            cli_router = get_cli_router()
+            
+            if cli_router.should_use_cli_agent(query):
+                logger.info("Detected CLI command query, routing to CLI Command Agent")
+                cli_response = cli_router.route_query(query)
+                
+                # Log CLI-specific metrics to MLflow tracker if available
+                if tracker:
+                    tracker.log_metrics({
+                        "cli_query": 1.0,
+                        "cli_confidence": cli_response.get('confidence', 1.0),
+                        "cli_sources_count": float(len(cli_response.get('sources', [])))
+                    })
+                    tracker.log_params({
+                        "agent_type": "cli_command",
+                        "query_type": cli_response.get('query_type', 'unknown')
+                    })
+                
+                # Convert CLI agent response to conversation agent format
+                return {
+                    "content": cli_response.get('response', ''),
+                    "sources": cli_response.get('sources', []),
+                    "metadata": {
+                        "agent": "cli_command",
+                        "query_type": cli_response.get('query_type', 'unknown'),
+                        "confidence": cli_response.get('confidence', 1.0),
+                        "routed_to": "cli_command_agent",
+                        "processing_time": time.time() - start_time
+                    }
+                }
+        except Exception as e:
+            logger.warning(f"CLI Command Agent routing failed: {e}")
+        
+        # Check if query should use PyEgeria Agent
+        try:
+            pyegeria_agent = get_pyegeria_agent()
+            
+            if pyegeria_agent.is_pyegeria_query(query):
+                logger.info("Detected PyEgeria query, routing to PyEgeria Agent")
+                pyegeria_response = pyegeria_agent.answer(query)
+                
+                # Log PyEgeria-specific metrics to MLflow tracker if available
+                if tracker:
+                    tracker.log_metrics({
+                        "pyegeria_query": 1.0,
+                        "pyegeria_confidence": pyegeria_response.get('confidence', 0.0),
+                        "pyegeria_sources_count": float(len(pyegeria_response.get('sources', [])))
+                    })
+                    tracker.log_params({
+                        "agent_type": "pyegeria",
+                        "query_type": pyegeria_response.get('query_type', 'unknown')
+                    })
+                
+                # Convert PyEgeria agent response to conversation agent format
+                response_content = pyegeria_response.get('answer', '')
+                if pyegeria_response.get('suggestions'):
+                    response_content += "\n\n**Suggestions:**\n" + "\n".join(
+                        f"- {s}" for s in pyegeria_response['suggestions']
+                    )
+                
+                return {
+                    "content": response_content,
+                    "sources": pyegeria_response.get('sources', []),
+                    "metadata": {
+                        "agent": "pyegeria",
+                        "query_type": pyegeria_response.get('query_type', 'unknown'),
+                        "confidence": pyegeria_response.get('confidence', 0.0),
+                        "routed_to": "pyegeria_agent",
+                        "processing_time": time.time() - start_time
+                    }
+                }
+        except Exception as e:
+            logger.warning(f"PyEgeria Agent routing failed: {e}")
         
         # Check if query should use MCP tools
         if self.enable_mcp and self.mcp_agent:

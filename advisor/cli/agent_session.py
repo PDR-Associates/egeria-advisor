@@ -616,42 +616,68 @@ class AgentInteractiveSession:
         self.console.print(f"  {response_preview}...")
         self.console.print()
         
-        # Ask for rating
-        self.console.print("[cyan]Was this answer helpful?[/cyan]")
-        self.console.print("  [green]1[/green] - Yes, very helpful 👍")
-        self.console.print("  [yellow]2[/yellow] - Somewhat helpful")
-        self.console.print("  [red]3[/red] - Not helpful 👎")
+        # Ask for 5-star rating
+        self.console.print("[cyan]How would you rate this answer?[/cyan]")
+        self.console.print("  ⭐⭐⭐⭐⭐ [green]5[/green] - Excellent")
+        self.console.print("  ⭐⭐⭐⭐   [green]4[/green] - Good")
+        self.console.print("  ⭐⭐⭐     [yellow]3[/yellow] - Okay")
+        self.console.print("  ⭐⭐       [yellow]2[/yellow] - Poor")
+        self.console.print("  ⭐         [red]1[/red] - Very Poor")
         
-        rating_input = Prompt.ask("Your rating", choices=["1", "2", "3"], default="1")
+        star_rating = int(Prompt.ask("Your rating", choices=["1", "2", "3", "4", "5"], default="4"))
         
-        # Map to rating
-        rating_map = {"1": "positive", "2": "neutral", "3": "negative"}
-        rating = rating_map[rating_input]
+        # Map to rating category
+        if star_rating >= 4:
+            rating = "positive"
+        elif star_rating == 3:
+            rating = "neutral"
+        else:
+            rating = "negative"
         
-        # Collect additional feedback for negative ratings
+        # Ask for feedback category
+        self.console.print("\n[cyan]What aspect would you like to rate?[/cyan]")
+        self.console.print("  [cyan]1[/cyan] - Accuracy (was the information correct?)")
+        self.console.print("  [cyan]2[/cyan] - Completeness (was the answer complete?)")
+        self.console.print("  [cyan]3[/cyan] - Clarity (was it easy to understand?)")
+        self.console.print("  [cyan]4[/cyan] - Relevance (did it answer your question?)")
+        self.console.print("  [cyan]5[/cyan] - Overall")
+        
+        category_choice = Prompt.ask("Choose", choices=["1", "2", "3", "4", "5"], default="5")
+        category_map = {
+            "1": "accuracy",
+            "2": "completeness",
+            "3": "clarity",
+            "4": "relevance",
+            "5": "overall"
+        }
+        category = category_map[category_choice]
+        
+        # Collect additional feedback for low ratings
         feedback_text = None
         user_comment = None
         
-        if rating == "negative":
-            self.console.print("\n[yellow]What was the problem?[/yellow]")
-            self.console.print("  [cyan]1[/cyan] - Wrong information")
-            self.console.print("  [cyan]2[/cyan] - Incomplete answer")
-            self.console.print("  [cyan]3[/cyan] - Poor quality")
-            self.console.print("  [cyan]4[/cyan] - Other")
+        if star_rating <= 3:
+            self.console.print("\n[yellow]What could be improved?[/yellow]")
+            self.console.print("  [cyan]1[/cyan] - Wrong or inaccurate information")
+            self.console.print("  [cyan]2[/cyan] - Incomplete or missing information")
+            self.console.print("  [cyan]3[/cyan] - Unclear or confusing explanation")
+            self.console.print("  [cyan]4[/cyan] - Not relevant to my question")
+            self.console.print("  [cyan]5[/cyan] - Other")
             
-            problem_choice = Prompt.ask("Choose", choices=["1", "2", "3", "4"], default="4")
+            problem_choice = Prompt.ask("Choose", choices=["1", "2", "3", "4", "5"], default="5")
             
             problem_map = {
-                "1": "Wrong information provided",
-                "2": "Answer was incomplete",
-                "3": "Poor quality response",
-                "4": "Other issue"
+                "1": "Inaccurate information",
+                "2": "Incomplete answer",
+                "3": "Unclear explanation",
+                "4": "Not relevant",
+                "5": "Other issue"
             }
             feedback_text = problem_map[problem_choice]
         
         # Ask for optional comment
-        if rating in ["negative", "neutral"]:
-            self.console.print("\n[cyan]Any additional comments?[/cyan] [dim](optional)[/dim]")
+        if star_rating <= 4:
+            self.console.print("\n[cyan]Any additional comments?[/cyan] [dim](optional, helps us improve)[/dim]")
             comment = Prompt.ask("Comment", default="")
             if comment:
                 user_comment = comment
@@ -674,9 +700,15 @@ class AgentInteractiveSession:
                 rating=rating,
                 feedback_text=feedback_text,
                 user_comment=user_comment,
-                session_id=self.session_id
+                session_id=self.session_id,
+                star_rating=star_rating,
+                category=category
             )
-            self.console.print("[green]✓[/green] Thank you for your feedback!")
+            self.console.print(f"[green]✓[/green] Thank you for your {star_rating}-star feedback!")
+            if star_rating >= 4:
+                self.console.print("[dim]Your positive feedback helps us improve! 🎉[/dim]")
+            elif star_rating <= 2:
+                self.console.print("[dim]We're sorry the response wasn't helpful. We'll work to improve.[/dim]")
         except Exception as e:
             self.console.print(f"[red]✗[/red] Failed to record feedback: {e}")
     

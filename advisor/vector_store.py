@@ -111,7 +111,8 @@ class VectorStoreManager:
         self,
         collection_name: str,
         description: str = "",
-        drop_if_exists: bool = False
+        drop_if_exists: bool = False,
+        extra_fields: Optional[List[FieldSchema]] = None
     ) -> Collection:
         """
         Create a new Milvus collection for storing embeddings.
@@ -120,6 +121,7 @@ class VectorStoreManager:
             collection_name: Name of the collection
             description: Description of the collection
             drop_if_exists: Drop existing collection if it exists
+            extra_fields: Additional scalar fields for metadata filtering
 
         Returns:
             Created Collection object
@@ -139,13 +141,37 @@ class VectorStoreManager:
 
         logger.info(f"Creating collection: {collection_name}")
 
-        # Define schema
+        # Define base schema
         fields = [
             FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, max_length=256),
             FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=self.embedding_dim),
             FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535),
-            FieldSchema(name="metadata", dtype=DataType.JSON)
         ]
+        
+        # Add collection-specific scalar fields for filtering
+        if collection_name == "pyegeria":
+            logger.info("Adding PyEgeria-specific scalar fields for metadata filtering")
+            fields.extend([
+                FieldSchema(name="element_type", dtype=DataType.VARCHAR, max_length=50, default_value=""),
+                FieldSchema(name="class_name", dtype=DataType.VARCHAR, max_length=200, default_value=""),
+                FieldSchema(name="method_name", dtype=DataType.VARCHAR, max_length=200, default_value=""),
+                FieldSchema(name="module_path", dtype=DataType.VARCHAR, max_length=500, default_value=""),
+                FieldSchema(name="is_async", dtype=DataType.BOOL, default_value=False),
+                FieldSchema(name="is_private", dtype=DataType.BOOL, default_value=False),
+            ])
+        elif collection_name == "cli_commands":
+            logger.info("Adding CLI commands-specific scalar fields for metadata filtering")
+            fields.extend([
+                FieldSchema(name="main_command", dtype=DataType.VARCHAR, max_length=100, default_value=""),
+                FieldSchema(name="subcommand", dtype=DataType.VARCHAR, max_length=200, default_value=""),
+                FieldSchema(name="full_command", dtype=DataType.VARCHAR, max_length=500, default_value=""),
+            ])
+        elif extra_fields:
+            logger.info(f"Adding {len(extra_fields)} custom scalar fields")
+            fields.extend(extra_fields)
+        
+        # Always include JSON metadata for additional fields
+        fields.append(FieldSchema(name="metadata", dtype=DataType.JSON))
 
         schema = CollectionSchema(
             fields=fields,
@@ -159,7 +185,7 @@ class VectorStoreManager:
             using="default"
         )
 
-        logger.info(f"✓ Created collection: {collection_name}")
+        logger.info(f"✓ Created collection: {collection_name} with {len(fields)} fields")
         self._collections[collection_name] = collection
 
         return collection
@@ -269,17 +295,42 @@ class VectorStoreManager:
             show_progress=True
         )
 
+        # Get collection schema to determine which fields exist
+        schema_fields = {field.name for field in collection.schema.fields}
+        
         # Insert in batches
         total_inserted = 0
         for i in range(0, len(texts), batch_size):
             batch_end = min(i + batch_size, len(texts))
 
+            # Base fields (always present)
             batch_data = [
                 ids[i:batch_end],
                 embeddings[i:batch_end].tolist(),
                 texts[i:batch_end],
-                metadata[i:batch_end]
             ]
+            
+            # Extract scalar fields from metadata if they exist in schema
+            if collection_name == "pyegeria" and "element_type" in schema_fields:
+                # PyEgeria scalar fields
+                batch_data.extend([
+                    [m.get("element_type", "") for m in metadata[i:batch_end]],
+                    [m.get("class_name", "") for m in metadata[i:batch_end]],
+                    [m.get("method_name", "") for m in metadata[i:batch_end]],
+                    [m.get("module_path", "") for m in metadata[i:batch_end]],
+                    [m.get("is_async", False) for m in metadata[i:batch_end]],
+                    [m.get("is_private", False) for m in metadata[i:batch_end]],
+                ])
+            elif collection_name == "cli_commands" and "main_command" in schema_fields:
+                # CLI commands scalar fields
+                batch_data.extend([
+                    [m.get("main_command", "") for m in metadata[i:batch_end]],
+                    [m.get("subcommand", "") for m in metadata[i:batch_end]],
+                    [m.get("full_command", "") for m in metadata[i:batch_end]],
+                ])
+            
+            # Always include full metadata as JSON
+            batch_data.append(metadata[i:batch_end])
 
             collection.insert(batch_data)
             total_inserted += batch_end - i

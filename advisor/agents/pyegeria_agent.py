@@ -3,6 +3,8 @@ PyEgeria Agent - Specialized agent for PyEgeria Python library queries.
 
 This agent provides intelligent responses about PyEgeria classes, methods,
 modules, and usage patterns by leveraging the pyegeria collection in Milvus.
+
+Enhanced with metadata filtering for precise, fast queries.
 """
 
 import logging
@@ -12,6 +14,10 @@ from dataclasses import dataclass
 from advisor.vector_store import VectorStoreManager
 from advisor.llm_client import OllamaClient, get_ollama_client
 from advisor.config import settings
+from advisor.metadata_filters import (
+    extract_pyegeria_filters,
+    build_combined_filter_expr
+)
 
 logger = logging.getLogger(__name__)
 
@@ -181,25 +187,36 @@ class PyEgeriaAgent:
         self,
         query: str,
         top_k: int = 10,
-        min_score: float = 0.35
+        min_score: float = 0.35,
+        use_metadata_filters: bool = True  # Enabled - collection now has scalar fields!
     ) -> List[Dict[str, Any]]:
         """
-        Search PyEgeria collection for relevant content.
+        Search PyEgeria collection for relevant content with optional metadata filtering.
         
         Args:
             query: Search query
             top_k: Number of results to return
             min_score: Minimum similarity score
+            use_metadata_filters: Whether to extract and apply metadata filters
             
         Returns:
             List of search results as dictionaries with metadata
         """
         try:
-            # Search without min_score filter (will filter after)
+            # Extract metadata filters from query if enabled
+            filter_expr = None
+            if use_metadata_filters:
+                filters = extract_pyegeria_filters(query)
+                if filters:
+                    filter_expr = build_combined_filter_expr(filters)
+                    logger.info(f"Applying metadata filters: {filter_expr}")
+            
+            # Search with optional metadata filtering
             search_results = self.vector_store.search(
                 collection_name=self.collection_name,
                 query_text=query,
-                top_k=top_k * 2  # Get more results to filter
+                top_k=top_k * 2,  # Get more results to filter by score
+                filter_expr=filter_expr
             )
             
             # Convert SearchResult objects to dictionaries and filter by score
@@ -216,6 +233,8 @@ class PyEgeriaAgent:
                         break
             
             logger.info(f"Found {len(results)} PyEgeria results for query: {query[:50]}...")
+            if filter_expr:
+                logger.info(f"  (filtered by: {filter_expr})")
             return results
             
         except Exception as e:

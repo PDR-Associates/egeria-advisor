@@ -372,15 +372,17 @@ class CLICommandIndexer:
         self,
         query: str,
         top_k: int = 5,
-        filters: Optional[Dict[str, Any]] = None
+        filters: Optional[Dict[str, Any]] = None,
+        filter_expr: Optional[str] = None
     ) -> List[SearchResult]:
         """
-        Search for commands using semantic search.
+        Search for commands using semantic search with optional metadata filtering.
         
         Args:
             query: Search query
             top_k: Number of results to return
-            filters: Optional metadata filters
+            filters: Optional metadata filters (dict) - deprecated, use filter_expr
+            filter_expr: Optional Milvus filter expression string
             
         Returns:
             List of SearchResult objects with matching commands
@@ -390,7 +392,8 @@ class CLICommandIndexer:
             collection_name=self.collection_name,
             query_text=query,
             top_k=top_k,
-            filters=filters
+            filters=filters,
+            filter_expr=filter_expr
         )
         
         return results

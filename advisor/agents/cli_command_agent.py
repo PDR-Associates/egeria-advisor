@@ -6,6 +6,8 @@ This agent specializes in:
 - Explaining command usage and parameters
 - Generating usage examples
 - Providing command documentation
+
+Enhanced with metadata filtering for precise command searches.
 """
 
 import json
@@ -16,6 +18,10 @@ from advisor.agents.base import BaseAgent
 from advisor.data_prep.cli_indexer import CLICommandIndexer
 from advisor.llm_client import OllamaClient
 from advisor.vector_store import SearchResult
+from advisor.metadata_filters import (
+    extract_cli_filters,
+    build_combined_filter_expr
+)
 
 
 class CLICommandAgent(BaseAgent):
@@ -154,15 +160,17 @@ class CLICommandAgent(BaseAgent):
         self,
         query: str,
         query_type: str,
-        top_k: int = 5
+        top_k: int = 5,
+        use_metadata_filters: bool = False  # Disabled until collection has scalar fields
     ) -> List[SearchResult]:
         """
-        Search for relevant commands.
+        Search for relevant commands with optional metadata filtering.
         
         Args:
             query: Search query
             query_type: Type of query
             top_k: Number of results to return
+            use_metadata_filters: Whether to extract and apply metadata filters
             
         Returns:
             List of search results
@@ -172,12 +180,23 @@ class CLICommandAgent(BaseAgent):
             if query_type == "list_commands":
                 top_k = 10  # Show more commands for list queries
             
+            # Extract metadata filters from query if enabled
+            filter_expr = None
+            if use_metadata_filters:
+                filters = extract_cli_filters(query)
+                if filters:
+                    filter_expr = build_combined_filter_expr(filters)
+                    logger.info(f"Applying CLI metadata filters: {filter_expr}")
+            
             results = self.indexer.search_commands(
                 query=query,
-                top_k=top_k
+                top_k=top_k,
+                filter_expr=filter_expr
             )
             
             logger.debug(f"Found {len(results)} matching commands")
+            if filter_expr:
+                logger.debug(f"  (filtered by: {filter_expr})")
             return results
             
         except Exception as e:

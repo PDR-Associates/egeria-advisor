@@ -192,21 +192,58 @@ class CLICommandIndexer:
         
         searchable_text = "\n".join(text_parts)
         
-        # Create document
+        # Extract command structure for better filtering
+        # Parse command name to get main command and subcommand
+        parts = cmd_name.split()
+        main_command = parts[0] if parts else cmd_name
+        subcommand = ' '.join(parts[1:]) if len(parts) > 1 else ''
+        
+        # Get options and flags from parameters
+        options = []
+        flags = []
+        required_options = []
+        
+        for param in parameters:
+            param_name = param.get('name', '')
+            if param.get('is_flag', False):
+                flags.append(param_name)
+            else:
+                options.append(param_name)
+                if param.get('required', False):
+                    required_options.append(param_name)
+        
+        # Create document with enhanced metadata
         document = {
             'text': searchable_text,
             'metadata': {
+                # Basic identification
                 'command_name': cmd_name,
-                'type': cmd_data.get('type', 'unknown'),
+                'command_type': cmd_data.get('type', 'unknown'),
                 'category': cmd_data.get('category', 'unknown'),
                 'description': description,
+                
+                # Command structure (NEW - matches design)
+                'main_command': main_command,  # e.g., "hey_egeria" or "dr_egeria"
+                'subcommand': subcommand,  # e.g., "platform status"
+                'full_command': cmd_name,  # Full command string
+                
+                # Parameters (NEW - structured lists)
+                'options': ','.join(options),  # Comma-separated options
+                'flags': ','.join(flags),  # Comma-separated flags
+                'required_options': ','.join(required_options),  # Required options
+                
+                # Code location
                 'module_path': cmd_data.get('module_path', ''),
                 'function_name': cmd_data.get('function_name', ''),
                 'entry_point': cmd_data.get('entry_point', ''),
+                
+                # Statistics
                 'parameter_count': len(parameters),
                 'has_required_params': any(p.get('required') for p in parameters),
+                
+                # Document type
                 'doc_type': 'command_overview',
-                '_collection': 'cli_commands'
+                'collection': 'cli_commands'
             }
         }
         

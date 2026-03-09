@@ -186,15 +186,20 @@ class ConversationAgent:
                 
                 # Log PyEgeria-specific metrics to MLflow tracker if available
                 if tracker:
-                    tracker.log_metrics({
-                        "pyegeria_query": 1.0,
-                        "pyegeria_confidence": pyegeria_response.get('confidence', 0.0),
-                        "pyegeria_sources_count": float(len(pyegeria_response.get('sources', [])))
-                    })
-                    tracker.log_params({
-                        "agent_type": "pyegeria",
-                        "query_type": pyegeria_response.get('query_type', 'unknown')
-                    })
+                    try:
+                        tracker.log_metrics({
+                            "pyegeria_query": 1.0,
+                            "pyegeria_confidence": pyegeria_response.get('confidence', 0.0),
+                            "pyegeria_sources_count": float(len(pyegeria_response.get('sources', [])))
+                        })
+                        # log_params might not exist on OperationTracker, use hasattr check
+                        if hasattr(tracker, 'log_params'):
+                            tracker.log_params({
+                                "agent_type": "pyegeria",
+                                "query_type": pyegeria_response.get('query_type', 'unknown')
+                            })
+                    except Exception as tracker_error:
+                        logger.warning(f"Failed to log PyEgeria metrics to tracker: {tracker_error}")
                 
                 # Convert PyEgeria agent response to conversation agent format
                 response_content = pyegeria_response.get('answer', '')
@@ -203,6 +208,7 @@ class ConversationAgent:
                         f"- {s}" for s in pyegeria_response['suggestions']
                     )
                 
+                logger.info(f"PyEgeria agent returned response with {len(response_content)} characters")
                 return {
                     "content": response_content,
                     "sources": pyegeria_response.get('sources', []),
@@ -215,7 +221,9 @@ class ConversationAgent:
                     }
                 }
         except Exception as e:
-            logger.warning(f"PyEgeria Agent routing failed: {e}")
+            logger.error(f"PyEgeria Agent routing failed with exception: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         
         # Check if query should use CLI Command Agent (after PyEgeria check)
         try:
@@ -228,15 +236,20 @@ class ConversationAgent:
                 
                 # Log CLI-specific metrics to MLflow tracker if available
                 if tracker:
-                    tracker.log_metrics({
-                        "cli_query": 1.0,
-                        "cli_confidence": cli_response.get('confidence', 1.0),
-                        "cli_sources_count": float(len(cli_response.get('sources', [])))
-                    })
-                    tracker.log_params({
-                        "agent_type": "cli_command",
-                        "query_type": cli_response.get('query_type', 'unknown')
-                    })
+                    try:
+                        tracker.log_metrics({
+                            "cli_query": 1.0,
+                            "cli_confidence": cli_response.get('confidence', 1.0),
+                            "cli_sources_count": float(len(cli_response.get('sources', [])))
+                        })
+                        # log_params might not exist on OperationTracker, use hasattr check
+                        if hasattr(tracker, 'log_params'):
+                            tracker.log_params({
+                                "agent_type": "cli_command",
+                                "query_type": cli_response.get('query_type', 'unknown')
+                            })
+                    except Exception as tracker_error:
+                        logger.warning(f"Failed to log CLI metrics to tracker: {tracker_error}")
                 
                 # Convert CLI agent response to conversation agent format
                 return {

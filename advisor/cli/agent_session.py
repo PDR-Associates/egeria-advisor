@@ -35,6 +35,8 @@ class AgentInteractiveSession:
     COMMANDS = {
         '/help': 'Show help message',
         '/clear': 'Clear conversation history',
+        '/clear-query-cache': 'Clear query response cache',
+        '/cqc': 'Clear query response cache (alias)',
         '/history': 'Show conversation history',
         '/stats': 'Show agent statistics',
         '/feedback': 'Provide feedback on last response',
@@ -200,8 +202,15 @@ class AgentInteractiveSession:
         
         elif cmd == '/clear':
             self.agent.clear_history()
-            self.agent.clear_cache()
-            self.console.print("[green]✓[/green] Conversation history and cache cleared")
+            self.console.print("[green]✓[/green] Conversation history cleared")
+        
+        elif cmd in ['/clear-query-cache', '/cqc']:
+            # Clear the LRU cache on the agent's run method
+            if hasattr(self.agent, '_cached_run'):
+                self.agent._cached_run.cache_clear()
+                self.console.print("[green]✓[/green] Query response cache cleared")
+            else:
+                self.console.print("[yellow]⚠[/yellow] No query cache to clear")
         
         elif cmd == '/history':
             self._show_history()
@@ -285,13 +294,19 @@ class AgentInteractiveSession:
                 if self.show_citations and result.get("sources"):
                     self.console.print("\n[bold]Sources:[/bold]")
                     for i, source in enumerate(result["sources"][:5], 1):
-                        file_path = source.get("file_path", "Unknown")
-                        collection = source.get("collection", "Unknown")
-                        score = source.get("score", 0.0)
-                        self.console.print(
-                            f"  [cyan]{i}.[/cyan] {file_path} "
-                            f"[dim]({collection}, score: {score:.3f})[/dim]"
-                        )
+                        # Handle both string sources (from PyEgeria agent) and dict sources (from RAG)
+                        if isinstance(source, str):
+                            self.console.print(f"  [cyan]{i}.[/cyan] {source}")
+                        elif isinstance(source, dict):
+                            file_path = source.get("file_path", "Unknown")
+                            collection = source.get("collection", "Unknown")
+                            score = source.get("score", 0.0)
+                            self.console.print(
+                                f"  [cyan]{i}.[/cyan] {file_path} "
+                                f"[dim]({collection}, score: {score:.3f})[/dim]"
+                            )
+                        else:
+                            self.console.print(f"  [cyan]{i}.[/cyan] {source}")
                 
                 # Show metadata if verbose
                 if self.verbose:

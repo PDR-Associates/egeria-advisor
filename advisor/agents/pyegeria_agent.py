@@ -740,29 +740,40 @@ Answer:"""
                 print(f"🔍 get_all_class_methods() returned {len(all_methods) if all_methods else 0} methods")
                 
                 if all_methods:
-                    # For exhaustive queries, format the response directly without LLM
-                    # (LLM times out with 45+ methods)
-                    print(f"🔍 Formatting {len(all_methods)} methods directly (bypassing LLM)")
+                    # For exhaustive queries, format as simple numbered list
+                    # (LLM times out with 45+ methods, and tables don't render well in Rich panels)
+                    logger.info(f"Formatting {len(all_methods)} methods as list (bypassing LLM)")
                     
-                    method_list = []
+                    # Build simple numbered list
+                    lines = [
+                        f"All {len(all_methods)} Methods in {class_name}",
+                        "=" * 60,
+                        ""
+                    ]
+                    
                     for i, m in enumerate(all_methods, 1):
                         name = m.get('name', 'unknown')
                         doc = m.get('docstring', 'No description')
                         # Truncate long docstrings
-                        if len(doc) > 100:
-                            doc = doc[:97] + "..."
-                        method_list.append(f"{i}. **{name}**: {doc}")
+                        if len(doc) > 70:
+                            doc = doc[:67] + "..."
+                        
+                        # Format: number. method_name - description
+                        lines.append(f"{i:2d}. {name}")
+                        if doc and doc != 'No description':
+                            lines.append(f"    {doc}")
+                        lines.append("")  # Blank line between methods
                     
-                    answer = f"""# All Methods in {class_name}
-
-Found **{len(all_methods)} methods** in the {class_name} class:
-
-{chr(10).join(method_list)}
-
----
-
-**Note**: This is a complete list of all methods in the {class_name} class from the PyEgeria library.
-For detailed documentation on any specific method, please ask about that method individually."""
+                    lines.extend([
+                        "=" * 60,
+                        "",
+                        f"Complete list of all {len(all_methods)} methods in {class_name}.",
+                        "Ask about any specific method for detailed documentation."
+                    ])
+                    
+                    answer = '\n'.join(lines)
+                    
+                    logger.info(f"Returning formatted list with {len(answer)} characters, bypassing LLM completely")
                     
                     # Return formatted response directly
                     return {

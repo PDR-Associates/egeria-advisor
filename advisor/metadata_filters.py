@@ -74,13 +74,14 @@ def extract_pyegeria_filters(query: str) -> Dict[str, Any]:
     query_lower = query.lower()
     
     # Extract class names (CamelCase words)
-    # Common PyEgeria class patterns
+    # Common PyEgeria class patterns - ordered from most specific to most general
     class_patterns = [
         r'\b([A-Z][a-z]+(?:[A-Z][a-z]+)*Manager)\b',  # *Manager classes
         r'\b([A-Z][a-z]+(?:[A-Z][a-z]+)*Client)\b',   # *Client classes
         r'\b([A-Z][a-z]+(?:[A-Z][a-z]+)*Handler)\b',  # *Handler classes
         r'\b([A-Z][a-z]+(?:[A-Z][a-z]+)*Service)\b',  # *Service classes
         r'\b(EgeriaClient|EgeriaTech|ServerOps)\b',   # Specific classes
+        r'\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b',         # Any CamelCase word (2+ parts)
     ]
     
     for pattern in class_patterns:

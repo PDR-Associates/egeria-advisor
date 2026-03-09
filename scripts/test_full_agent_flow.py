@@ -58,12 +58,15 @@ else:
 
 # Check response
 response_content = result.get('content', '')
+print(f"\nResponse content length: {len(response_content)} characters")
+print(f"First 200 chars: {response_content[:200]}")
 response_lines = response_content.split('\n')
-print(f"\nResponse has {len(response_lines)} lines")
+print(f"Response has {len(response_lines)} lines")
 
-# Count methods mentioned
-method_count = sum(1 for line in response_lines if 'def ' in line or line.strip().startswith(('1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.')))
-print(f"Methods mentioned: ~{method_count}")
+# Count methods mentioned (look for numbered list items like "1. ", "10. ", "45. ")
+import re
+method_count = sum(1 for line in response_lines if re.match(r'^\d+\.\s+\*\*', line.strip()))
+print(f"Methods mentioned: {method_count}")
 
 if method_count >= 40:
     print("✓ SUCCESS: Returned many methods (exhaustive query worked)")

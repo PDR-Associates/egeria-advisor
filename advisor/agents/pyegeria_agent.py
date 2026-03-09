@@ -243,68 +243,57 @@ class PyEgeriaAgent:
     
     def get_all_class_methods(self, class_name: str) -> List[Dict[str, Any]]:
         """
-        Get ALL methods for a specific class by searching the file and filtering.
+        Get ALL methods for a specific class using direct database query with metadata filters.
+        
+        This method uses O(1) metadata filtering instead of semantic search to ensure
+        we get ALL methods, not just semantically similar ones.
         
         Args:
             class_name: Name of the class
             
         Returns:
-            List of method dictionaries
+            List of method dictionaries with name, docstring, signature, etc.
         """
         try:
-            # Step 1: Find the class to get its file path
-            class_results = self.vector_store.search(
-                collection_name=self.collection_name,
-                query_text=f"class {class_name}",
-                top_k=10
+            from pymilvus import Collection
+            
+            # Direct database query using metadata filter
+            filter_expr = f'class_name == "{class_name}" and element_type == "method"'
+            
+            logger.info(f"Querying all methods for class {class_name} with filter: {filter_expr}")
+            
+            # Get collection and query directly
+            collection = Collection(self.collection_name)
+            collection.load()
+            
+            # Query with filter - this gets ALL matching records, no semantic search
+            results = collection.query(
+                expr=filter_expr,
+                output_fields=['method_name', 'metadata'],
+                limit=500  # High limit to get all methods
             )
             
-            class_file = None
-            for result in class_results:
-                metadata = result.metadata
-                if metadata.get('element_type') == 'class' and metadata.get('name') == class_name:
-                    class_file = metadata.get('file_path')
-                    logger.info(f"Found class {class_name} in {class_file}")
-                    break
+            logger.info(f"Direct query returned {len(results)} methods for {class_name}")
             
-            if not class_file:
-                logger.warning(f"Could not find file for class {class_name}")
-                return []
-            
-            # Step 2: Search for ALL content from that file with high top_k
-            # Use the file path as part of the query to get relevant results
-            file_results = self.vector_store.search(
-                collection_name=self.collection_name,
-                query_text=f"{class_name} {class_file}",
-                top_k=200  # Get many results to capture all methods
-            )
-            
-            # Step 3: Filter for methods belonging to this class
+            # Convert to standardized format
             methods = []
-            seen_methods = set()
-            
-            for result in file_results:
-                metadata = result.metadata
-                # Check if it's a function in the same file and belongs to our class
-                if (metadata.get('element_type') == 'function' and
-                    metadata.get('file_path') == class_file and
-                    metadata.get('class_name') == class_name):
-                    
-                    method_name = metadata.get('name', '')
-                    if method_name and method_name not in seen_methods:
-                        seen_methods.add(method_name)
-                        methods.append({
-                            'name': method_name,
-                            'docstring': metadata.get('docstring', ''),
-                            'signature': metadata.get('signature', ''),
-                            'file_path': metadata.get('file_path', ''),
-                            'score': result.score
-                        })
+            for result in results:
+                metadata = result.get('metadata', {})
+                methods.append({
+                    'name': result.get('method_name', metadata.get('name', '')),
+                    'docstring': metadata.get('docstring', ''),
+                    'signature': metadata.get('signature', ''),
+                    'file_path': metadata.get('file_path', ''),
+                    'is_async': metadata.get('is_async', False),
+                    'is_private': metadata.get('is_private', False),
+                    'parameters': metadata.get('parameters', []),
+                    'return_type': metadata.get('return_type', '')
+                })
             
             # Sort by name for consistent ordering
             methods.sort(key=lambda x: x['name'])
             
-            logger.info(f"Found {len(methods)} methods for class {class_name} in {class_file}")
+            logger.info(f"✓ Found {len(methods)} methods for class {class_name}")
             return methods
             
         except Exception as e:
@@ -312,6 +301,40 @@ class PyEgeriaAgent:
             import traceback
             logger.error(traceback.format_exc())
             return []
+    
+    def is_exhaustive_query(self, query: str) -> bool:
+        """
+        Detect if query is asking for ALL items (exhaustive list) vs sample/relevant items.
+        
+        Examples of exhaustive queries:
+        - "how many methods does X have?"
+        - "what methods are in X?"
+        - "list all methods in X"
+        - "show me all the methods"
+        
+        Args:
+            query: User's query
+            
+        Returns:
+            True if query wants exhaustive list, False if semantic search is appropriate
+        """
+        query_lower = query.lower()
+        
+        exhaustive_indicators = [
+            'how many',
+            'what methods are in',
+            'what methods does',
+            'list all',
+            'show all',
+            'show me all',
+            'list every',
+            'all methods',
+            'all the methods',
+            'complete list',
+            'full list'
+        ]
+        
+        return any(indicator in query_lower for indicator in exhaustive_indicators)
     
     def extract_class_info(self, results: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
@@ -632,15 +655,51 @@ Answer:"""
         query_type = self.classify_query(query)
         logger.info(f"Classified as: {query_type}")
         
-        # Search PyEgeria collection
-        results = self.search_pyegeria(query)
+        # Check if this is an exhaustive query (wants ALL items, not just relevant ones)
+        is_exhaustive = self.is_exhaustive_query(query)
         
-        # Calculate confidence based on results
-        confidence = 0.0
-        if results:
-            # Average of top 3 scores
-            top_scores = [r.get('score', 0.0) for r in results[:3]]
-            confidence = sum(top_scores) / len(top_scores) if top_scores else 0.0
+        if is_exhaustive:
+            logger.info("Detected exhaustive query - using direct database query")
+            
+            # Extract class name from query
+            from advisor.metadata_filters import extract_pyegeria_filters
+            filters = extract_pyegeria_filters(query)
+            class_name = filters.get('class_name')
+            
+            if class_name:
+                # Get ALL methods for this class using direct database query
+                all_methods = self.get_all_class_methods(class_name)
+                
+                if all_methods:
+                    # Convert to search result format for compatibility
+                    results = [{
+                        'id': f"method_{i}",
+                        'score': 1.0,  # Direct query, all results are relevant
+                        'text': f"{m['name']}: {m['docstring'][:100] if m['docstring'] else 'No description'}",
+                        'metadata': m
+                    } for i, m in enumerate(all_methods)]
+                    
+                    confidence = 1.0  # High confidence for direct database query
+                    logger.info(f"✓ Retrieved ALL {len(results)} methods for {class_name}")
+                else:
+                    results = []
+                    confidence = 0.0
+                    logger.warning(f"No methods found for class {class_name}")
+            else:
+                # Fallback to semantic search if we can't extract class name
+                logger.warning("Could not extract class name from exhaustive query, falling back to semantic search")
+                results = self.search_pyegeria(query, top_k=100)  # Higher top_k for exhaustive queries
+                confidence = 0.5
+        else:
+            # Normal semantic search for non-exhaustive queries
+            results = self.search_pyegeria(query)
+            
+            # Calculate confidence based on results
+            confidence = 0.0
+            if results:
+                # Average of top 3 scores
+                top_scores = [r.get('score', 0.0) for r in results[:3]]
+                confidence = sum(top_scores) / len(top_scores) if top_scores else 0.0
         
         # Create query result
         query_result = PyEgeriaQueryResult(

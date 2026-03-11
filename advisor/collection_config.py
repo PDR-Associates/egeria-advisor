@@ -3,11 +3,16 @@ Collection configuration and metadata for multi-collection RAG system.
 
 This module defines the metadata for each Milvus collection, including
 source repositories, paths, domain terms, and relationships.
+
+Domain terms can be loaded from config/routing.yaml or use defaults.
 """
 
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
+import yaml
+from loguru import logger
 
 
 class ContentType(Enum):
@@ -80,7 +85,60 @@ class CollectionMetadata:
         return False
 
 
+# Configuration loading for domain terms
+_routing_config_cache: Optional[Dict[str, Any]] = None
+_routing_config_path = Path(__file__).parent.parent / "config" / "routing.yaml"
+
+
+def _load_routing_config() -> Dict[str, Any]:
+    """Load routing configuration from YAML file."""
+    global _routing_config_cache
+    
+    if _routing_config_cache is not None:
+        return _routing_config_cache
+    
+    if not _routing_config_path.exists():
+        logger.warning(f"Routing config not found at {_routing_config_path}, using defaults")
+        _routing_config_cache = {}
+        return _routing_config_cache
+    
+    try:
+        with open(_routing_config_path, 'r') as f:
+            config = yaml.safe_load(f)
+            _routing_config_cache = config or {}
+            logger.info(f"Loaded routing configuration for collections from {_routing_config_path}")
+            return _routing_config_cache
+    except Exception as e:
+        logger.error(f"Error loading routing config: {e}, using defaults")
+        _routing_config_cache = {}
+        return _routing_config_cache
+
+
+def _get_collection_domain_terms(collection_name: str, default_terms: List[str]) -> List[str]:
+    """
+    Get domain terms for a collection from config or use defaults.
+    
+    Args:
+        collection_name: Name of the collection
+        default_terms: Default terms to use if not in config
+        
+    Returns:
+        List of domain terms
+    """
+    config = _load_routing_config()
+    if 'collection_domain_terms' in config and collection_name in config['collection_domain_terms']:
+        return config['collection_domain_terms'][collection_name]
+    return default_terms
+
+
 # Phase 1: Python Collections
+# Default domain terms (used if config file not available)
+_DEFAULT_PYEGERIA_TERMS = [
+    "pyegeria", "python-client", "rest-client", "async-client",
+    "widget", "egeria-client", "python-api", "python-sdk",
+    "py-egeria"
+]
+
 PYEGERIA_COLLECTION = CollectionMetadata(
     name="pyegeria",
     description="Core PyEgeria Python library for Egeria REST API",
@@ -88,11 +146,7 @@ PYEGERIA_COLLECTION = CollectionMetadata(
     source_paths=["pyegeria", "tests"],
     content_type=ContentType.CODE,
     language=Language.PYTHON,
-    domain_terms=[
-        "pyegeria", "python-client", "rest-client", "async-client",
-        "widget", "egeria-client", "python-api", "python-sdk",
-        "py-egeria"  # Add hyphenated variant
-    ],
+    domain_terms=_get_collection_domain_terms("pyegeria", _DEFAULT_PYEGERIA_TERMS),
     related_collections=["pyegeria_cli", "pyegeria_drE", "egeria_docs"],
     include_patterns=["*.py", "*.md"],
     exclude_patterns=["**/__pycache__/**", "**/deprecated/**", "**/.pytest_cache/**"],
@@ -104,6 +158,11 @@ PYEGERIA_COLLECTION = CollectionMetadata(
     default_top_k=10  # More results for code queries
 )
 
+_DEFAULT_PYEGERIA_CLI_TERMS = [
+    "hey-egeria", "hey_egeria", "cli", "command", "commands",
+    "command-line", "terminal"
+]
+
 PYEGERIA_CLI_COLLECTION = CollectionMetadata(
     name="pyegeria_cli",
     description="hey_egeria CLI commands and tools",
@@ -111,10 +170,7 @@ PYEGERIA_CLI_COLLECTION = CollectionMetadata(
     source_paths=["commands"],
     content_type=ContentType.CODE,
     language=Language.PYTHON,
-    domain_terms=[
-        "hey-egeria", "hey_egeria", "cli", "command", "commands",
-        "command-line", "terminal"
-    ],
+    domain_terms=_get_collection_domain_terms("pyegeria_cli", _DEFAULT_PYEGERIA_CLI_TERMS),
     related_collections=["pyegeria", "egeria_docs"],
     include_patterns=["*.py", "*.md"],
     exclude_patterns=["**/__pycache__/**"],
@@ -126,6 +182,13 @@ PYEGERIA_CLI_COLLECTION = CollectionMetadata(
     default_top_k=10  # More results for code queries
 )
 
+_DEFAULT_PYEGERIA_DRE_TERMS = [
+    "dr-egeria", "dr_egeria", "dr egeria", "dr. egeria",
+    "pyegeria dre", "pyegeria-dre", "pyegeria_dre",
+    "markdown", "document-automation",
+    "markdown-translator", "dre", "markdown-to-pyegeria"
+]
+
 PYEGERIA_DRE_COLLECTION = CollectionMetadata(
     name="pyegeria_drE",
     description="Dr. Egeria markdown-to-pyegeria translator",
@@ -133,12 +196,7 @@ PYEGERIA_DRE_COLLECTION = CollectionMetadata(
     source_paths=["md_processing"],
     content_type=ContentType.CODE,
     language=Language.PYTHON,
-    domain_terms=[
-        "dr-egeria", "dr_egeria", "dr egeria", "dr. egeria",  # Add space and period variants
-        "pyegeria dre", "pyegeria-dre", "pyegeria_dre",  # Collection name variants
-        "markdown", "document-automation",
-        "markdown-translator", "dre", "markdown-to-pyegeria"
-    ],
+    domain_terms=_get_collection_domain_terms("pyegeria_drE", _DEFAULT_PYEGERIA_DRE_TERMS),
     related_collections=["pyegeria", "egeria_docs"],
     include_patterns=["*.py", "*.md"],
     exclude_patterns=["**/__pycache__/**"],
@@ -151,6 +209,13 @@ PYEGERIA_DRE_COLLECTION = CollectionMetadata(
 )
 
 # Phase 2: Java + Docs + Workspaces Collections
+_DEFAULT_EGERIA_JAVA_TERMS = [
+    "java", "java-code", "java-implementation",
+    "access-service", "view-service", "integration-service",
+    "governance-server", "metadata-server", "repository-proxy",
+    "egeria-core", "egeria-server", "spring-boot"
+]
+
 EGERIA_JAVA_COLLECTION = CollectionMetadata(
     name="egeria_java",
     description="Egeria Java codebase - OMAS, OMAG, OMRS services",
@@ -158,12 +223,7 @@ EGERIA_JAVA_COLLECTION = CollectionMetadata(
     source_paths=["."],
     content_type=ContentType.CODE,
     language=Language.JAVA,
-    domain_terms=[
-        "java", "java-code", "java-implementation",  # More specific Java terms
-        "access-service", "view-service", "integration-service",
-        "governance-server", "metadata-server", "repository-proxy",
-        "egeria-core", "egeria-server", "spring-boot"
-    ],
+    domain_terms=_get_collection_domain_terms("egeria_java", _DEFAULT_EGERIA_JAVA_TERMS),
     related_collections=["egeria_docs", "egeria_workspaces"],
     include_patterns=["*.java", "*.md"],
     exclude_patterns=["**/target/**", "**/build/**", "**/.gradle/**"],
@@ -176,6 +236,15 @@ EGERIA_JAVA_COLLECTION = CollectionMetadata(
     default_top_k=8  # Standard results
 )
 
+_DEFAULT_EGERIA_DOCS_TERMS = [
+    "documentation", "guide", "tutorial", "concept",
+    "reference", "docs", "manual", "walkthrough",
+    "egeria-docs", "egeria-documentation",
+    "omas", "omag", "omrs", "ocf", "oif",
+    "architecture", "design", "overview",
+    "myprofile", "my-profile", "my profile"
+]
+
 EGERIA_DOCS_COLLECTION = CollectionMetadata(
     name="egeria_docs",
     description="Egeria documentation - guides, tutorials, concepts (TO BE SPLIT)",
@@ -183,15 +252,7 @@ EGERIA_DOCS_COLLECTION = CollectionMetadata(
     source_paths=["."],
     content_type=ContentType.DOCUMENTATION,
     language=Language.MARKDOWN,
-    domain_terms=[
-        "documentation", "guide", "tutorial", "concept",
-        "reference", "docs", "manual", "walkthrough",
-        "egeria-docs", "egeria-documentation",  # Add specific collection identifiers
-        # Add common Egeria concepts that should route to docs
-        "omas", "omag", "omrs", "ocf", "oif",  # Architecture terms
-        "architecture", "design", "overview",
-        "myprofile", "my-profile", "my profile"  # Add myProfile variants
-    ],
+    domain_terms=_get_collection_domain_terms("egeria_docs", _DEFAULT_EGERIA_DOCS_TERMS),
     related_collections=["pyegeria", "egeria_java", "egeria_workspaces"],
     include_patterns=["*.md", "*.rst"],
     exclude_patterns=["**/node_modules/**", "**/.git/**"],
@@ -204,6 +265,11 @@ EGERIA_DOCS_COLLECTION = CollectionMetadata(
     default_top_k=8  # Standard results
 )
 
+_DEFAULT_EGERIA_WORKSPACES_TERMS = [
+    "workspace", "notebook", "jupyter", "example", "deployment",
+    "docker", "kubernetes", "helm", "sample", "demo"
+]
+
 EGERIA_WORKSPACES_COLLECTION = CollectionMetadata(
     name="egeria_workspaces",
     description="Egeria workspaces - Jupyter notebooks, deployment configs, examples",
@@ -211,10 +277,7 @@ EGERIA_WORKSPACES_COLLECTION = CollectionMetadata(
     source_paths=["."],
     content_type=ContentType.EXAMPLES,
     language=Language.MIXED,
-    domain_terms=[
-        "workspace", "notebook", "jupyter", "example", "deployment",
-        "docker", "kubernetes", "helm", "sample", "demo"
-    ],
+    domain_terms=_get_collection_domain_terms("egeria_workspaces", _DEFAULT_EGERIA_WORKSPACES_TERMS),
     related_collections=["pyegeria", "egeria_java", "egeria_docs"],
     include_patterns=["*.ipynb", "*.py", "*.md", "*.yaml", "*.yml"],
     exclude_patterns=["**/node_modules/**", "**/.git/**", "**/venv/**"],
@@ -229,6 +292,12 @@ EGERIA_WORKSPACES_COLLECTION = CollectionMetadata(
 
 
 # Phase 2b: Split egeria_docs into specialized collections
+_DEFAULT_EGERIA_CONCEPTS_TERMS = [
+    "concept", "definition", "what is", "explain",
+    "metadata", "governance", "lineage", "catalog",
+    "asset", "glossary", "classification", "relationship"
+]
+
 EGERIA_CONCEPTS_COLLECTION = CollectionMetadata(
     name="egeria_concepts",
     description="Egeria core concepts - short definitions and explanations",
@@ -236,11 +305,7 @@ EGERIA_CONCEPTS_COLLECTION = CollectionMetadata(
     source_paths=["site/docs/concepts"],
     content_type=ContentType.DOCUMENTATION,
     language=Language.MARKDOWN,
-    domain_terms=[
-        "concept", "definition", "what is", "explain",
-        "metadata", "governance", "lineage", "catalog",
-        "asset", "glossary", "classification", "relationship"
-    ],
+    domain_terms=_get_collection_domain_terms("egeria_concepts", _DEFAULT_EGERIA_CONCEPTS_TERMS),
     related_collections=["egeria_types", "egeria_general", "pyegeria"],
     include_patterns=["*.md"],
     exclude_patterns=["**/node_modules/**", "**/.git/**"],
@@ -253,6 +318,12 @@ EGERIA_CONCEPTS_COLLECTION = CollectionMetadata(
     default_top_k=5  # Fewer, more precise results
 )
 
+_DEFAULT_EGERIA_TYPES_TERMS = [
+    "type", "schema", "attribute", "property",
+    "entity", "relationship-type", "classification-type",
+    "typedef", "type-definition", "type-system"
+]
+
 EGERIA_TYPES_COLLECTION = CollectionMetadata(
     name="egeria_types",
     description="Egeria type system - detailed type definitions and schemas",
@@ -260,11 +331,7 @@ EGERIA_TYPES_COLLECTION = CollectionMetadata(
     source_paths=["site/docs/types"],
     content_type=ContentType.DOCUMENTATION,
     language=Language.MARKDOWN,
-    domain_terms=[
-        "type", "schema", "attribute", "property",
-        "entity", "relationship-type", "classification-type",
-        "typedef", "type-definition", "type-system"
-    ],
+    domain_terms=_get_collection_domain_terms("egeria_types", _DEFAULT_EGERIA_TYPES_TERMS),
     related_collections=["egeria_concepts", "egeria_general", "egeria_java"],
     include_patterns=["*.md"],
     exclude_patterns=["**/node_modules/**", "**/.git/**"],
@@ -277,6 +344,12 @@ EGERIA_TYPES_COLLECTION = CollectionMetadata(
     default_top_k=6  # Moderate results for types
 )
 
+_DEFAULT_EGERIA_GENERAL_TERMS = [
+    "tutorial", "guide", "how-to", "walkthrough",
+    "getting-started", "setup", "configuration",
+    "deployment", "installation", "usage"
+]
+
 EGERIA_GENERAL_COLLECTION = CollectionMetadata(
     name="egeria_general",
     description="Egeria general docs - tutorials, guides, and how-tos",
@@ -284,11 +357,7 @@ EGERIA_GENERAL_COLLECTION = CollectionMetadata(
     source_paths=["site/docs"],  # All docs except concepts/ and types/
     content_type=ContentType.DOCUMENTATION,
     language=Language.MARKDOWN,
-    domain_terms=[
-        "tutorial", "guide", "how-to", "walkthrough",
-        "getting-started", "setup", "configuration",
-        "deployment", "installation", "usage"
-    ],
+    domain_terms=_get_collection_domain_terms("egeria_general", _DEFAULT_EGERIA_GENERAL_TERMS),
     related_collections=["egeria_concepts", "egeria_types", "egeria_workspaces"],
     include_patterns=["*.md"],
     exclude_patterns=[

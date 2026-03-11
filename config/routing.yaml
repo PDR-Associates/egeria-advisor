@@ -1,0 +1,562 @@
+# Query Routing Configuration
+# This file defines patterns and domain terms for intelligent query routing
+
+# Confidence thresholds for routing decisions
+confidence_thresholds:
+  high_confidence: 0.75      # Clear routing decision
+  medium_confidence: 0.50    # Acceptable but could clarify
+  low_confidence: 0.30       # Should ask for clarification
+  ambiguous: 0.50            # Multiple equally-matched routes
+
+# Clarification settings
+clarification:
+  enabled: true
+  ask_when_confidence_below: 0.50
+  ask_when_multiple_routes: true
+  max_route_options: 3
+
+# Query patterns organized by priority and query type
+# Priority levels: critical (1), high (2), medium (3), low (4), fallback (5)
+query_patterns:
+  critical:
+    quantitative:
+      - "how many lines of code"
+      - "lines of code"
+      - "what is the average"
+      - "what's the average"
+    debugging:
+      - "why isn't this working"
+      - "why isn't my"
+      - "i'm getting an error when"
+      - "getting an error when"
+    best_practice:
+      - "what is the best practice"
+      - "what are the best practices"
+      - "recommended approach for"
+    comparison:
+      - "how does x differ from"
+      - "how does x compare to"
+      - "differ from"
+
+  high:
+    report:
+      - "generate report"
+      - "create report"
+      - "run report"
+      - "show report"
+      - "report on"
+      - "get report"
+      - "produce report"
+      - "make report"
+      - "list reports"
+      - "available reports"
+      - "what reports"
+    command:
+      - "run command"
+      - "execute command"
+      - "invoke"
+      - "call"
+      - "run the"
+      - "execute the"
+      - "perform"
+      - "do"
+    quantitative:
+      - "how many"
+      - "how much"
+      - "number of"
+      - "count"
+      - "total"
+      - "statistics"
+      - "metrics"
+      - "size"
+      - "summary"
+      - "overview"
+      - "average"
+    best_practice:
+      - "best practice"
+      - "best way"
+      - "recommended"
+      - "should i"
+      - "proper way"
+      - "correct way"
+      - "standard"
+    comparison:
+      - "difference between"
+      - "compare"
+      - "versus"
+      - "vs"
+      - "differ from"
+      - "better"
+      - "which"
+      - "choose between"
+    debugging:
+      - "why isn't"
+      - "isn't working"
+      - "not working"
+      - "getting an error"
+      - "how do i fix"
+      - "troubleshoot"
+      - "fix"
+      - "debug"
+
+  medium:
+    code_search:
+      - "show me how"
+      - "give me an example of"
+      - "how do i"
+      - "how to"
+      - "find examples"
+      - "find"
+      - "search"
+      - "locate"
+      - "where is"
+      - "get"
+      - "retrieve"
+      - "fetch"
+    example:
+      - "show me examples"
+      - "give me examples"
+      - "show examples"
+      - "give me example"
+      - "examples of"
+      - "example of"
+      - "sample"
+      - "demo"
+      - "some examples"
+    relationship:
+      - "what functions"
+      - "show me the"
+      - "what does"
+      - "what calls"
+      - "what imports"
+      - "what uses"
+      - "what are the dependencies"
+      - "related to"
+      - "relationship"
+      - "connected"
+      - "belong to"
+      - "methods of"
+      - "inherits"
+      - "extends"
+      - "depends on"
+      - "class hierarchy"
+      - "inheritance"
+    explanation:
+      - "how does"
+      - "explain"
+      - "describe"
+      - "what is a"
+      - "what is the"
+
+  low:
+    general:
+      - "tell me about"
+      - "what is"
+      - "what are"
+
+# Domain-specific terms for collection routing
+domain_terms:
+  egeria_concepts:
+    - "glossary"
+    - "collection"
+    - "asset"
+    - "governance zone"
+    - "lineage"
+    - "connection"
+    - "term"
+    - "category"
+    - "classification"
+    - "entity"
+    - "relationship"
+    - "catalog"
+    - "governance"
+    - "type"
+    - "property"
+    - "attribute"
+    - "connector"
+    - "integration"
+    - "server"
+    - "platform"
+    - "cohort"
+    - "repository"
+    - "archive"
+
+  egeria_code:
+    - "egeria-core"
+    - "egeria-server"
+    - "egeria-ui"
+    - "egeria-connectors"
+    - "open-metadata"
+    - "omas"
+    - "omag"
+    - "omrs"
+    - "ocf"
+    - "oif"
+    - "access-service"
+    - "view-service"
+    - "integration-service"
+    - "governance-server"
+    - "metadata-server"
+    - "repository-proxy"
+
+  pyegeria_code:
+    - "pyegeria"
+    - "python-client"
+    - "egeria-python"
+    - "py-egeria"
+    - "python-api"
+    - "python-sdk"
+    - "egeria-client"
+    - "rest-client"
+    - "async-client"
+    - "widget"
+    - "jupyter"
+    - "notebook"
+
+  egeria_workspaces:
+    - "egeria-workspaces"
+    - "workspace"
+    - "project-workspace"
+    - "developer-workspace"
+    - "admin-workspace"
+    - "user-workspace"
+    - "collaboration-space"
+    - "team-workspace"
+
+  use_cases:
+    - "use-case"
+    - "scenario"
+    - "example"
+    - "tutorial"
+    - "guide"
+    - "walkthrough"
+    - "demonstration"
+    - "sample"
+    - "template"
+    - "pattern"
+    - "best-practice"
+    - "reference-implementation"
+
+  deployment:
+    - "deployment"
+    - "installation"
+    - "setup"
+    - "configuration"
+    - "docker"
+    - "kubernetes"
+    - "helm"
+    - "container"
+    - "pod"
+    - "service"
+    - "ingress"
+    - "volume"
+    - "secret"
+    - "configmap"
+    - "cloud"
+    - "aws"
+    - "azure"
+    - "gcp"
+    - "on-premise"
+
+  technical_concepts:
+    - "class"
+    - "function"
+    - "method"
+    - "module"
+    - "package"
+    - "api"
+    - "endpoint"
+    - "service"
+    - "client"
+    - "import"
+    - "variable"
+    - "parameter"
+    - "return"
+    - "exception"
+    - "error"
+    - "request"
+    - "response"
+    - "configuration"
+
+  general_terms:
+    - "system"
+    - "platform"
+    - "framework"
+    - "architecture"
+    - "design"
+    - "implementation"
+    - "testing"
+    - "documentation"
+    - "performance"
+    - "security"
+    - "authentication"
+    - "authorization"
+
+# Collection-specific domain terms
+# These override/extend the general domain_terms for specific collections
+collection_domain_terms:
+  pyegeria:
+    - "pyegeria"
+    - "python-client"
+    - "rest-client"
+    - "async-client"
+    - "widget"
+    - "egeria-client"
+    - "python-api"
+    - "python-sdk"
+    - "py-egeria"
+
+  pyegeria_cli:
+    - "hey-egeria"
+    - "hey_egeria"
+    - "cli"
+    - "command"
+    - "commands"
+    - "command-line"
+    - "terminal"
+
+  pyegeria_drE:
+    - "dr-egeria"
+    - "dr_egeria"
+    - "dr egeria"
+    - "dr. egeria"
+    - "pyegeria dre"
+    - "pyegeria-dre"
+    - "pyegeria_dre"
+    - "markdown"
+    - "document-automation"
+    - "markdown-translator"
+    - "dre"
+    - "markdown-to-pyegeria"
+
+  egeria_java:
+    - "java"
+    - "java-code"
+    - "java-implementation"
+    - "access-service"
+    - "view-service"
+    - "integration-service"
+    - "governance-server"
+    - "metadata-server"
+    - "repository-proxy"
+    - "egeria-core"
+    - "egeria-server"
+    - "spring-boot"
+
+  egeria_docs:
+    - "documentation"
+    - "guide"
+    - "tutorial"
+    - "concept"
+    - "reference"
+    - "docs"
+    - "manual"
+    - "walkthrough"
+    - "egeria-docs"
+    - "egeria-documentation"
+    - "omas"
+    - "omag"
+    - "omrs"
+    - "ocf"
+    - "oif"
+    - "architecture"
+    - "design"
+    - "overview"
+    - "myprofile"
+    - "my-profile"
+    - "my profile"
+
+  egeria_concepts:
+    - "concept"
+    - "definition"
+    - "what is"
+    - "explain"
+    - "metadata"
+    - "governance"
+    - "lineage"
+    - "catalog"
+    - "asset"
+    - "glossary"
+    - "classification"
+    - "relationship"
+
+  egeria_types:
+    - "type"
+    - "schema"
+    - "attribute"
+    - "property"
+    - "entity"
+    - "relationship-type"
+    - "classification-type"
+    - "typedef"
+    - "type-definition"
+    - "type-system"
+
+  egeria_general:
+    - "tutorial"
+    - "guide"
+    - "how-to"
+    - "walkthrough"
+    - "getting-started"
+    - "setup"
+    - "configuration"
+    - "deployment"
+    - "installation"
+    - "usage"
+
+  egeria_workspaces:
+    - "workspace"
+    - "notebook"
+    - "jupyter"
+    - "example"
+    - "deployment"
+    - "docker"
+    - "kubernetes"
+    - "helm"
+    - "sample"
+    - "demo"
+
+# Intent-based routing keywords
+# Used for boosting collections based on query intent
+intent_keywords:
+  documentation:
+    - "documentation"
+    - "docs"
+    - "guide"
+    - "tutorial"
+    - "manual"
+    - "reference"
+  code:
+    - "code"
+    - "implementation"
+    - "source"
+    - "class"
+    - "function"
+    - "method"
+  example:
+    - "example"
+    - "sample"
+    - "demo"
+    - "notebook"
+    - "workspace"
+  cli:
+    - "cli"
+    - "command"
+    - "terminal"
+    - "hey-egeria"
+    - "hey_egeria"
+
+# Special rules for edge cases
+special_rules:
+  how_does_differ:
+    pattern: "how does"
+    check_terms:
+      - "differ"
+      - "compare"
+    if_match: "comparison"
+    if_no_match: null
+
+  tell_me_about_domain:
+    pattern: "tell me about"
+    check_domain_category: "egeria_concepts"
+    if_match: "explanation"
+    if_no_match: "general"
+
+  how_does_system:
+    pattern: "how does"
+    check_domain_category: "general_terms"
+    if_match: "general"
+    if_no_match: "explanation"
+
+# Follow-up question templates by query type
+followup_templates:
+  concept:
+    - "Would you like to see a code example?"
+    - "Do you want to see how this is implemented?"
+    - "Should I show you related concepts?"
+    - "Would you like to see the type definition?"
+  
+  code:
+    - "Would you like to see more examples?"
+    - "Do you want to see the full implementation?"
+    - "Should I explain how this works?"
+    - "Would you like to see related methods?"
+  
+  example:
+    - "Would you like to see another example?"
+    - "Do you want to see a more complex use case?"
+    - "Should I explain the code in detail?"
+    - "Would you like to see related examples?"
+  
+  tutorial:
+    - "Would you like to see the next step?"
+    - "Do you want to see a complete example?"
+    - "Should I explain any specific part?"
+    - "Would you like to see troubleshooting tips?"
+  
+  cli:
+    - "Would you like to see an example?"
+    - "Do you want to see related commands?"
+    - "Should I show you the command options?"
+    - "Would you like to see common use cases?"
+  
+  general:
+    - "Would you like to see an example?"
+    - "Do you want more details on any aspect?"
+    - "Should I show you related topics?"
+    - "Would you like to see the documentation?"
+
+# Response format templates
+response_formats:
+  succinct_with_options:
+    structure: |
+      ## Quick Answer
+      [Brief, direct answer to the question - 2-3 sentences max]
+      
+      ## What would you like to know more about?
+      1. [Option 1 - e.g., "See a code example"]
+      2. [Option 2 - e.g., "View related commands"]
+      3. [Option 3 - e.g., "Read the full documentation"]
+      4. [Option 4 - e.g., "Understand the parameters"]
+      
+      Just let me know the number or describe what you'd like!
+  
+  clarification_request:
+    structure: |
+      I found information about "{topic}" in multiple areas. To give you the best answer, could you clarify what you're looking for?
+      
+      1. **Documentation** - Conceptual explanation and architecture
+      2. **Code Examples** - Working Python/Java code
+      3. **CLI Commands** - Command-line usage
+      4. **Tutorials** - Step-by-step guides
+      
+      Which would be most helpful? (Choose a number or describe your need)
+  
+  no_clear_match:
+    structure: |
+      I'm not quite sure what you're looking for. Could you help me understand by choosing one:
+      
+      1. **Explain the concept** - What is it and how does it work?
+      2. **Show me code** - Give me implementation examples
+      3. **Guide me through it** - Step-by-step tutorial
+      4. **Troubleshoot** - Help me fix a problem
+      
+      Or feel free to rephrase your question with more details!
+
+# Trigger word documentation (shown to users when helpful)
+trigger_words:
+  documentation:
+    keywords: ["documentation", "docs", "guide", "tutorial", "explain", "what is"]
+    example: 'Try: "Show me the documentation for create_glossary"'
+  
+  code:
+    keywords: ["code", "implementation", "example", "show me", "how to"]
+    example: 'Try: "Show me code for creating a glossary"'
+  
+  cli:
+    keywords: ["command", "cli", "hey-egeria", "terminal"]
+    example: 'Try: "What are the hey-egeria commands for glossaries?"'
+  
+  examples:
+    keywords: ["example", "demo", "sample", "notebook", "workspace"]
+    example: 'Try: "Show me an example of using glossaries"'

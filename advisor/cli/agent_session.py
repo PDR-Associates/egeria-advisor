@@ -72,6 +72,7 @@ class AgentInteractiveSession:
         self.running = True
         self.last_query: Optional[str] = None
         self.last_response: Optional[Dict[str, Any]] = None
+        self.last_agent_type: Optional[str] = None  # Track which agent handled the last query
         
         # Options
         self.verbose = options.get('verbose', False)
@@ -266,6 +267,23 @@ class AgentInteractiveSession:
         query : str
             User's query
         """
+        # Check if this is a follow-up selection (e.g., "1", "2", etc.)
+        is_follow_up = False
+        follow_up_query = self._check_follow_up_selection(query)
+        if follow_up_query:
+            query = follow_up_query
+            is_follow_up = True
+            self.console.print(f"[dim]→ Interpreting as: {query}[/dim]\n")
+        
+        # For follow-up queries from PyEgeria, add PyEgeria context to maintain routing
+        if is_follow_up and self.last_agent_type == "pyegeria":
+            # Extract the topic from the original query
+            topic = self._extract_topic_from_query(self.last_query) if self.last_query else ""
+            if topic:
+                # Add PyEgeria-specific context to ensure it routes back to PyEgeria agent
+                query = f"{query} for PyEgeria {topic}"
+                self.console.print(f"[dim]→ Maintaining PyEgeria context: {query}[/dim]\n")
+        
         # Show processing indicator
         with Progress(
             SpinnerColumn(),
@@ -278,6 +296,9 @@ class AgentInteractiveSession:
             try:
                 # Execute query with agent
                 result = self.agent.run(query, use_rag=True)
+                
+                # Track which agent type handled this query
+                self.last_agent_type = result.get("agent_type", "unknown")
                 
                 # Store for feedback
                 self.last_query = query
@@ -308,6 +329,14 @@ class AgentInteractiveSession:
                         else:
                             self.console.print(f"  [cyan]{i}.[/cyan] {source}")
                 
+                # Show follow-up options if available
+                follow_up_options = result.get("follow_up_options", [])
+                if follow_up_options:
+                    self.console.print("\n[bold cyan]What would you like to know more about?[/bold cyan]")
+                    for i, option in enumerate(follow_up_options, 1):
+                        self.console.print(f"  [cyan]{i}.[/cyan] {option}")
+                    self.console.print("\n[dim]Type the number or describe what you'd like![/dim]")
+                
                 # Show metadata if verbose
                 if self.verbose:
                     self.console.print(f"\n[dim]RAG used: {result.get('rag_used', False)}, "
@@ -317,6 +346,94 @@ class AgentInteractiveSession:
                 self.console.print(f"[red]✗ Error:[/red] {e}")
                 if self.verbose:
                     self.console.print_exception()
+    
+    def _check_follow_up_selection(self, query: str) -> Optional[str]:
+        """
+        Check if query is a follow-up selection (e.g., "1", "2") and convert to full query.
+        
+        Parameters
+        ----------
+        query : str
+            User's input
+            
+        Returns
+        -------
+        Optional[str]
+            Converted query if it's a follow-up selection, None otherwise
+        """
+        # Check if last response had follow-up options
+        if not self.last_response or not self.last_response.get("follow_up_options"):
+            return None
+        
+        query_stripped = query.strip()
+        
+        # Check if it's a number selection
+        if query_stripped.isdigit():
+            selection = int(query_stripped)
+            follow_up_options = self.last_response.get("follow_up_options", [])
+            
+            if 1 <= selection <= len(follow_up_options):
+                selected_option = follow_up_options[selection - 1]
+                
+                # Convert option to query based on last query context
+                if self.last_query:
+                    # Extract the topic from last query
+                    topic = self._extract_topic_from_query(self.last_query)
+                    
+                    # Map option to query
+                    return self._convert_option_to_query(selected_option, topic)
+        
+        return None
+    
+    def _extract_topic_from_query(self, query: str) -> str:
+        """Extract the main topic from a query."""
+        # Simple extraction - look for class names, method names, etc.
+        words = query.split()
+        # Common patterns: "What does X do?", "Tell me about X", "Show me X"
+        for i, word in enumerate(words):
+            if word.lower() in ['does', 'is', 'about', 'me'] and i + 1 < len(words):
+                return words[i + 1].strip('?.,')
+        
+        # Fallback: return last significant word
+        significant_words = [w for w in words if len(w) > 3 and w[0].isupper()]
+        return significant_words[-1] if significant_words else words[-1].strip('?.,')
+    
+    def _convert_option_to_query(self, option: str, topic: str) -> str:
+        """
+        Convert a follow-up option to a full query.
+        
+        Parameters
+        ----------
+        option : str
+            The follow-up option text
+        topic : str
+            The topic from the original query
+            
+        Returns
+        -------
+        str
+            Full query string
+        """
+        option_lower = option.lower()
+        
+        # Map common option patterns to queries
+        if "code example" in option_lower or "example" in option_lower:
+            return f"Show me a code example for {topic}"
+        elif "documentation" in option_lower or "docs" in option_lower:
+            return f"Show me the documentation for {topic}"
+        elif "related" in option_lower:
+            return f"What are related classes to {topic}?"
+        elif "parameters" in option_lower or "options" in option_lower:
+            return f"What are the parameters for {topic}?"
+        elif "commands" in option_lower:
+            return f"Show me related commands for {topic}"
+        elif "implementation" in option_lower or "how" in option_lower:
+            return f"How is {topic} implemented?"
+        elif "async" in option_lower or "sync" in option_lower:
+            return f"Explain async vs sync usage for {topic}"
+        else:
+            # Generic fallback
+            return f"{option} for {topic}"
     
     def _show_help(self):
         """Show help message."""

@@ -3,10 +3,15 @@ Query pattern definitions for query type detection.
 
 This module provides a centralized, extensible configuration for query patterns.
 Patterns are organized by query type and priority for easy maintenance and extension.
+
+Configuration can be loaded from YAML file (config/routing.yaml) or use defaults.
 """
 
-from typing import Dict, List
+from typing import Dict, List, Optional, Any
 from enum import Enum
+from pathlib import Path
+import yaml
+from loguru import logger
 
 
 class QueryType(Enum):
@@ -201,6 +206,152 @@ SPECIAL_RULES = {
 }
 
 
+# Configuration loading
+_config_cache: Optional[Dict[str, Any]] = None
+_config_file_path = Path(__file__).parent.parent / "config" / "routing.yaml"
+
+
+def _load_config() -> Dict[str, Any]:
+    """Load routing configuration from YAML file."""
+    global _config_cache
+    
+    if _config_cache is not None:
+        return _config_cache
+    
+    if not _config_file_path.exists():
+        logger.warning(f"Routing config not found at {_config_file_path}, using defaults")
+        _config_cache = {}
+        return _config_cache
+    
+    try:
+        with open(_config_file_path, 'r') as f:
+            config = yaml.safe_load(f)
+            _config_cache = config or {}
+            logger.info(f"Loaded routing configuration from {_config_file_path}")
+            return _config_cache
+    except Exception as e:
+        logger.error(f"Error loading routing config: {e}, using defaults")
+        _config_cache = {}
+        return _config_cache
+
+
+def reload_config() -> bool:
+    """
+    Reload configuration from file.
+    
+    Returns:
+        True if reload successful, False otherwise
+    """
+    global _config_cache, QUERY_PATTERNS, DOMAIN_TERMS, SPECIAL_RULES
+    
+    _config_cache = None
+    config = _load_config()
+    
+    if not config:
+        return False
+    
+    try:
+        # Reload query patterns
+        if 'query_patterns' in config:
+            _load_query_patterns_from_config(config['query_patterns'])
+        
+        # Reload domain terms
+        if 'domain_terms' in config:
+            _load_domain_terms_from_config(config['domain_terms'])
+        
+        # Reload special rules
+        if 'special_rules' in config:
+            _load_special_rules_from_config(config['special_rules'])
+        
+        logger.info("Configuration reloaded successfully")
+        return True
+    except Exception as e:
+        logger.error(f"Error reloading configuration: {e}")
+        return False
+
+
+def _load_query_patterns_from_config(patterns_config: Dict[str, Any]) -> None:
+    """Load query patterns from config into QUERY_PATTERNS."""
+    global QUERY_PATTERNS
+    
+    priority_map = {
+        'critical': PatternPriority.CRITICAL,
+        'high': PatternPriority.HIGH,
+        'medium': PatternPriority.MEDIUM,
+        'low': PatternPriority.LOW,
+        'fallback': PatternPriority.FALLBACK
+    }
+    
+    query_type_map = {
+        'code_search': QueryType.CODE_SEARCH,
+        'explanation': QueryType.EXPLANATION,
+        'example': QueryType.EXAMPLE,
+        'comparison': QueryType.COMPARISON,
+        'best_practice': QueryType.BEST_PRACTICE,
+        'debugging': QueryType.DEBUGGING,
+        'quantitative': QueryType.QUANTITATIVE,
+        'relationship': QueryType.RELATIONSHIP,
+        'report': QueryType.REPORT,
+        'command': QueryType.COMMAND,
+        'general': QueryType.GENERAL
+    }
+    
+    for priority_str, types_dict in patterns_config.items():
+        priority = priority_map.get(priority_str)
+        if not priority:
+            logger.warning(f"Unknown priority level: {priority_str}")
+            continue
+        
+        if priority not in QUERY_PATTERNS:
+            QUERY_PATTERNS[priority] = {}
+        
+        for type_str, patterns in types_dict.items():
+            query_type = query_type_map.get(type_str)
+            if not query_type:
+                logger.warning(f"Unknown query type: {type_str}")
+                continue
+            
+            QUERY_PATTERNS[priority][query_type] = patterns
+
+
+def _load_domain_terms_from_config(terms_config: Dict[str, List[str]]) -> None:
+    """Load domain terms from config into DOMAIN_TERMS."""
+    global DOMAIN_TERMS
+    
+    for category, terms in terms_config.items():
+        DOMAIN_TERMS[category] = terms
+
+
+def _load_special_rules_from_config(rules_config: Dict[str, Any]) -> None:
+    """Load special rules from config into SPECIAL_RULES."""
+    global SPECIAL_RULES
+    
+    query_type_map = {
+        'comparison': QueryType.COMPARISON,
+        'explanation': QueryType.EXPLANATION,
+        'general': QueryType.GENERAL
+    }
+    
+    for rule_name, rule_data in rules_config.items():
+        if 'if_match' in rule_data and isinstance(rule_data['if_match'], str):
+            rule_data['if_match'] = query_type_map.get(rule_data['if_match'])
+        if 'if_no_match' in rule_data and isinstance(rule_data['if_no_match'], str):
+            rule_data['if_no_match'] = query_type_map.get(rule_data['if_no_match'])
+        
+        SPECIAL_RULES[rule_name] = rule_data
+
+
+# Load configuration on module import
+_initial_config = _load_config()
+if _initial_config:
+    if 'query_patterns' in _initial_config:
+        _load_query_patterns_from_config(_initial_config['query_patterns'])
+    if 'domain_terms' in _initial_config:
+        _load_domain_terms_from_config(_initial_config['domain_terms'])
+    if 'special_rules' in _initial_config:
+        _load_special_rules_from_config(_initial_config['special_rules'])
+
+
 def get_patterns_by_priority() -> Dict[PatternPriority, Dict[QueryType, List[str]]]:
     """
     Get all patterns organized by priority.
@@ -211,7 +362,7 @@ def get_patterns_by_priority() -> Dict[PatternPriority, Dict[QueryType, List[str
     return QUERY_PATTERNS
 
 
-def get_domain_terms(category: str = None) -> List[str]:
+def get_domain_terms(category: Optional[str] = None) -> List[str]:
     """
     Get domain-specific terms for context-aware detection.
     
@@ -275,7 +426,7 @@ def add_domain_term(term: str, category: str = "egeria_concepts"):
         DOMAIN_TERMS[category].append(term)
 
 
-def remove_pattern(query_type: QueryType, pattern: str, priority: PatternPriority = None):
+def remove_pattern(query_type: QueryType, pattern: str, priority: Optional[PatternPriority] = None):
     """
     Remove a pattern from the pattern database.
     
@@ -293,3 +444,30 @@ def remove_pattern(query_type: QueryType, pattern: str, priority: PatternPriorit
         if pri in QUERY_PATTERNS and query_type in QUERY_PATTERNS[pri]:
             if pattern in QUERY_PATTERNS[pri][query_type]:
                 QUERY_PATTERNS[pri][query_type].remove(pattern)
+
+
+def get_collection_domain_terms(collection_name: str) -> List[str]:
+    """
+    Get domain terms for a specific collection from config.
+    
+    Args:
+        collection_name: Name of the collection
+        
+    Returns:
+        List of domain terms for the collection
+    """
+    config = _load_config()
+    if 'collection_domain_terms' in config:
+        return config['collection_domain_terms'].get(collection_name, [])
+    return []
+
+
+def get_intent_keywords() -> Dict[str, List[str]]:
+    """
+    Get intent-based routing keywords from config.
+    
+    Returns:
+        Dictionary mapping intent names to keyword lists
+    """
+    config = _load_config()
+    return config.get('intent_keywords', {})

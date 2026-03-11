@@ -139,6 +139,10 @@ def cli(
     }
     
     try:
+        # If agent mode is requested, automatically enable interactive
+        if agent and not interactive and not query:
+            interactive = True
+        
         if interactive:
             # Start interactive mode
             start_interactive(options)

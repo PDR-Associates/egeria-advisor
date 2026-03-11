@@ -212,6 +212,8 @@ class ConversationAgent:
                 return {
                     "content": response_content,
                     "sources": pyegeria_response.get('sources', []),
+                    "agent_type": "pyegeria",  # Top-level for CLI tracking
+                    "follow_up_options": pyegeria_response.get('follow_up_options', []),
                     "metadata": {
                         "agent": "pyegeria",
                         "query_type": pyegeria_response.get('query_type', 'unknown'),

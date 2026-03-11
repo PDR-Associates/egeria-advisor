@@ -5,6 +5,7 @@ This agent provides intelligent responses about PyEgeria classes, methods,
 modules, and usage patterns by leveraging the pyegeria collection in Milvus.
 
 Enhanced with metadata filtering for precise, fast queries.
+Enhanced with interactive response formatting for better UX.
 """
 
 import logging
@@ -18,6 +19,9 @@ from advisor.metadata_filters import (
     extract_pyegeria_filters,
     build_combined_filter_expr
 )
+from advisor.query_classifier import classify_query as classify_query_type, QueryType
+from advisor.interactive_response import get_interactive_handler
+from advisor.prompt_templates import get_prompt_manager
 
 logger = logging.getLogger(__name__)
 
@@ -148,8 +152,9 @@ class PyEgeriaAgent:
         # Stage 2: Check if asking about a class/methods and if it exists in pyegeria
         class_query_patterns = [
             'what methods', 'methods does', 'methods in', 'methods of',
-            'tell me about', 'what is', 'how do i use',
+            'tell me about', 'what is', 'what does', 'how do i use',  # Added "what does"
             'list all', 'list the', 'show all', 'show the', 'get all',  # Added exhaustive patterns
+            'show me the', 'show me', 'documentation for',  # Added for follow-ups
             'class', 'manager', 'officer', 'handler', 'service'
         ]
         
@@ -435,7 +440,8 @@ class PyEgeriaAgent:
     def generate_response(
         self,
         query: str,
-        query_result: PyEgeriaQueryResult
+        query_result: PyEgeriaQueryResult,
+        use_interactive_format: bool = False  # DISABLED - causing issues
     ) -> Dict[str, Any]:
         """
         Generate intelligent response based on query type and search results.
@@ -443,14 +449,21 @@ class PyEgeriaAgent:
         Args:
             query: Original user query
             query_result: Classified query with search results
+            use_interactive_format: Whether to use interactive response formatting (DISABLED)
             
         Returns:
             Response dictionary with answer and metadata
         """
         query_type = query_result.query_type
         results = query_result.search_results
+        confidence = query_result.confidence
+        
+        # Interactive handler DISABLED - it was causing generic clarification messages
+        # when search returned no results, hiding the real problem
+        interactive_handler = None  # Disabled
         
         if not results:
+            # No results - provide helpful message
             return {
                 'answer': (
                     "I couldn't find specific information about that in the PyEgeria collection. "
@@ -477,22 +490,42 @@ class PyEgeriaAgent:
         try:
             response = self.llm_client.generate(
                 prompt=prompt,
-                temperature=0.3,  # Lower temperature for more factual responses
+                temperature=0.0,  # Zero temperature for maximum factual accuracy
                 max_tokens=max_tokens
             )
             
             # Extract sources
             sources = self._extract_sources(results)
             
+            # Generate follow-up options if using interactive format
+            follow_up_options = []
+            if interactive_handler and use_interactive_format:
+                # Map internal query_type to QueryType enum
+                query_type_map = {
+                    'class': QueryType.CONCEPT,
+                    'method': QueryType.CODE,
+                    'module': QueryType.CONCEPT,
+                    'usage': QueryType.TUTORIAL,
+                    'example': QueryType.EXAMPLE,
+                    'general': QueryType.GENERAL
+                }
+                mapped_type = query_type_map.get(query_type, QueryType.GENERAL)
+                follow_up_options = interactive_handler.get_follow_up_options(mapped_type)
+            
             # Add helpful suggestions based on query type
             suggestions = self._generate_suggestions(query_type, results)
+            
+            # Combine follow-ups and suggestions
+            all_options = follow_up_options + suggestions
             
             return {
                 'answer': response,
                 'sources': sources,
                 'query_type': query_type,
-                'confidence': query_result.confidence,
-                'suggestions': suggestions
+                'confidence': confidence,
+                'suggestions': suggestions,
+                'follow_up_options': follow_up_options,
+                'all_options': all_options[:4]  # Limit to 4 total options
             }
             
         except Exception as e:
@@ -569,7 +602,7 @@ class PyEgeriaAgent:
         return '\n'.join(context_parts)
     
     def _build_prompt(self, query: str, query_type: str, context: str) -> str:
-        """Build prompt for LLM based on query type."""
+        """Build prompt for LLM based on query type with anti-hallucination safeguards."""
         
         # Check if this is an exhaustive query (context starts with "All methods")
         is_exhaustive = context.startswith('\nAll methods (')
@@ -584,14 +617,16 @@ User Query: {query}
 Complete Method List:
 {context}
 
-CRITICAL INSTRUCTIONS:
-1. You MUST list ALL {context.split('(')[1].split(' ')[0]} methods shown above
-2. Create a numbered list with EVERY method
-3. Do NOT summarize or skip any methods
-4. Format: "1. method_name: brief description"
-5. After listing all methods, you may add 1-2 detailed examples
+CRITICAL ANTI-HALLUCINATION RULES:
+1. ONLY use methods listed in the context above - NEVER invent or add methods
+2. You MUST list ALL {context.split('(')[1].split(' ')[0]} methods shown above
+3. Do NOT add methods from your training data or make assumptions
+4. If a method is not in the list above, it does NOT exist in this class
+5. Create a numbered list with EVERY method from the context
+6. Format: "1. method_name: brief description from context"
+7. After listing all methods, you may add 1-2 detailed examples ONLY using methods from the list
 
-Answer with the COMPLETE list:"""
+Answer with the COMPLETE list using ONLY the methods shown above:"""
             return base_prompt
         
         # Special instructions for class queries
@@ -604,34 +639,30 @@ Query Type: {query_type}
 Relevant PyEgeria Information:
 {context}
 
+CRITICAL ANTI-HALLUCINATION RULES - READ CAREFULLY:
+1. ONLY use information from the context above - NEVER add external knowledge
+2. If a method is not explicitly listed in the context above, it does NOT exist - do NOT mention it
+3. Do NOT invent method names, parameters, descriptions, or behaviors
+4. Do NOT make assumptions about what methods might exist
+5. ALWAYS cite the source: "From the context above..." or "According to the provided information..."
+6. If information is missing, explicitly state: "This information is not in the provided context"
+7. Every method you mention MUST be explicitly shown in the context above
+
 Instructions for Class Method Queries:
-1. FIRST: Create a complete table listing ALL methods shown in the context above
+1. FIRST: Explain what the class does (ONLY from context, 2-3 sentences)
+2. THEN: Create a complete table listing ALL methods shown in the context above
    - Use markdown table format: | Method Name | Description |
    - List EVERY method mentioned in the "Methods" section
-   - Keep descriptions brief (one line each)
-
-2. THEN: Provide detailed examples for 2-3 key methods
-   - Show method signatures
-   - Explain parameters
-   - Include usage examples if helpful
-
-3. FINALLY: Note that PyEgeria provides both sync and async versions
+   - Keep descriptions brief (one line each from context)
+   - Do NOT add methods not in the context
+3. THEN: Provide detailed examples for 2-3 key methods (ONLY using context)
+   - Show method signatures from context
+   - Explain parameters from context
+   - Include usage examples if provided in context
+4. FINALLY: Note that PyEgeria provides both sync and async versions
    - Mention hey_egeria CLI and Dr. Egeria alternatives
 
-Format:
-## All Methods in [ClassName]
-
-| Method | Description |
-|--------|-------------|
-| method1 | Brief description |
-| method2 | Brief description |
-...
-
-## Detailed Examples
-
-[Show 2-3 detailed method examples]
-
-Answer:"""
+Answer (provide ONLY the explanation and method table, NO follow-up questions):"""
         else:
             base_prompt = f"""You are an expert on the PyEgeria Python library for Egeria.
 
@@ -641,15 +672,23 @@ Query Type: {query_type}
 Relevant PyEgeria Information:
 {context}
 
+CRITICAL ANTI-HALLUCINATION RULES - READ CAREFULLY:
+1. ONLY use information from the context above - NEVER add external knowledge
+2. If information is not in the context, explicitly state: "This is not covered in the provided context"
+3. ALWAYS cite specific sources from the context
+4. Do NOT make assumptions about features, APIs, or behaviors not mentioned
+5. If you're uncertain, say so - never guess or fabricate
+6. Every method, class, or feature you mention MUST be explicitly shown in the context above
+
 Instructions:
-- Provide a clear, accurate answer based on the PyEgeria information above
+- Provide a clear, accurate answer based ONLY on the PyEgeria information above
 - Include specific class names, method names, and file paths when relevant
-- If showing code, use proper Python syntax
+- If showing code, use proper Python syntax from the context
 - Mention that PyEgeria provides both synchronous and asynchronous clients
 - Note that operations may also be available via hey_egeria CLI or Dr. Egeria
 - Be concise but complete
 
-Answer:"""
+Answer (provide ONLY the answer, NO follow-up questions):"""
         
         return base_prompt
     

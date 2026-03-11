@@ -260,7 +260,9 @@ GENERAL QUERY - Provide comprehensive overview:
         context: str,
         query_type: QueryType,
         collections_searched: Optional[list] = None,
-        offer_examples: bool = False
+        offer_examples: bool = False,
+        use_succinct_format: bool = False,
+        follow_up_options: Optional[List[str]] = None
     ) -> str:
         """
         Build complete prompt with query-type-specific instructions.
@@ -271,6 +273,8 @@ GENERAL QUERY - Provide comprehensive overview:
             query_type: Type of query detected
             collections_searched: List of collections that were searched
             offer_examples: Whether to offer follow-up examples
+            use_succinct_format: Whether to use succinct answer + options format
+            follow_up_options: Specific follow-up options to offer
             
         Returns:
             Complete prompt for LLM
@@ -298,16 +302,41 @@ GENERAL QUERY - Provide comprehensive overview:
             if collection_names:
                 collection_info = f"\n\nContext sources: {', '.join(collection_names)}"
         
-        # Build follow-up suggestion
+        # Build follow-up suggestion based on format
         followup = ""
-        if offer_examples:
+        if use_succinct_format and follow_up_options:
+            # Succinct format with specific options
+            options_text = "\n".join([f"{i}. {opt}" for i, opt in enumerate(follow_up_options, 1)])
+            followup = f"""
+
+---
+
+**IMPORTANT RESPONSE FORMAT:**
+
+Provide a BRIEF, DIRECT answer (2-3 sentences maximum) that directly answers the question.
+
+Then, offer these follow-up options:
+
+{options_text}
+
+Format your response as:
+## Quick Answer
+[Your brief answer here]
+
+## What would you like to know more about?
+{options_text}
+
+Just let me know the number or describe what you'd like!
+"""
+        elif offer_examples:
+            # Standard follow-up format
             followup = """
 
 ---
 
 After answering, offer to show:
 - A Python code example using pyegeria
-- A Java implementation example  
+- A Java implementation example
 - A REST API call example
 - Related documentation or guides
 

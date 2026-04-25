@@ -12,7 +12,7 @@ import logging
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 
-from advisor.vector_store import VectorStoreManager
+from advisor.vector_store import VectorStoreManager, get_vector_store
 from advisor.llm_client import OllamaClient, get_ollama_client
 from advisor.config import settings
 from advisor.metadata_filters import (
@@ -58,7 +58,7 @@ class PyEgeriaAgent:
             vector_store: Vector store manager for semantic search
             llm_client: LLM client for generating responses
         """
-        self.vector_store = vector_store or VectorStoreManager()
+        self.vector_store = vector_store or get_vector_store()
         self.llm_client = llm_client or get_ollama_client()
         self.collection_name = "pyegeria"
         
@@ -265,23 +265,15 @@ class PyEgeriaAgent:
         try:
             # Ensure connection exists
             self.vector_store.connect()
-            
-            from pymilvus import Collection
-            
-            # Query by class_name only (Milvus doesn't support combining multiple scalar filters well)
+
             filter_expr = f'class_name == "{class_name}"'
-            
             logger.info(f"Querying all items for class {class_name} with filter: {filter_expr}")
-            
-            # Get collection using existing connection
-            collection = Collection(self.collection_name)
-            collection.load()
-            
-            # Query with filter - this gets ALL matching records, no semantic search
-            results = collection.query(
-                expr=filter_expr,
+
+            results = self.vector_store.query_by_filter(
+                collection_name=self.collection_name,
+                filter_expr=filter_expr,
                 output_fields=['method_name', 'element_type', 'metadata'],
-                limit=500  # High limit to get all items
+                limit=500,
             )
             
             logger.info(f"Direct query returned {len(results)} items for {class_name}")

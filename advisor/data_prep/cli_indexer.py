@@ -11,7 +11,7 @@ from typing import Dict, List, Any, Optional
 from loguru import logger
 
 from advisor.embeddings import EmbeddingGenerator
-from advisor.vector_store import VectorStoreManager, SearchResult
+from advisor.vector_store import VectorStoreManager, SearchResult, get_vector_store
 from advisor.config import settings
 
 
@@ -32,7 +32,7 @@ class CLICommandIndexer:
             embedding_generator: Embedding generator instance
             collection_name: Name of collection to store commands
         """
-        self.vector_store = vector_store or VectorStoreManager()
+        self.vector_store = vector_store or get_vector_store()
         self.embedding_generator = embedding_generator or EmbeddingGenerator()
         self.collection_name = collection_name
         

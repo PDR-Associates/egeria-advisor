@@ -1,48 +1,47 @@
 # Egeria Advisor
 
 Experimental AI-powered advisor for the Egeria Python library using local LLMs and RAG.
-The goal is to provide a useful advisor for Egeria and Pyegeria users. You should be able to ask questions about the
-concepts and code, ask for examples, find definitions etc.
+The goal is to provide a useful advisor for Egeria and pyegeria users. You should be able to ask questions about the
+concepts and code, ask for examples, find definitions, and ask the advisor to take actions on your behalf using Dr. Egeria
+markdown commands or pyegeria directly.
 
-This is also a testbed for my experiments with AI, RAG, Agents, LLMs, and more. I am working to integrate
-*Context Intelligence* into the environment. There are experimental features and ideas that are not yet fully
-cooked, integrated, or tested. I view this as a testbed for building out useful AI advisors.
+This is also a testbed for experiments with AI, RAG, Agents, LLMs, and more. There are experimental features and ideas
+that are not yet fully cooked, integrated, or tested.
 
 This is a work in progress. There are known limitations and bugs, and the system is not production-ready.
 
-The accuracy of the results is still only fair at best. I see hallucinations and errors, and I am tracking results and
-feedback to make ongoing improvements. There are many more integrations to do and updates to some of the
-newer frameworks and technologies. Its an interesting start to an ongoing experiment.
+The accuracy of the results is still only fair at best. Hallucinations and errors do occur, and results are tracked and
+feedback collected to drive ongoing improvements.
 
 Feedback and comments are welcome. Please share your thoughts and suggestions to help improve the system.
 
 ## Overview
 
-Egeria Advisor is an enterprise-grade RAG (Retrieval-Augmented Generation) system that helps users and maintainers work with the Egeria Python library by providing:
+Egeria Advisor is a RAG (Retrieval-Augmented Generation) system that helps users and maintainers work with the Egeria
+Python library by providing:
 
 ### Core Capabilities
 
-- **Multi-Collection Search**: 8 specialized repository collections (~90,000 entities) with intelligent routing
-- **Conversational Agent**: Multi-turn conversations with context and memory
+- **Multi-Collection Search**: 9 specialized repository collections (~88,900 entities) with intelligent routing
+- **Action Execution**: Dr. Egeria integration to compose and execute pyegeria commands from natural-language requests
+- **Report Generation**: MCP-based report pipeline for structured Egeria data queries
+- **Conversational Agent**: Multi-turn conversations with context and memory (BeeAI)
 - **Code Analysis**: Deep understanding of Python/Java code, APIs, and patterns
-- **Performance Optimization**: 17,997x cache speedup, parallel search, universal GPU support
+- **Performance Optimization**: Query cache speedup, parallel collection search, universal GPU support
 - **Enhanced Tracking**: MLflow integration for metrics, resource monitoring, and accuracy
 - **Incremental Updates**: 10-100x faster updates with file change tracking
 - **Real-time Monitoring**: Terminal dashboard with metrics collection
-- **Automated Maintenance**: Airflow DAGs with OpenLineage data lineage
 
 ### Key Features
 
-✅ **Multi-Collection Architecture**: 8 specialized collections with intelligent query routing
-✅ **High Performance**: 17,997x cache speedup, <1s query latency (p95)
-✅ **Universal GPU Support**: Auto-detection for CUDA, ROCm, MPS, and CPU
-✅ **Conversational Agent**: BeeAI framework integration with memory
-✅ **Rich CLI**: 3 interaction modes (query, interactive, agent)
-✅ **MLflow Tracking**: Comprehensive experiment and query tracking
-✅ **Incremental Indexing**: Fast updates with SQLite-based change detection
-✅ **Monitoring Dashboard**: Real-time metrics and health monitoring
-✅ **Airflow Integration**: Automated updates with Airflow 3.x and OpenLineage
-✅ **Production Ready**: 40 end-to-end tests, 100% passing
+✅ **Multi-Collection Architecture**: 9 specialized collections with intelligent query routing  
+✅ **Action & Report Pipeline**: Dr. Egeria command execution and MCP-based report generation  
+✅ **Universal GPU Support**: Auto-detection for CUDA, ROCm, MPS, and CPU  
+✅ **Conversational Agent**: BeeAI framework integration with memory  
+✅ **Rich CLI**: 3 interaction modes (query, interactive, agent)  
+✅ **MLflow Tracking**: Experiment and query tracking (background, non-blocking)  
+✅ **Incremental Indexing**: Fast updates with SQLite-based change detection  
+✅ **Monitoring Dashboard**: Real-time metrics and health monitoring  
 
 ## Architecture
 
@@ -51,67 +50,85 @@ Egeria Advisor is an enterprise-grade RAG (Retrieval-Augmented Generation) syste
 - **LLM**: Ollama (local) @ localhost:11434
   - Primary Model: llama3.1:8b (fast, general purpose)
   - Code Model: codellama:13b (code-specialized)
-- **Vector Store**: Milvus @ localhost:19530
-  - 6 specialized collections (99,822 entities)
-  - 384-dimensional embeddings
+- **Vector Store**: pgvector (PostgreSQL) @ localhost:5442
+  - 9 specialized collections (~88,900 entities)
+  - 384-dimensional HNSW embeddings
+  - Database: `egeria_advisor`, user: `egeria_advisor`
 - **Embeddings**: sentence-transformers/all-MiniLM-L6-v2 (local)
   - Universal device support (CUDA/ROCm/MPS/CPU)
-- **Experiment Tracking**: MLflow @ localhost:5025
+- **Experiment Tracking**: MLflow @ localhost:5025 (optional)
 - **Metrics Storage**: SQLite (query metrics, collection health, system resources)
-- **Automation**: Apache Airflow 3.x with OpenLineage
 - **Agent Framework**: BeeAI for conversational interactions
 
 ### Collections
 
-| Collection | Entities | Purpose |
-|-----------|----------|---------|
-| egeria_java | 59,597 | Core Java library code (OMAS, OMAG) |
-| pyegeria | 9,309 | Core Python library code |
-| egeria_workspaces | 9,264 | Jupyter notebooks and examples |
-| egeria_general | 3,317 | General documentation and tutorials |
-| pyegeria_drE | 878 | Data retrieval engine |
-| pyegeria_cli | 809 | CLI commands and tools |
-| egeria_concepts | 672 | Egeria core concept definitions |
-| egeria_types | 520 | Type system and schema definitions |
-| **Total** | **~84,366** | **All repo collections** |
+| Collection | Purpose |
+|-----------|---------|
+| `pyegeria` | Core Python library code and tests |
+| `pyegeria_cli` | hey_egeria CLI commands and tools |
+| `pyegeria_drE` | Dr. Egeria markdown-to-pyegeria translator |
+| `egeria_java` | Core Java library (OMAS, OMAG, OMRS) |
+| `egeria_concepts` | Core concept definitions |
+| `egeria_types` | Type system and schema definitions |
+| `egeria_general` | Tutorials, guides, and how-tos |
+| `egeria_workspaces` | Jupyter notebooks, deployment configs, examples |
+| `egeria_templates` | Dr. Egeria markdown command templates |
+
+Collections are defined in `advisor/collection_config.py`. Query routing selects 1–N collections per query based on
+classified intent; see `advisor/collection_router.py`.
+
+### Query Flow
+
+```
+User Query
+  → CLI (advisor/cli/main.py)
+  → RAGSystem (advisor/rag_system.py)
+      ├─ QueryCache                   ← checked first; large speedup on cache hits
+      ├─ QueryProcessor               ← classifies query type/intent
+      │    ├─ quantitative  → Analytics module (direct SQL answer)
+      │    ├─ relationship  → Relationship graph handler
+      │    ├─ report        → MCP report pipeline (advisor/report_pipeline.py)
+      │    ├─ command       → DrEgeriaActionAgent (advisor/agents/dr_egeria_agent.py)
+      │    └─ general       → RAG retrieval + LLM generation (below)
+      ├─ CollectionRouter             ← selects relevant collections
+      ├─ RAGRetrieval
+      │    └─ MultiCollectionStore   ← parallel search across collections
+      │         └─ pgvector (HNSW, 384-dim sentence-transformer embeddings)
+      ├─ LLMClient                   ← Ollama wrapper
+      └─ PromptTemplates
+```
 
 ## Quick Start
 
 ### Prerequisites
 
-Ensure these Docker containers are running:
+Ensure these services are running:
 
 ```bash
-# Milvus
-docker ps | grep milvus
+# PostgreSQL with pgvector (vector store)
+psql -h localhost -p 5442 -U egeria_advisor -d egeria_advisor -c "SELECT COUNT(*) FROM pyegeria;"
 
-# MLflow
-curl http://localhost:5000
-
-# Egeria
-curl -k https://localhost:9443/open-metadata/platform-services/users/garygeeke/server-platform/origin
-
-# Ollama
-docker ps | grep ollama
+# Ollama (LLM inference)
 curl http://localhost:11434/api/tags
+
+# MLflow (optional — for experiment tracking)
+curl http://localhost:5025
+
+# Egeria server (if running action/report queries)
+curl -k https://localhost:9443/open-metadata/platform-services/users/garygeeke/server-platform/origin
 ```
 
 ### Installation
 
 ```bash
-# Clone and navigate
+# Navigate to project
 cd /Users/dwolfson/localGit/egeria-v6/egeria-advisor
 
-# Create virtual environment
-python3.12 -m venv .venv
-source .venv/bin/activate
+# Activate virtual environment
+source activate_venv.sh
 
-# Install dependencies
+# Install with dev dependencies
 pip install -e ".[dev]"
-
-# Copy and configure environment
-cp .env.example .env
-# Edit .env with your settings
 
 # Verify setup
 python -c "from advisor.config import settings; print('✓ Config loaded')"
@@ -134,301 +151,225 @@ ollama pull codellama:13b
 ### 1. Query Mode (Direct Questions)
 
 ```bash
-# Simple query
+# Simple question
 egeria-advisor "What is a glossary term in Egeria?"
 
-# With collection scope
-egeria-advisor --collection pyegeria "How do I create a glossary?"
+# Ask for code examples
+egeria-advisor "How do I create a glossary in pyegeria?"
 
-# With MLflow tracking
-egeria-advisor --track "Show me asset management examples"
+# With MLflow tracking enabled (default)
+egeria-advisor "Show me asset management examples"
+
+# Without MLflow tracking
+egeria-advisor --no-track "What is a metadata repository?"
+
+# JSON output
+egeria-advisor "What is a collection?" --format=json
+
+# Disable source citations
+egeria-advisor --no-citations "Explain governance zones"
 ```
 
 ### 2. Interactive Mode (Multi-turn Conversations)
 
 ```bash
-# Start interactive session
 egeria-advisor --interactive
 
-# In interactive mode:
-> What is a metadata repository?
-> How do I connect to one?
-> Show me example code
-> exit
+# Prompts:
+egeria> What is a metadata repository?
+egeria> How do I connect to one?
+egeria> Show me example code
+egeria> /dry-run       # Toggle dry-run for Dr. Egeria commands
+egeria> /citations     # Toggle source citations
+egeria> /help          # Show all commands
+egeria> /exit
 ```
+
+**Interactive commands:**
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show all commands |
+| `/clear` | Clear conversation context |
+| `/history` | Show recent query history |
+| `/verbose` | Toggle verbose output |
+| `/citations` | Toggle source citations |
+| `/dry-run` | Toggle Dr. Egeria dry-run (compose commands without executing) |
+| `/feedback` | Provide feedback on last response |
+| `/stats` | Show feedback statistics |
+| `/exit` | Exit (also Ctrl+D) |
 
 ### 3. Agent Mode (Conversational with Memory)
 
 ```bash
-# Start agent mode (using llama3.1:8b)
 egeria-advisor --agent
 
-# Agent remembers context across turns:
-> I need to create a glossary
-> What parameters do I need?
-> Show me the complete code
-> exit
+# Agent maintains conversation history across turns:
+egeria> I need to create a glossary
+egeria> What parameters do I need?
+egeria> Show me the complete code
+egeria> /tools         # List available MCP tools
+egeria> /execute       # Execute an MCP tool directly
+egeria> /exit
 ```
 
-### 4. Testing & Monitoring
+### 4. Action Queries (Dr. Egeria)
+
+Natural-language requests classified as `command` type are handled by the DrEgeriaActionAgent.
+It finds the appropriate Dr. Egeria markdown template and composes the command with your parameters.
 
 ```bash
-# Run end-to-end tests
-python scripts/test_end_to_end.py --quick
+# Direct action query
+egeria-advisor "Create a glossary called 'Data Governance Terms'"
 
-# Run full test suite
-python scripts/test_end_to_end.py --full
+# In interactive mode with dry-run (preview without executing)
+egeria> /dry-run
+egeria> Create a project called 'Data Quality Initiative'
+```
 
-# Start monitoring dashboard
+### 5. Monitoring & Incremental Updates
+
+```bash
+# Start real-time monitoring dashboard
 python -m advisor.dashboard.terminal_dashboard
 
-# Test incremental indexing
-python scripts/test_incremental_indexing.py
-```
-
-### 5. Incremental Updates
-
-```bash
-# Detect changes (dry-run)
+# Detect changes in a collection (dry-run)
 python -m advisor.incremental_indexer --collection pyegeria --dry-run
 
-# Apply updates
+# Apply incremental updates to a collection
 python -m advisor.incremental_indexer --collection pyegeria
 
 # Update all collections
 python -m advisor.incremental_indexer --all
 ```
 
-### 6. Airflow Automation
+### 6. Testing
 
 ```bash
-# Deploy DAGs
-cp airflow/dags/*.py $AIRFLOW_HOME/dags/
+# Quick E2E test suite
+python scripts/test_end_to_end.py --quick
 
-# Trigger incremental update
-airflow dags trigger egeria_advisor_incremental_update
+# Full test suite
+python scripts/test_end_to_end.py --full
 
-# View lineage in Marquez
-open http://localhost:3000
+# Specific categories
+python scripts/test_end_to_end.py --categories environment,config,vector_store
+
+# Pytest with coverage
+pytest tests/ -v
+pytest --cov=advisor --cov-report=html
 ```
-
-## Development Status
-
-### Completed Phases ✅
-
-- ✅ **Phase 1**: Architecture & Design
-- ✅ **Phase 2**: Data Preparation Pipeline
-- ✅ **Phase 3**: Vector Store Integration (6 collections, 99,822 entities)
-- ✅ **Phase 4**: RAG System (multi-collection search, intelligent routing)
-- ✅ **Phase 5**: Agent Framework (BeeAI integration, conversational agent)
-- ✅ **Phase 6**: CLI Interface (3 modes: query, interactive, agent)
-- ✅ **Phase 7**: Performance Optimization (17,997x cache speedup, parallel search)
-- ✅ **Phase 8**: Testing (40 end-to-end tests, 100% passing)
-- ✅ **Phase 9**: Incremental Indexing (10-100x faster updates)
-- ✅ **Phase 10**: Monitoring & Observability (metrics, dashboard, MLflow)
-- ✅ **Phase 11**: Automation (Airflow 3.x DAGs, OpenLineage integration)
-
-### Production Ready 🚀
-
-- **Test Coverage**: 40 tests, 100% passing
-- **Performance**: <1s query latency (p95), 17,997x cache speedup
-- **Scalability**: 99,822 entities, parallel search, incremental updates
-- **Observability**: MLflow tracking, metrics dashboard, health monitoring
-- **Automation**: Airflow DAGs for scheduled updates and maintenance
-- **Documentation**: Complete architecture, API docs, usage guides
 
 ## Project Structure
 
 ```
 egeria-advisor/
-├── advisor/                 # Main package
-│   ├── data_prep/          # Data preparation pipeline
-│   ├── vector_store/       # Milvus integration
-│   ├── rag/                # RAG system
-│   ├── agents/             # Agent implementations
-│   ├── observability/      # MLflow & monitoring
-│   └── cli/                # CLI interface
-├── config/                 # Configuration files
-├── data/                   # Processed data cache
-├── tests/                  # Test suite
-├── docs/                   # Documentation
-├── examples/               # Usage examples
-└── scripts/                # Utility scripts
+├── advisor/                    # Main package
+│   ├── agents/                 # Agent implementations
+│   │   ├── pyegeria_agent.py   # Python SDK query agent
+│   │   ├── dr_egeria_agent.py  # Action agent (Dr. Egeria commands)
+│   │   └── ...
+│   ├── cli/                    # CLI interface
+│   │   ├── main.py             # Entry point and direct-query handler
+│   │   ├── interactive.py      # Interactive REPL session
+│   │   └── formatters.py       # Response formatting
+│   ├── data_prep/              # Data preparation pipeline
+│   ├── vector_store_base.py    # Abstract base class for vector backends
+│   ├── vector_store.py         # Milvus backend (legacy)
+│   ├── vector_store_pg.py      # pgvector backend (active)
+│   ├── multi_collection_store.py
+│   ├── rag_system.py           # Main RAG orchestrator
+│   ├── report_pipeline.py      # MCP report pipeline
+│   └── collection_config.py    # Collection definitions
+├── config/
+│   ├── advisor.yaml            # Primary configuration
+│   ├── routing.yaml            # Collection routing rules
+│   └── report_specs/           # Report specification templates
+├── scripts/
+│   ├── ingest_collections.py   # Full re-index a collection
+│   ├── count_vectors.py        # Count vectors per collection
+│   ├── generate_question_specs.py  # Generate report question specs
+│   └── ...
+├── data/                       # SQLite metrics database
+├── tests/                      # Test suite
+└── docs/                       # Architecture and design docs
 ```
 
 ## Configuration
 
-See `config/advisor.yaml` for full configuration options.
+Primary config: `config/advisor.yaml`. Key sections:
 
-Key settings:
+- **data_sources**: Path to egeria-python and egeria-workspaces repositories
+- **pgvector**: PostgreSQL connection (host, port, dbname, user, password)
+- **vector_store_backend**: `pgvector` (active) or `milvus` (legacy)
+- **llm**: Ollama model selection and parameters per agent type
+- **embeddings**: Model, device, batch size
+- **rag**: chunk_size, top_k, min_score thresholds
+- **observability**: MLflow tracking URI and experiment name
 
-- **Data Source**: Path to egeria-python repository
-- **LLM Models**: Which Ollama models to use for each agent
-- **Vector Store**: Milvus connection settings
-- **RAG Parameters**: Chunk size, similarity threshold, etc.
-- **Observability**: MLflow tracking configuration
-
-## Testing
-
-```bash
-# Run end-to-end test suite (quick mode)
-python scripts/test_end_to_end.py --quick
-
-# Run full test suite (includes integration tests)
-python scripts/test_end_to_end.py --full
-
-# Run specific test categories
-python scripts/test_end_to_end.py --categories environment,config,vector_store
-
-# Run with pytest
-pytest tests/ -v
-
-# Run with coverage
-pytest --cov=advisor --cov-report=html
-
-# Test incremental indexing
-python scripts/test_incremental_indexing.py
-
-# Test vector search
-python scripts/test_vector_search.py
-```
-
-**Test Results**: 40 tests, 100% passing (36/36 in quick mode)
+Settings are managed via Pydantic models in `advisor/config.py`.
 
 ## Monitoring & Observability
 
 ### Terminal Dashboard
 
 ```bash
-# Start real-time monitoring dashboard
+# Start real-time monitoring (5-second auto-refresh)
 python -m advisor.dashboard.terminal_dashboard
-
-# Dashboard displays:
-# - Collection health (entity counts, last update)
-# - Query performance (latency, cache hits)
-# - System resources (CPU, memory, GPU)
-# - Recent queries and errors
-# - Auto-refreshes every 5 seconds
 ```
+
+Displays: collection health, recent queries, query performance (latency, cache hits), and system resources.
 
 ### MLflow Tracking
 
+MLflow tracking runs in a background daemon thread and does not block query responses.
+
 - **MLflow UI**: <http://localhost:5025>
-  - View all experiments and runs
-  - Compare query performance
-  - Track metrics over time
-  - Analyze cache effectiveness
+  - View experiments and runs
+  - Compare query performance over time
   - Monitor collection usage patterns
 
-### Metrics Collection
+Disable per-query with `--no-track`. Set `mlflow.enabled: false` in `advisor.yaml` to disable globally.
 
-```python
-from advisor.metrics_collector import get_metrics_collector, track_query
+### SQLite Metrics
 
-collector = get_metrics_collector()
-
-# Automatic tracking with context manager
-with track_query(collector, "What is a glossary?") as tracker:
-    result = perform_query()
-    tracker.set_result(result)
-
-# Metrics stored in SQLite:
-# - Query text and timestamp
-# - Latency and token counts
-# - Collections searched
-# - Cache hit/miss status
-# - Error tracking
-```
-
-### Airflow Monitoring
-
-- **Airflow UI**: <http://localhost:8080>
-  - View DAG runs and task status
-  - Monitor scheduled updates
-  - Check health checks
-  - Review metrics aggregation
-
-- **Marquez (OpenLineage)**: <http://localhost:3000>
-  - Visualize data lineage graphs
-  - Track data flow: repos → files → embeddings → collections
-  - Monitor data quality
-  - Audit data transformations
+All query metrics are stored locally in `data/metrics.db` regardless of MLflow status:
+- Query text, timestamp, and latency
+- Collections searched and result counts
+- Cache hit/miss status
 
 ## Documentation
 
-### Architecture & Design
+### Design & Architecture
 
-- [System Architecture](docs/design/SYSTEM_ARCHITECTURE.md) - Complete architecture with 11 Mermaid diagrams
-- [Multi-Collection Design](docs/design/MULTI_COLLECTION_DESIGN.md) - Collection architecture and routing
-- [Incremental Indexing Design](docs/design/INCREMENTAL_INDEXING_DESIGN.md) - Fast update system (10-100x faster)
-- [Monitoring Dashboard Design](docs/user-docs/MONITORING_DASHBOARD_DESIGN.md) - Metrics and monitoring architecture
-- [Airflow Integration Design](docs/design/AIRFLOW_INTEGRATION_DESIGN.md) - Automation with 5 DAG designs
-- [Airflow 3.x & OpenLineage](docs/design/AIRFLOW_V3_OPENLINEAGE.md) - Modern Airflow with data lineage
+- [System Architecture](docs/design/SYSTEM_ARCHITECTURE.md)
+- [Multi-Collection Design](docs/design/MULTI_COLLECTION_DESIGN.md)
+- [Query Classification & Tracking](docs/design/QUERY_CLASSIFICATION_AND_TRACKING.md)
+- [Egeria Docs Split Strategy](docs/design/EGERIA_DOCS_SPLIT_STRATEGY.md)
 
 ### Usage Guides
 
-- [Quick Start](docs/user-docs/QUICK_START.md) - Get started in 5 minutes
-- [Multi-Collection Usage Guide](docs/user-docs/MULTI_COLLECTION_USAGE_GUIDE.md) - How to use 6 collections effectively
-- [Testing Guide](docs/user-docs/TESTING_GUIDE.md) - Running tests, coverage, troubleshooting
-- [CLI Guide](docs/history/PHASE6_CLI_GUIDE.md) - Command-line interface usage (3 modes)
-- [MLflow Enhanced Tracking](docs/user-docs/MLFLOW_ENHANCED_TRACKING.md) - Comprehensive experiment tracking
-- [Query Routing Guide](docs/user-docs/QUERY_ROUTING_GUIDE.md) - Intelligent query routing system
-
-### Implementation Details
-
-- [Phase 2 Complete](docs/history/PHASE2_COMPLETE.md) - Data preparation pipeline
-- [Phase 3 Complete](docs/history/PHASE3_COMPLETE.md) - Vector store integration (99,822 entities)
-- [Phase 5 Complete](docs/history/PHASE5_BEEAI_COMPLETE.md) - Agent framework with BeeAI
-- [Phase 6 Complete](docs/history/PHASE6_COMPLETE.md) - CLI interface implementation
-- [AMD Optimization](docs/design/AMD_OPTIMIZATION.md) - ROCm GPU support for AMD hardware
-- [GPU Detection Enhancement](docs/design/GPU_DETECTION_ENHANCEMENT.md) - Universal device support
-
-## Performance Metrics
-
-### Query Performance
-
-- **Latency**: <1s (p95), <500ms (p50)
-- **Cache Speedup**: 17,997x for repeated queries, 4.8x for multiple queries
-- **Cache Hit Rate**: >70% in typical usage
-- **Throughput**: 100+ queries/minute
-
-### System Scale
-
-- **Total Entities**: 99,822 across 6 collections
-- **Embedding Dimensions**: 384 (all-MiniLM-L6-v2)
-- **Index Type**: HNSW (Hierarchical Navigable Small World)
-- **Search Accuracy**: >95% relevance for domain queries
-
-### Update Performance
-
-- **Incremental Updates**: 10-100x faster than full re-index
-- **Change Detection**: <1s for 10,000 files
-- **Parallel Processing**: 4x speedup with multi-threading
-- **Automated Updates**: Every 6 hours via Airflow
+- [Quick Start](docs/user-docs/quick-start-guide.md)
+- [Multi-Collection Usage Guide](docs/user-docs/MULTI_COLLECTION_USAGE_GUIDE.md)
+- [Query Routing Guide](docs/user-docs/QUERY_ROUTING_GUIDE.md)
+- [MLflow Enhanced Tracking](docs/user-docs/MLFLOW_ENHANCED_TRACKING.md)
 
 ## Contributing
 
-This project follows the egeria-python contribution guidelines. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
-
-### Development Setup
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
 
 ```bash
-# Clone repository
-git clone https://github.com/odpi/egeria-python.git
-cd egeria-advisor
-
-# Create virtual environment
-python3.12 -m venv .venv
-source .venv/bin/activate
-
-# Install in development mode
+# Development setup
+source activate_venv.sh
 pip install -e ".[dev]"
+
+# Format and lint
+black advisor/
+ruff check advisor/
+mypy advisor/
 
 # Run tests
 python scripts/test_end_to_end.py --quick
-
-# Start monitoring
-python -m advisor.dashboard.terminal_dashboard
 ```
 
 ## Support
@@ -441,11 +382,3 @@ python -m advisor.dashboard.terminal_dashboard
 ## License
 
 Apache License 2.0 - See [LICENSE](LICENSE) for details.
-
----
-
-**Current Version**: 1.0.0
-**Last Updated**: 2026-02-19
-**Status**: Production Ready - All 11 phases complete
-**Test Coverage**: 40 tests, 100% passing
-**Performance**: 17,997x cache speedup, <1s query latency

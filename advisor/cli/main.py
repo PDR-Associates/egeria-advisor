@@ -4,6 +4,7 @@ Egeria Advisor CLI - Main Entry Point
 This module provides the main command-line interface for the Egeria Advisor.
 """
 
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -118,7 +119,6 @@ def cli(
         # Disable all loguru logs when not in debug mode
         logger.remove()  # Remove all handlers
         # Redirect stderr to suppress library warnings (like amdgpu.ids)
-        import os
         devnull = os.open(os.devnull, os.O_WRONLY)
         os.dup2(devnull, 2)  # Redirect stderr (fd 2) to /dev/null
     
@@ -248,6 +248,10 @@ def direct_query(query: str, options: dict):
     )
     
     formatter.display(result, console)
+    # MLflow >=2.10 spawns non-daemon worker threads that block Python shutdown.
+    # All output is flushed by Rich; force-exit now so the shell prompt returns immediately.
+    sys.stdout.flush()
+    os._exit(0)
 
 
 def start_interactive(options: dict):

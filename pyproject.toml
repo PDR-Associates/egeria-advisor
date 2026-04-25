@@ -11,6 +11,8 @@ license = {text = "Apache-2.0"}
 
 dependencies = [
     "pymilvus>=2.4.0",
+    "psycopg2-binary>=2.9.9",
+    "pgvector>=0.3.0",
     "docling>=1.0.0",
     "click>=8.1.0",
     "rich>=13.7.0",

@@ -35,6 +35,7 @@ class InteractiveSession:
         '/quit': 'Exit interactive mode',
         '/verbose': 'Toggle verbose mode',
         '/citations': 'Toggle citation display',
+        '/dry-run': 'Toggle dry-run mode for Dr.Egeria commands (compose but do not execute)',
         '/feedback': 'Provide feedback on last response',
         '/stats': 'Show feedback statistics',
     }
@@ -68,6 +69,7 @@ class InteractiveSession:
         self.show_citations = options.get('show_citations', True)
         self.track_metrics = options.get('track_metrics', True)
         self.enable_feedback = options.get('enable_feedback', True)
+        self.dry_run = options.get('dry_run', False)
         
         # Feedback system
         self.feedback_collector = get_feedback_collector() if self.enable_feedback else None
@@ -165,7 +167,12 @@ class InteractiveSession:
             self.formatter.show_citations = self.show_citations
             status = "enabled" if self.show_citations else "disabled"
             self.console.print(f"[green]✓[/green] Citations {status}")
-        
+
+        elif cmd == '/dry-run':
+            self.dry_run = not self.dry_run
+            status = "enabled" if self.dry_run else "disabled"
+            self.console.print(f"[green]✓[/green] Dry-run mode {status}")
+
         elif cmd == '/feedback':
             self._handle_feedback_command()
         
@@ -193,51 +200,87 @@ class InteractiveSession:
             transient=True
         ) as progress:
             progress.add_task("Processing...", total=None)
-            
+
             try:
-                # Build context from recent history
-                context_str = self._build_context()
-                
-                # Execute query
                 result = self.rag.query(
                     user_query=query,
                     include_context=True,
-                    track_metrics=self.track_metrics
+                    track_metrics=self.track_metrics,
+                    dry_run=self.dry_run,
                 )
-                
-                # Store last query and response for feedback
+
                 self.last_query = query
                 self.last_response = result
-                
-                # Add to history
+
                 self.history.append({
                     'query': query,
                     'response': result.get('response', ''),
                     'sources': result.get('sources', [])
                 })
-                
-                # Update context
+
                 self.context.append({
                     'query': query,
                     'response': result.get('response', '')
                 })
-                
-                # Keep only last 5 exchanges
                 if len(self.context) > 5:
                     self.context = self.context[-5:]
-                
-                # Display result
+
                 self.formatter.display(result, self.console)
-                
-                # Optionally prompt for feedback
+
+                # Clarification loop for command queries with missing required params
+                if result.get('query_type') == 'command' and result.get('missing_params'):
+                    self._handle_command_clarification(query, result)
+
                 if self.enable_feedback and self.feedback_collector:
                     self._prompt_for_feedback()
-            
+
             except Exception as e:
                 self.console.print(f"[red]✗ Error:[/red] {e}")
                 if self.verbose:
                     self.console.print_exception()
     
+    def _handle_command_clarification(self, original_query: str, result: Dict[str, Any]):
+        """
+        Prompt user to supply missing required parameters and retry the command.
+        """
+        missing = result.get('missing_params', [])
+        if not missing:
+            return
+
+        self.console.print()
+        self.console.print("[bold yellow]Please provide the missing parameters:[/bold yellow]")
+
+        extra_info = []
+        for param in missing:
+            value = Prompt.ask(f"  [cyan]{param}[/cyan]", default="")
+            if value:
+                extra_info.append(f"{param}: {value}")
+
+        if not extra_info:
+            return
+
+        augmented_query = original_query + ". " + ", ".join(extra_info)
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=self.console,
+            transient=True
+        ) as progress:
+            progress.add_task("Retrying...", total=None)
+            try:
+                retry_result = self.rag.query(
+                    user_query=augmented_query,
+                    include_context=True,
+                    track_metrics=self.track_metrics,
+                    dry_run=self.dry_run,
+                )
+                self.last_query = augmented_query
+                self.last_response = retry_result
+                self.formatter.display(retry_result, self.console)
+            except Exception as e:
+                self.console.print(f"[red]✗ Retry failed:[/red] {e}")
+
     def _build_context(self) -> Optional[str]:
         """
         Build context string from recent conversation.
@@ -345,7 +388,8 @@ class InteractiveSession:
             if problem_choice == "3":
                 self.console.print("\n[cyan]Which collection should have been searched?[/cyan]")
                 self.console.print("[dim]Available: pyegeria, pyegeria_cli, pyegeria_drE,[/dim]")
-                self.console.print("[dim]           egeria_java, egeria_docs, egeria_workspaces[/dim]")
+                self.console.print("[dim]           egeria_java, egeria_concepts, egeria_types,[/dim]")
+                self.console.print("[dim]           egeria_general, egeria_workspaces, egeria_templates[/dim]")
                 suggested = Prompt.ask("Suggested collection", default="")
                 if suggested:
                     suggested_collection = suggested

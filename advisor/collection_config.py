@@ -1,7 +1,7 @@
 """
 Collection configuration and metadata for multi-collection RAG system.
 
-This module defines the metadata for each Milvus collection, including
+This module defines the metadata for each vector store collection, including
 source repositories, paths, domain terms, and relationships.
 
 Domain terms can be loaded from config/routing.yaml or use defaults.
@@ -33,7 +33,7 @@ class Language(Enum):
 
 @dataclass
 class CollectionMetadata:
-    """Metadata for a Milvus collection."""
+    """Metadata for a vector store collection."""
     
     # Basic info
     name: str
@@ -267,12 +267,15 @@ EGERIA_DOCS_COLLECTION = CollectionMetadata(
 
 _DEFAULT_EGERIA_WORKSPACES_TERMS = [
     "workspace", "notebook", "jupyter", "example", "deployment",
-    "docker", "kubernetes", "helm", "sample", "demo"
+    "docker", "kubernetes", "helm", "sample", "demo",
+    "mcp", "model context protocol", "dr egeria", "web handler",
+    "markdown command", "dr_egeria_run_block", "egeria_execute_command",
+    "pyegeria web handler", "fastmcp"
 ]
 
 EGERIA_WORKSPACES_COLLECTION = CollectionMetadata(
     name="egeria_workspaces",
-    description="Egeria workspaces - Jupyter notebooks, deployment configs, examples",
+    description="Egeria workspaces - Jupyter notebooks, deployment configs, examples, Dr. Egeria MCP server and markdown commands",
     source_repo="https://github.com/odpi/egeria-workspaces.git",
     source_paths=["."],
     content_type=ContentType.EXAMPLES,
@@ -375,6 +378,38 @@ EGERIA_GENERAL_COLLECTION = CollectionMetadata(
 )
 
 
+_DEFAULT_EGERIA_TEMPLATES_TERMS = [
+    "create", "link", "attach", "detach", "remove", "add", "set",
+    "template", "command", "dr egeria", "dr_egeria",
+    "glossary", "glossary term", "collection", "project", "governance",
+    "data class", "data field", "data structure", "data spec",
+    "digital product", "agreement", "regulation", "certification",
+    "solution blueprint", "information supply chain",
+    "governance zone", "governance policy", "governance definition",
+    "external reference", "feedback", "rating", "comment",
+]
+
+EGERIA_TEMPLATES_COLLECTION = CollectionMetadata(
+    name="egeria_templates",
+    description="Dr. Egeria markdown command templates — basic and advanced, organized by family",
+    source_repo="https://github.com/odpi/egeria-python.git",
+    source_paths=["sample-data/templates/basic", "sample-data/templates/advanced"],
+    content_type=ContentType.DOCUMENTATION,
+    language=Language.MARKDOWN,
+    domain_terms=_get_collection_domain_terms("egeria_templates", _DEFAULT_EGERIA_TEMPLATES_TERMS),
+    related_collections=["pyegeria_drE", "pyegeria_cli", "egeria_concepts"],
+    include_patterns=["*.md"],
+    exclude_patterns=[],
+    priority=12,  # Highest priority — primary surface for action routing
+    enabled=True,
+    # Each template file is a single command — keep chunks large to preserve structure
+    chunk_size=2048,
+    chunk_overlap=0,  # No overlap — each file is self-contained
+    min_score=0.30,   # Lower threshold — intent matching is fuzzy
+    default_top_k=5   # Fewer results — we want the best matching command(s)
+)
+
+
 # Collection registry
 ALL_COLLECTIONS: Dict[str, CollectionMetadata] = {
     "pyegeria": PYEGERIA_COLLECTION,
@@ -382,10 +417,11 @@ ALL_COLLECTIONS: Dict[str, CollectionMetadata] = {
     "pyegeria_drE": PYEGERIA_DRE_COLLECTION,
     "egeria_java": EGERIA_JAVA_COLLECTION,
     "egeria_docs": EGERIA_DOCS_COLLECTION,  # Will be disabled after split
-    "egeria_concepts": EGERIA_CONCEPTS_COLLECTION,  # NEW
-    "egeria_types": EGERIA_TYPES_COLLECTION,  # NEW
-    "egeria_general": EGERIA_GENERAL_COLLECTION,  # NEW
+    "egeria_concepts": EGERIA_CONCEPTS_COLLECTION,
+    "egeria_types": EGERIA_TYPES_COLLECTION,
+    "egeria_general": EGERIA_GENERAL_COLLECTION,
     "egeria_workspaces": EGERIA_WORKSPACES_COLLECTION,
+    "egeria_templates": EGERIA_TEMPLATES_COLLECTION,
 }
 
 

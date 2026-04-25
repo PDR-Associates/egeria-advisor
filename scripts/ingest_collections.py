@@ -25,7 +25,6 @@ from advisor.vector_store import get_vector_store
 from advisor.embeddings import get_embedding_generator
 from advisor.ingest_to_milvus import CodeIngester
 from loguru import logger
-from pymilvus import utility
 
 
 def get_repos_dir() -> Path:
@@ -161,13 +160,13 @@ def ingest_collection(
     vector_store = get_vector_store()
     vector_store.connect()  # Ensure connected
     
-    if utility.has_collection(collection.name):
+    if collection.name in vector_store.list_collections():
         if not force:
             logger.warning(f"Collection {collection.name} already exists. Use --force to re-ingest.")
             return 0, 0
         else:
             logger.info(f"Dropping existing collection: {collection.name}")
-            utility.drop_collection(collection.name)
+            vector_store.delete_collection(collection.name)
     
     # Create collection
     logger.info(f"Creating collection: {collection.name}")

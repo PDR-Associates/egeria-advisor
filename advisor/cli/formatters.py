@@ -60,22 +60,45 @@ class ResponseFormatter:
     
     def _display_text(self, result: Dict[str, Any], console: Console):
         """Display as rich formatted text."""
-        
-        # Query panel
+        query_type = result.get('query_type', '')
+
+        # Query panel — add badge for command/report types
         query = result.get('query', '')
+        badge = ""
+        if query_type == 'command':
+            badge = " [bold green][ACTION][/bold green]"
+        elif query_type == 'report':
+            badge = " [bold yellow][REPORT][/bold yellow]"
         console.print(Panel(
-            f"[bold]Query:[/bold] {query}",
+            f"[bold]Query:[/bold] {query}{badge}",
             border_style="blue",
             padding=(0, 1)
         ))
         console.print()
-        
-        # Response
+
+        # Command-specific metadata
+        if query_type == 'command':
+            command_name = result.get('command_name', '')
+            dry_run = result.get('dry_run', False)
+            missing_params = result.get('missing_params', [])
+            if command_name:
+                console.print(f"[bold cyan]Command:[/bold cyan] {command_name}")
+            if dry_run:
+                console.print("[bold yellow]Dry run — not executed[/bold yellow]")
+            if missing_params:
+                console.print(f"[bold red]Missing required parameters:[/bold red] {', '.join(missing_params)}")
+            console.print()
+
+        # Response — render as Markdown for command/report types
         response = result.get('response', '')
-        console.print("[bold cyan]Answer:[/bold cyan]")
-        console.print(response)
+        if query_type in ('command', 'report'):
+            console.print("[bold cyan]Result:[/bold cyan]")
+            console.print(Markdown(response))
+        else:
+            console.print("[bold cyan]Answer:[/bold cyan]")
+            console.print(response)
         console.print()
-        
+
         # Code examples if present
         if 'code_examples' in result and result['code_examples']:
             console.print("[bold cyan]Code Example:[/bold cyan]")
@@ -90,49 +113,52 @@ class ResponseFormatter:
                 console.print(syntax)
                 if i < len(result['code_examples']):
                     console.print()
-        
+
         # Sources/Citations
         if self.show_citations and 'sources' in result:
             sources = result['sources']
             if sources:
                 console.print("[bold cyan]Sources:[/bold cyan]")
-                for source in sources[:5]:  # Show top 5 sources
-                    # Handle both dict and SearchResult objects
+                for source in sources[:5]:
+                    # Handle string sources (command/report results), SearchResult, and dict
+                    if isinstance(source, str):
+                        source_text = Text()
+                        source_text.append("  • ", style="dim")
+                        source_text.append(source, style="blue")
+                        console.print(source_text)
+                        continue
+
                     if hasattr(source, 'metadata'):
-                        # SearchResult object
                         file_path = source.metadata.get('file_path', 'Unknown')
                         collection = source.metadata.get('collection') or source.metadata.get('_collection', 'Unknown')
                         name = source.metadata.get('name', '')
                         element_type = source.metadata.get('type', source.metadata.get('element_type', ''))
                         score = source.score
                     else:
-                        # Dictionary
                         file_path = source.get('file_path', 'Unknown')
                         collection = source.get('collection') or source.get('_collection', 'Unknown')
                         name = source.get('name', '')
                         element_type = source.get('type', source.get('element_type', ''))
                         score = source.get('score', 0.0)
-                    
-                    # Format source line
+
                     source_text = Text()
                     source_text.append("  • ", style="dim")
                     source_text.append(f"[{collection}] ", style="magenta")
                     source_text.append(f"{file_path}", style="blue")
-                    
-                    # Show name if available, otherwise show element type or "text chunk"
+
                     if name:
                         source_text.append(f": {name}", style="white")
                     elif element_type:
                         source_text.append(f": {element_type}", style="yellow")
                     else:
                         source_text.append(": text chunk", style="dim")
-                    
+
                     if self.verbose:
                         source_text.append(f" (score: {score:.3f})", style="dim")
-                    
+
                     console.print(source_text)
                 console.print()
-        
+
         # Metadata footer
         if self.verbose:
             self._display_metadata(result, console)
@@ -140,17 +166,19 @@ class ResponseFormatter:
     def _display_json(self, result: Dict[str, Any], console: Console):
         """Display as JSON."""
         # Clean up result for JSON output
+        def _source_to_dict(s):
+            if isinstance(s, str):
+                return {'file_path': s, 'name': '', 'score': 0.0}
+            if hasattr(s, 'metadata'):
+                return {'file_path': s.metadata.get('file_path', ''), 'name': s.metadata.get('name', ''), 'score': s.score}
+            return {'file_path': s.get('file_path', ''), 'name': s.get('name', ''), 'score': s.get('score', 0.0)}
+
         output = {
             'query': result.get('query', ''),
             'response': result.get('response', ''),
             'code_examples': result.get('code_examples', []),
             'sources': [
-                {
-                    'file_path': s.get('file_path', ''),
-                    'name': s.get('name', ''),
-                    'score': s.get('score', 0.0)
-                }
-                for s in result.get('sources', [])
+                _source_to_dict(s) for s in result.get('sources', [])
             ] if self.show_citations else [],
             'metadata': {
                 'response_time': result.get('response_time', 0.0),
@@ -187,9 +215,12 @@ class ResponseFormatter:
             if sources:
                 md_lines.append("## Sources\n")
                 for source in sources[:5]:
-                    file_path = source.get('file_path', 'Unknown')
-                    name = source.get('name', 'Unknown')
-                    md_lines.append(f"- `{file_path}`: {name}")
+                    if isinstance(source, str):
+                        md_lines.append(f"- {source}")
+                    else:
+                        file_path = source.get('file_path', 'Unknown') if not hasattr(source, 'metadata') else source.metadata.get('file_path', 'Unknown')
+                        name = source.get('name', '') if not hasattr(source, 'metadata') else source.metadata.get('name', '')
+                        md_lines.append(f"- `{file_path}`{': ' + name if name else ''}")
                 md_lines.append("")
         
         # Render markdown

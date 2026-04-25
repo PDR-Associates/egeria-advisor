@@ -6,6 +6,7 @@ This module provides the main interface for the RAG-based code advisor.
 
 from typing import Dict, Any, Optional, List
 from loguru import logger
+import threading
 import time
 
 from advisor.llm_client import get_ollama_client
@@ -52,7 +53,8 @@ class RAGSystem:
         self,
         user_query: str,
         include_context: bool = True,
-        track_metrics: bool = True
+        track_metrics: bool = True,
+        dry_run: bool = False,
     ) -> Dict[str, Any]:
         """
         Process a user query and generate a response.
@@ -61,6 +63,7 @@ class RAGSystem:
             user_query: User's question or request
             include_context: Whether to include retrieved context
             track_metrics: Whether to track with MLflow
+            dry_run: If True, compose Dr.Egeria commands but do not execute them
 
         Returns:
             Dictionary with response and metadata
@@ -68,7 +71,7 @@ class RAGSystem:
         logger.info(f"Processing query: {user_query[:100]}...")
 
         # Process the query
-        result = self._process_query(user_query, include_context)
+        result = self._process_query(user_query, include_context, dry_run=dry_run)
         
         # Always record metrics in local database (for dashboard)
         try:
@@ -76,48 +79,53 @@ class RAGSystem:
         except Exception as e:
             logger.warning(f"Failed to record local metrics: {e}")
         
-        # Track with MLflow if enabled
+        # Track with MLflow in background so the caller gets the result immediately
         if track_metrics:
-            try:
-                with self.mlflow_tracker.track_operation(
-                    operation_name="rag_query",
-                    params={
-                        "query_length": len(user_query),
-                        "include_context": include_context
-                    },
-                    track_resources=True,  # Enable resource monitoring
-                    track_accuracy=True    # Enable accuracy tracking
-                ) as tracker:
-                    # Add relevance scores from sources
-                    sources = result.get("sources") or []
-                    if sources:
-                        for source in sources:
-                            try:
-                                if hasattr(source, 'score') and source.score is not None:
-                                    tracker.add_relevance(source.score)
-                                elif isinstance(source, dict) and source.get('score') is not None:
-                                    tracker.add_relevance(source['score'])
-                            except Exception as e:
-                                logger.debug(f"Could not add relevance score: {e}")
-                    
-                    # Log all metrics
-                    tracker.log_metrics({
-                        "response_length": len(result.get("response", "")),
-                        "num_sources": result.get("num_sources", 0),
-                        "retrieval_time": result.get("retrieval_time", 0.0),
-                        "generation_time": result.get("generation_time", 0.0),
-                        "avg_relevance_score": result.get("avg_relevance_score", 0.0),
-                        "context_length": result.get("context_length", 0)
-                    })
-            except Exception as e:
-                logger.warning(f"MLflow tracking failed: {e}")
-        
+            threading.Thread(
+                target=self._track_mlflow,
+                args=(result, include_context),
+                daemon=True
+            ).start()
+
         return result
+
+    def _track_mlflow(self, result: Dict[str, Any], include_context: bool):
+        """Log query metrics to MLflow in a background thread (non-blocking)."""
+        try:
+            with self.mlflow_tracker.track_operation(
+                operation_name="rag_query",
+                params={
+                    "query_length": len(result.get("query", "")),
+                    "include_context": include_context
+                },
+                track_resources=True,
+                track_accuracy=True
+            ) as tracker:
+                sources = result.get("sources") or []
+                for source in sources:
+                    try:
+                        if hasattr(source, 'score') and source.score is not None:
+                            tracker.add_relevance(source.score)
+                        elif isinstance(source, dict) and source.get('score') is not None:
+                            tracker.add_relevance(source['score'])
+                    except Exception:
+                        pass
+                tracker.log_metrics({
+                    "response_length": len(result.get("response", "")),
+                    "num_sources": result.get("num_sources", 0),
+                    "retrieval_time": result.get("retrieval_time", 0.0),
+                    "generation_time": result.get("generation_time", 0.0),
+                    "avg_relevance_score": result.get("avg_relevance_score", 0.0),
+                    "context_length": result.get("context_length", 0)
+                })
+        except Exception as e:
+            logger.warning(f"MLflow tracking failed: {e}")
 
     def _process_query(
         self,
         user_query: str,
-        include_context: bool
+        include_context: bool,
+        dry_run: bool = False,
     ) -> Dict[str, Any]:
         """Internal query processing."""
         # Process query to understand intent
@@ -159,6 +167,25 @@ class RAGSystem:
                 "avg_relevance_score": 0.0,
                 "context_length": 0
             }
+
+        # Handle report queries via MCP pyegeria server
+        if query_analysis['query_type'] == 'report':
+            logger.info("Handling report query via MCP report pipeline")
+            try:
+                from advisor.report_pipeline import get_report_pipeline
+                return get_report_pipeline().process(user_query)
+            except Exception as e:
+                logger.warning(f"Report pipeline failed ({e}), falling back to RAG")
+                # Fall through to RAG below
+
+        # Handle command/action queries via DrEgeriaActionAgent
+        if query_analysis['query_type'] == 'command':
+            logger.info("Handling command query via DrEgeriaActionAgent")
+            try:
+                from advisor.agents.dr_egeria_agent import get_dr_egeria_agent
+                return get_dr_egeria_agent().handle(user_query, dry_run=dry_run)
+            except Exception as e:
+                logger.warning(f"DrEgeriaActionAgent failed ({e}), falling back to RAG")
 
         # Get search strategy
         search_strategy = query_analysis["search_strategy"]

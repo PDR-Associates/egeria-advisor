@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from loguru import logger
 import math
 
-from advisor.vector_store import VectorStoreManager, SearchResult
+from advisor.vector_store import VectorStoreManager, SearchResult, get_vector_store
 from advisor.collection_router import get_collection_router
 from advisor.collection_config import get_collection, get_enabled_collections
 
@@ -41,7 +41,7 @@ class MultiCollectionStore:
         Args:
             vector_store: Optional VectorStoreManager instance
         """
-        self.vector_store = vector_store or VectorStoreManager()
+        self.vector_store = vector_store or get_vector_store()
         self.router = get_collection_router()
         logger.info("Initialized MultiCollectionStore")
     

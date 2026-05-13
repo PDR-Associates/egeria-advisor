@@ -432,12 +432,13 @@ def main():
     """Run the pipeline from command line."""
     import sys
     import argparse
-    
+    from advisor.config import settings
+
     parser = argparse.ArgumentParser(description="Run data preparation pipeline")
     parser.add_argument(
         "source_path",
         nargs="?",
-        default="/home/dwolfson/localGit/egeria-v6/egeria-python",
+        default=str(settings.advisor_data_path),
         help="Path to egeria-python repository"
     )
     parser.add_argument(

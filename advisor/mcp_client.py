@@ -52,30 +52,31 @@ class MCPResource:
 @dataclass
 class MCPServerConfig:
     """Configuration for a single MCP server."""
-    
+
     # For local servers (stdio transport)
     command: Optional[str] = None
     args: List[str] = field(default_factory=list)
     env: Dict[str, str] = field(default_factory=dict)
-    
+
     # For remote servers (SSE/HTTP transport)
     url: Optional[str] = None
     transport: str = "stdio"  # "stdio" or "sse"
-    
+    headers: Dict[str, str] = field(default_factory=dict)  # e.g. Authorization
+
     # Common settings
     enabled: bool = True
     description: str = ""
-    
+
     def get_env_with_defaults(self) -> Dict[str, str]:
         """Get environment variables with system env as fallback."""
         env = os.environ.copy()
         env.update(self.env)
         return env
-    
+
     def is_local(self) -> bool:
         """Check if this is a local server."""
         return self.transport == "stdio" and self.command is not None
-    
+
     def is_remote(self) -> bool:
         """Check if this is a remote server."""
         return self.transport == "sse" and self.url is not None
@@ -468,3 +469,118 @@ class ToolCache:
             Cache key string
         """
         return f"{tool_name}:{json.dumps(arguments, sort_keys=True)}"
+
+
+class MCPSSEClient:
+    """
+    MCP client for SSE (remote HTTP) transport.
+
+    Maintains a persistent background event loop so the SSE connection and
+    ClientSession stay alive between tool calls.  The calling code uses the
+    same async interface as MCPClient (connect / disconnect / invoke_tool).
+    """
+
+    def __init__(self, server_name: str, server_config: MCPServerConfig):
+        import threading
+        self.server_name = server_name
+        self.server_config = server_config
+        self.tools: Dict[str, MCPTool] = {}
+        self.resources: Dict[str, MCPResource] = {}
+        self.connected = False
+
+        # Background loop keeps SSE connection + ClientSession alive between calls
+        self._loop = asyncio.new_event_loop()
+        self._bg_thread = threading.Thread(
+            target=self._loop.run_forever, daemon=True, name=f"mcp-sse-{server_name}"
+        )
+        self._bg_thread.start()
+        self._session = None
+        self._exit_stack = None
+
+    # ------------------------------------------------------------------
+    # Internal async helpers – run on self._loop via _submit()
+    # ------------------------------------------------------------------
+
+    def _submit(self, coro, timeout: int = 30):
+        """Run coro on the background loop and block until done."""
+        import concurrent.futures
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return future.result(timeout=timeout)
+
+    async def _do_connect(self) -> None:
+        try:
+            from mcp.client.sse import sse_client
+            from mcp import ClientSession
+        except ImportError as exc:
+            raise MCPConnectionError(
+                "mcp package not installed — run 'uv add mcp' to enable SSE transport"
+            ) from exc
+
+        from contextlib import AsyncExitStack
+
+        self._exit_stack = AsyncExitStack()
+        headers = self.server_config.headers or {}
+
+        read, write = await self._exit_stack.enter_async_context(
+            sse_client(self.server_config.url, headers=headers)
+        )
+        self._session = await self._exit_stack.enter_async_context(
+            ClientSession(read, write)
+        )
+        await self._session.initialize()
+
+        tools_result = await self._session.list_tools()
+        for tool_data in tools_result.tools:
+            self.tools[tool_data.name] = MCPTool(
+                name=tool_data.name,
+                description=tool_data.description or "",
+                server=self.server_name,
+                input_schema=tool_data.inputSchema or {},
+            )
+        self.connected = True
+        logger.info(
+            f"SSE connected to {self.server_name} at {self.server_config.url}: "
+            f"{len(self.tools)} tools"
+        )
+
+    async def _do_disconnect(self) -> None:
+        if self._exit_stack:
+            await self._exit_stack.aclose()
+        self._exit_stack = None
+        self._session = None
+        self.connected = False
+
+    async def _do_invoke(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+        if not self._session:
+            raise MCPConnectionError("SSE client not connected")
+        result = await self._session.call_tool(tool_name, arguments)
+        return result.content
+
+    # ------------------------------------------------------------------
+    # Public interface — mirrors MCPClient async API
+    # ------------------------------------------------------------------
+
+    async def connect(self) -> bool:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: self._submit(self._do_connect(), timeout=15))
+        return True
+
+    async def disconnect(self) -> None:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: self._submit(self._do_disconnect(), timeout=10))
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._bg_thread.join(timeout=5)
+
+    async def invoke_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        timeout: int = 30,
+    ) -> Any:
+        if tool_name not in self.tools:
+            raise MCPToolNotFoundError(f"Tool not found: {tool_name}")
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._submit(self._do_invoke(tool_name, arguments), timeout=timeout),
+        )

@@ -6,12 +6,14 @@ This module provides the main interface for the RAG-based code advisor.
 
 from typing import Dict, Any, Optional, List
 from loguru import logger
+import threading
 import time
 
 from advisor.llm_client import get_ollama_client
 from advisor.rag_retrieval import get_rag_retriever
 from advisor.query_processor import get_query_processor
 from advisor.mlflow_tracking import get_mlflow_tracker
+from advisor.metrics_collector import get_metrics_collector, track_query, CollectionHealth, sync_collection_health
 from advisor.analytics import get_analytics_manager
 from advisor.relationships import get_relationship_query_handler
 from advisor.config import get_full_config
@@ -31,6 +33,7 @@ class RAGSystem:
             enable_resource_monitoring=True,
             enable_accuracy_tracking=True
         )
+        self.metrics_collector = get_metrics_collector()
         self.analytics = get_analytics_manager()
         self.relationships = get_relationship_query_handler()
 
@@ -38,12 +41,22 @@ class RAGSystem:
         self.rag_config = config.get("rag")
 
         logger.info("Initialized RAG system")
+        
+        # Refresh health on startup
+        self._refresh_collection_health()
+
+    def _refresh_collection_health(self):
+        """Refresh health metrics for all enabled collections."""
+        sync_collection_health(self.retriever, self.metrics_collector)
 
     def query(
         self,
         user_query: str,
         include_context: bool = True,
-        track_metrics: bool = True
+        track_metrics: bool = True,
+        dry_run: bool = False,
+        query_type_override: Optional[str] = None,
+        perspective: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Process a user query and generate a response.
@@ -52,55 +65,242 @@ class RAGSystem:
             user_query: User's question or request
             include_context: Whether to include retrieved context
             track_metrics: Whether to track with MLflow
+            dry_run: If True, compose Dr.Egeria commands but do not execute them
 
         Returns:
             Dictionary with response and metadata
         """
         logger.info(f"Processing query: {user_query[:100]}...")
 
-        # Track with MLflow if enabled
+        # Process the query
+        result = self._process_query(
+            user_query, include_context, dry_run=dry_run,
+            query_type_override=query_type_override,
+            perspective=perspective,
+        )
+        
+        # Always record metrics in local database (for dashboard)
+        try:
+            self._record_local_metrics(result)
+        except Exception as e:
+            logger.warning(f"Failed to record local metrics: {e}")
+        
+        # Track with MLflow in background so the caller gets the result immediately
         if track_metrics:
+            threading.Thread(
+                target=self._track_mlflow,
+                args=(result, include_context),
+                daemon=True
+            ).start()
+
+        return result
+
+    def _track_mlflow(self, result: Dict[str, Any], include_context: bool):
+        """Log query metrics to MLflow in a background thread (non-blocking)."""
+        try:
             with self.mlflow_tracker.track_operation(
                 operation_name="rag_query",
                 params={
-                    "query_length": len(user_query),
+                    "query_length": len(result.get("query", "")),
                     "include_context": include_context
                 },
-                track_resources=True,  # Enable resource monitoring
-                track_accuracy=True    # Enable accuracy tracking
+                track_resources=True,
+                track_accuracy=True
             ) as tracker:
-                result = self._process_query(user_query, include_context)
-                
-                # Add relevance scores from sources
-                if result.get("sources"):
-                    for source in result["sources"]:
-                        if hasattr(source, 'score'):
+                sources = result.get("sources") or []
+                for source in sources:
+                    try:
+                        if hasattr(source, 'score') and source.score is not None:
                             tracker.add_relevance(source.score)
-                        elif isinstance(source, dict) and 'score' in source:
+                        elif isinstance(source, dict) and source.get('score') is not None:
                             tracker.add_relevance(source['score'])
-                
-                # Log all metrics
+                    except Exception:
+                        pass
                 tracker.log_metrics({
-                    "response_length": len(result["response"]),
+                    "response_length": len(result.get("response", "")),
                     "num_sources": result.get("num_sources", 0),
                     "retrieval_time": result.get("retrieval_time", 0.0),
                     "generation_time": result.get("generation_time", 0.0),
                     "avg_relevance_score": result.get("avg_relevance_score", 0.0),
                     "context_length": result.get("context_length", 0)
                 })
-                return result
-        else:
-            return self._process_query(user_query, include_context)
+        except Exception as e:
+            logger.warning(f"MLflow tracking failed: {e}")
+
+    # Phrases that signal a definitional/conceptual question, NOT a data retrieval query.
+    # These go to RAG even when the semantic score is high.
+    _DEFINITIONAL_PREFIXES = (
+        "what is ", "what's a ", "what's the ", "what are the ",
+        "how does ", "how do ", "explain ", "define ", "describe ",
+        "tell me about ", "what does ", "what do you mean by ",
+        "can you explain", "give me an overview",
+    )
+
+    # Keywords that signal the user wants Python code, not live Egeria data.
+    _CODE_EXAMPLE_SIGNALS = (
+        "python", "code example", "code sample", "write python",
+        "python code", "pyegeria example", "python snippet",
+    )
+
+    def _is_report_query(self, query: str) -> bool:
+        """
+        Return True if the query is a data-retrieval request that the report
+        pipeline can answer by running a report spec.
+
+        Semantic similarity against question_spec entries with three guards:
+        1. Score must be >= 0.50 (lowered from 0.65 — listing questions now in index).
+        2. Query must not start with a definitional phrase (those go to RAG).
+        3. Query must not explicitly request Python code / code examples.
+        """
+        q = query.strip().lower()
+        if any(q.startswith(p) for p in self._DEFINITIONAL_PREFIXES):
+            return False
+        if any(sig in q for sig in self._CODE_EXAMPLE_SIGNALS):
+            return False
+        try:
+            from advisor.report_pipeline import _question_index
+            hits = _question_index.search(query, top_k=1, threshold=0.50)
+            if hits:
+                logger.info(
+                    f"Semantic report pre-check: {hits[0]['report_spec']} "
+                    f"(score={hits[0]['score']:.2f})"
+                )
+                return True
+        except Exception as exc:
+            logger.debug(f"_is_report_query check failed: {exc}")
+        return False
+
+    def _report_alternatives(self, query: str) -> Optional[Dict[str, Any]]:
+        """
+        When semantic similarity is medium (0.35–0.50), return a clarification
+        response offering the matched report spec alongside a RAG alternative.
+        Returns None if no medium-confidence hit exists.
+        """
+        q = query.strip().lower()
+        if any(q.startswith(p) for p in self._DEFINITIONAL_PREFIXES):
+            return None
+        if any(sig in q for sig in self._CODE_EXAMPLE_SIGNALS):
+            return None
+        try:
+            from advisor.report_pipeline import _question_index
+            hits = _question_index.search(query, top_k=2, threshold=0.35)
+            # Only surface alternatives for medium confidence (below the run threshold)
+            medium_hits = [h for h in hits if h["score"] < 0.50]
+            if not medium_hits:
+                return None
+            best = medium_hits[0]
+            spec = best["report_spec"]
+            score = best["score"]
+            logger.info(f"Medium-confidence report match: {spec} ({score:.2f}) — offering alternatives")
+            return {
+                "query": query,
+                "response": (
+                    f"Your query could be answered in a couple of ways:\n\n"
+                    f"**Option 1 — Run the Egeria report** (recommended if you want current live data):\n"
+                    f"I found the **{spec}** report that may match your question "
+                    f"(confidence: {score:.0%}). "
+                    f"To run it, use Dr.Egeria: `[[{spec}]]`  \n"
+                    f"Or ask me: *\"run the {spec} report\"*\n\n"
+                    f"**Option 2 — Explain or show code examples**:\n"
+                    f"I can also explain how to work with this in pyegeria — just ask "
+                    f"*\"how do I...\"* or *\"show me an example of...\"*\n\n"
+                    f"Which do you want?"
+                ),
+                "query_type": "clarification",
+                "report_name": spec,
+                "sources": [],
+                "num_sources": 0,
+                "retrieval_time": 0.0,
+                "generation_time": 0.0,
+                "avg_relevance_score": score,
+                "context_length": 0,
+            }
+        except Exception as exc:
+            logger.debug(f"_report_alternatives check failed: {exc}")
+        return None
 
     def _process_query(
         self,
         user_query: str,
-        include_context: bool
+        include_context: bool,
+        dry_run: bool = False,
+        query_type_override: Optional[str] = None,
+        perspective: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Internal query processing."""
         # Process query to understand intent
         query_analysis = self.query_processor.process(user_query)
         logger.info(f"Query type: {query_analysis['query_type']}")
+
+        # Explicit user intent overrides automatic classification.
+        if query_type_override:
+            logger.info(f"Intent override from UI: '{query_type_override}'")
+            query_analysis = dict(query_analysis)
+            query_analysis['query_type'] = query_type_override
+        # When pattern matching returns 'general', use the LLM classifier to
+        # narrow the intent before committing to RAG retrieval.
+        elif query_analysis['query_type'] == 'general':
+            from advisor.llm_intent_classifier import get_intent_classifier
+            refined = get_intent_classifier().classify(user_query)
+            if refined != 'general':
+                logger.info(f"LLM intent classifier refined 'general' → '{refined}'")
+                query_analysis = dict(query_analysis)
+                query_analysis['query_type'] = refined
+
+        # Role-aware routing: apply perspective signals before pipeline dispatch.
+        #
+        # Developer / Data Engineer + example/code keywords → force ExamplesAgent.
+        # This overrides both the pattern classifier and the LLM intent classifier,
+        # which frequently mistake "create X in Python" for a WRITE_COMMAND.
+        #
+        # Data Steward / Governance Officer + ambiguous "show me / example / sample"
+        # → return a clarification asking whether they want Python code or Dr.Egeria.
+        if not query_type_override:
+            query_lower = user_query.lower()
+            code_signals = any(sig in query_lower for sig in self._CODE_EXAMPLE_SIGNALS)
+            example_signals = any(kw in query_lower for kw in (
+                "example", "sample", "show me", "how do i", "how to",
+                "what methods", "which methods", "available methods", "list methods",
+                "what api", "api for", "methods for", "what functions",
+                "what can i do with", "what class", "which class",
+            ))
+            tech_roles = {"developer", "data_engineer"}
+            steward_roles = {"data_steward", "governance_officer"}
+
+            if perspective in tech_roles and (code_signals or example_signals):
+                logger.info(
+                    f"Role '{perspective}' + code/example signal → routing to ExamplesAgent"
+                )
+                try:
+                    from advisor.agents.examples_agent import get_examples_agent
+                    return get_examples_agent().handle(user_query)
+                except Exception as exc:
+                    logger.warning(f"ExamplesAgent failed ({exc}), continuing normal routing")
+
+            elif perspective in steward_roles and example_signals and not code_signals:
+                # Ambiguous: could be Dr.Egeria command or a conceptual/code example.
+                logger.info(
+                    f"Role '{perspective}' + ambiguous example signal → returning clarification"
+                )
+                return {
+                    "query": user_query,
+                    "response": (
+                        "Would you like me to:\n\n"
+                        "1. **Show a Python (pyegeria) code example** — how to do this "
+                        "programmatically using the pyegeria SDK?\n"
+                        "2. **Show a Dr.Egeria markdown template** — the notebook command "
+                        "you paste into an Egeria Workspaces Jupyter cell and fill in?\n\n"
+                        "You can also click **Show me** (Python) or **Act** (Dr.Egeria) "
+                        "above to set your intent before asking."
+                    ),
+                    "query_type": "clarification",
+                    "sources": [],
+                    "num_sources": 0,
+                    "retrieval_time": 0.0,
+                    "generation_time": 0.0,
+                    "avg_relevance_score": 0.0,
+                    "context_length": 0,
+                }
 
         # Handle quantitative queries directly with analytics
         if query_analysis['query_type'] == 'quantitative':
@@ -138,6 +338,71 @@ class RAGSystem:
                 "context_length": 0
             }
 
+        # Handle report queries via MCP pyegeria server.
+        # When the user explicitly overrides intent to a non-report type, skip the
+        # semantic pre-check so the override is honoured unconditionally.
+        if query_type_override and query_type_override != 'report':
+            is_report = False
+        else:
+            is_report = (
+                query_analysis['query_type'] == 'report'
+                or self._is_report_query(user_query)
+            )
+        if is_report:
+            logger.info("Handling report query via MCP report pipeline")
+            try:
+                from advisor.report_pipeline import get_report_pipeline
+                return get_report_pipeline().process(user_query, perspective=perspective)
+            except Exception as e:
+                logger.warning(f"Report pipeline failed ({e}), falling back to RAG")
+                # Fall through to RAG below
+
+        # Handle command/action queries.
+        # If the query asks for a sample/template, return the Dr.Egeria markdown template.
+        # Otherwise execute the command via DrEgeriaActionAgent.
+        if query_analysis['query_type'] == 'command':
+            _template_signals = ("template", "sample", "example", "show me", "give me")
+            wants_template = any(sig in user_query.lower() for sig in _template_signals)
+            if wants_template:
+                logger.info("Handling Dr.Egeria template request via DrEgeriaTemplateAgent")
+                try:
+                    from advisor.agents.dre_template_agent import get_dre_template_agent
+                    return get_dre_template_agent().handle(user_query)
+                except Exception as e:
+                    logger.warning(f"DrEgeriaTemplateAgent failed ({e}), falling back to DrEgeriaActionAgent")
+            logger.info("Handling command query via DrEgeriaActionAgent")
+            try:
+                from advisor.agents.dr_egeria_agent import get_dr_egeria_agent
+                return get_dr_egeria_agent().handle(user_query, dry_run=dry_run)
+            except Exception as e:
+                logger.warning(f"DrEgeriaActionAgent failed ({e}), falling back to RAG")
+
+        # Before falling through to RAG, offer alternatives when there is a medium-confidence
+        # report match — prevents silent wrong-route responses.
+        # Skip when the user has explicitly specified a non-report intent.
+        if not query_type_override or query_type_override == 'report':
+            alt = self._report_alternatives(user_query)
+            if alt is not None:
+                return alt
+
+        # Route code/example queries to ExamplesAgent (BeeAI + fallback).
+        if query_analysis['query_type'] in ('code_search', 'example'):
+            logger.info(f"Routing {query_analysis['query_type']} query to ExamplesAgent")
+            try:
+                from advisor.agents.examples_agent import get_examples_agent
+                return get_examples_agent().handle(user_query)
+            except Exception as exc:
+                logger.warning(f"ExamplesAgent failed ({exc}), falling back to RAG")
+
+        # Route explanation/conceptual/debugging queries to DocAgent (BeeAI + fallback).
+        if query_analysis['query_type'] in ('explanation', 'best_practice', 'comparison', 'debugging', 'general'):
+            logger.info(f"Routing {query_analysis['query_type']} query to DocAgent")
+            try:
+                from advisor.agents.doc_agent import get_doc_agent
+                return get_doc_agent().handle(user_query, mode=query_analysis['query_type'])
+            except Exception as exc:
+                logger.warning(f"DocAgent failed ({exc}), falling back to RAG")
+
         # Get search strategy
         search_strategy = query_analysis["search_strategy"]
         
@@ -168,24 +433,39 @@ class RAGSystem:
         
         # Build prompt using template manager
         prompt_manager = get_prompt_manager()
-        
+
         # Convert query_type string to QueryType enum if needed
         if isinstance(query_analysis["query_type"], str):
             query_type_enum = QueryType(query_analysis["query_type"])
         else:
             query_type_enum = query_analysis["query_type"]
-        
+
+        # Prepend perspective so the LLM tailors depth and terminology
+        effective_query = user_query
+        if perspective:
+            perspective_labels = {
+                "developer": "Software Developer",
+                "data_engineer": "Data Engineer",
+                "data_steward": "Data Steward",
+                "governance_officer": "Governance Officer",
+            }
+            role_label = perspective_labels.get(perspective, perspective.replace("_", " ").title())
+            effective_query = f"[User role: {role_label}]\n{user_query}"
+
         prompt = prompt_manager.build_prompt(
-            user_query=user_query,
+            user_query=effective_query,
             context=context,
             query_type=query_type_enum,
             collections_searched=collections_searched,
             offer_examples=offer_examples
         )
-        
-        # Get appropriate system prompt based on collections
+
+        # Get appropriate system prompt based on collections, optionally tailored to perspective
         primary_collection = collections_searched[0] if collections_searched else None
-        system_prompt = prompt_manager.get_system_prompt(primary_collection=primary_collection)
+        system_prompt = prompt_manager.get_system_prompt(
+            primary_collection=primary_collection,
+            perspective=perspective,
+        )
 
         # Generate response with timing
         generation_start = time.time()
@@ -225,6 +505,85 @@ class RAGSystem:
         logger.info(f"Generated response: {len(response)} chars from {len(sources)} sources")
 
         return result
+
+    def _record_local_metrics(self, result: Dict[str, Any]):
+        """Record metrics in local terminal dashboard database."""
+        try:
+            # Extract primary collection name
+            collection_name = "N/A"
+            if result.get("sources"):
+                # Use the actual collection name from the first source
+                first_source = result["sources"][0]
+                # MultiCollectionStore adds '_collection' to metadata
+                if hasattr(first_source, "metadata"):
+                    collection_name = first_source.metadata.get("_collection") or first_source.metadata.get("collection", "N/A")
+                elif isinstance(first_source, dict):
+                    collection_name = first_source.get("_collection") or first_source.get("collection", "N/A")
+            
+            # Use record_query directly to avoid context manager nesting issues
+            from advisor.metrics_collector import QueryMetric
+            import json
+            
+            # Map query_type to string if it's an enum
+            query_type = result.get("query_type", "GENERAL")
+            if hasattr(query_type, "value"):
+                query_type = query_type.value
+            
+            # Prepare source metadata for storage
+            sources_data = []
+            for source in result.get("sources", []):
+                source_info = {
+                    "score": source.score if hasattr(source, "score") else source.get("score", 0.0),
+                    "collection": source.metadata.get("_collection") if hasattr(source, "metadata") else source.get("_collection", "unknown"),
+                    "file": source.metadata.get("source") if hasattr(source, "metadata") else source.get("source", "unknown")
+                }
+                sources_data.append(source_info)
+            
+            metric = QueryMetric(
+                timestamp=time.time(),
+                query_text=result["query"],
+                collection_name=collection_name,
+                latency_ms=(result.get("retrieval_time", 0) + result.get("generation_time", 0)) * 1000,
+                query_type=str(query_type).upper(),
+                cache_hit=result.get("cache_hit", False),
+                success=True,
+                result_count=result.get("num_sources", 0),
+                search_time_ms=result.get("retrieval_time", 0) * 1000,
+                llm_time_ms=result.get("generation_time", 0) * 1000,
+                avg_relevance_score=result.get("avg_relevance_score", 0.0),
+                sources_json=json.dumps(sources_data) if sources_data else None
+            )
+            
+            self.metrics_collector.record_query(metric)
+            
+            # Log sources to MLflow if enabled
+            if sources_data and self.mlflow_tracker:
+                try:
+                    self.mlflow_tracker.log_query_sources(
+                        query_text=result["query"],
+                        sources=sources_data,
+                        avg_relevance_score=result.get("avg_relevance_score", 0.0),
+                        collection_name=collection_name
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to log sources to MLflow: {e}")
+                
+            # Update collection health synchronously for visibility
+            if collection_name != "N/A":
+                from advisor.collection_config import get_collection
+                coll_config = get_collection(collection_name)
+                if coll_config:
+                    self.metrics_collector.record_collection_health(CollectionHealth(
+                        collection_name=collection_name,
+                        last_check=time.time(),
+                        entity_count=result.get("num_sources", 0),
+                        health_score=1.0,
+                        storage_size_mb=0.0,
+                        last_update=time.time(),
+                        status="healthy"
+                    ))
+        except Exception as e:
+            logger.warning(f"Failed to record local metrics: {e}")
 
     def _get_system_prompt(self) -> str:
         """Get system prompt for the LLM."""

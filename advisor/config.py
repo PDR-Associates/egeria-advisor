@@ -8,9 +8,31 @@ import yaml
 from loguru import logger
 
 
+def _egeria_python_path_from_yaml() -> Path:
+    """Resolve egeria-python path from YAML config, falling back to a sensible default.
+
+    Resolution order:
+      1. data_sources.egeria_python_path in config/advisor.yaml
+      2. ~/localGit/egeria-python
+    """
+    candidates = [
+        Path(__file__).parent.parent / "config" / "advisor.yaml",
+        Path("config/advisor.yaml"),
+    ]
+    for config_path in candidates:
+        if config_path.exists():
+            with open(config_path) as f:
+                config = yaml.safe_load(f) or {}
+            path_str = config.get("data_sources", {}).get("egeria_python_path")
+            if path_str:
+                return Path(path_str).expanduser()
+            break
+    return Path.home() / "localGit" / "egeria-python"
+
+
 class DataSourceConfig(BaseModel):
     """Data source configuration."""
-    egeria_python_path: Path
+    egeria_python_path: Path = Field(default_factory=_egeria_python_path_from_yaml)
     include_patterns: list[str] = ["*.py", "*.md"]
     exclude_patterns: list[str] = ["**/__pycache__/**", "**/deprecated/**"]
 
@@ -20,6 +42,17 @@ class VectorStoreConfig(BaseModel):
     host: str = "localhost"
     port: int = 19530
     collections: list[str] = ["code_elements", "examples", "documentation"]
+
+
+class PgVectorConfig(BaseModel):
+    """pgvector (PostgreSQL) backend configuration."""
+    host: str = "localhost"
+    port: int = 5442
+    dbname: str = "egeria_advisor"
+    user: str = "egeria_advisor"
+    password: str = "advisor"
+    max_connections: int = 10
+    ef_search: int = 128
 
 
 class LLMModelConfig(BaseModel):
@@ -193,6 +226,18 @@ class AdvisorSettings(BaseSettings):
     milvus_user: str = Field(default="", alias="MILVUS_USER")
     milvus_password: str = Field(default="", alias="MILVUS_PASSWORD")
 
+    # pgvector
+    pgvector_host: str = Field(default="localhost", alias="PGVECTOR_HOST")
+    pgvector_port: int = Field(default=5442, alias="PGVECTOR_PORT")
+    pgvector_dbname: str = Field(default="egeria_advisor", alias="PGVECTOR_DBNAME")
+    pgvector_user: str = Field(default="egeria_advisor", alias="PGVECTOR_USER")
+    pgvector_password: str = Field(default="advisor", alias="PGVECTOR_PASSWORD")
+    pgvector_max_connections: int = Field(default=10, alias="PGVECTOR_MAX_CONNECTIONS")
+    pgvector_ef_search: int = Field(default=128, alias="PGVECTOR_EF_SEARCH")
+
+    # Active vector store backend: "milvus" or "pgvector"
+    vector_store_backend: str = Field(default="milvus", alias="VECTOR_STORE_BACKEND")
+
     # Egeria
     egeria_platform_url: str = Field(
         default="https://localhost:9443",
@@ -237,7 +282,10 @@ class AdvisorSettings(BaseSettings):
     )
 
     # Advisor
-    advisor_data_path: Path = Field(alias="ADVISOR_DATA_PATH")
+    advisor_data_path: Path = Field(
+        default_factory=_egeria_python_path_from_yaml,
+        alias="ADVISOR_DATA_PATH"
+    )
     advisor_cache_dir: Path = Field(
         default=Path("./data/cache"),
         alias="ADVISOR_CACHE_DIR"
@@ -293,6 +341,7 @@ def get_full_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
     full_config = {
         "data_sources": DataSourceConfig(**config.get("data_sources", {})),
         "vector_store": VectorStoreConfig(**config.get("vector_store", {})),
+        "pgvector": PgVectorConfig(**config.get("pgvector", {})),
         "llm": LLMConfig(**config.get("llm", {})),
         "embeddings": EmbeddingConfig(**config.get("embeddings", {})),
         "rag": RAGConfig(**config.get("rag", {})),
@@ -312,10 +361,7 @@ try:
 except Exception as e:
     logger.warning(f"Could not load settings from environment: {e}")
     logger.info("Using default settings")
-    # Create settings with defaults
-    settings = AdvisorSettings(
-        advisor_data_path=Path("/home/dwolfson/localGit/egeria-v6/egeria-python")
-    )
+    settings = AdvisorSettings()
 
 
 __all__ = [
@@ -324,6 +370,7 @@ __all__ = [
     "get_full_config",
     "DataSourceConfig",
     "VectorStoreConfig",
+    "PgVectorConfig",
     "LLMConfig",
     "EmbeddingConfig",
     "RAGConfig",

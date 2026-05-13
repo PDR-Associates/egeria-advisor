@@ -158,7 +158,7 @@ class FileTracker:
         collection_name: str,
         content_hash: str,
         chunk_count: int,
-        entity_ids: List[int]
+        entity_ids: List[str]
     ):
         """
         Track a file in the database.
@@ -168,7 +168,7 @@ class FileTracker:
             collection_name: Collection name
             content_hash: Content hash
             chunk_count: Number of chunks created
-            entity_ids: List of Milvus entity IDs
+            entity_ids: List of Milvus entity IDs (strings)
         """
         now = time.time()
         mtime = file_path.stat().st_mtime
@@ -190,7 +190,7 @@ class FileTracker:
             ))
             conn.commit()
     
-    def untrack_file(self, file_path: str, collection_name: str) -> Optional[List[int]]:
+    def untrack_file(self, file_path: str, collection_name: str) -> Optional[List[str]]:
         """
         Remove file from tracking and return its entity IDs.
         
@@ -458,25 +458,23 @@ class IncrementalIndexer:
                         chunks_removed += len(entity_ids)
                     
                     # Ingest new version
-                    files, chunks = self.ingester.ingest_file(file_path)
+                    files, chunks, entity_ids = self.ingester.ingest_file(file_path)
                     if files > 0:
-                        # Track the file (ingester should provide entity IDs)
+                        # Track the file with entity IDs from ingester
                         content_hash = self.tracker.compute_file_hash(file_path)
-                        # Note: We need to get entity IDs from ingester
-                        # For now, track with empty list - will enhance ingester
                         self.tracker.track_file(
                             file_path,
                             self.collection_name,
                             content_hash,
                             chunks,
-                            []  # TODO: Get actual entity IDs from ingester
+                            entity_ids
                         )
                         chunks_added += chunks
-                        logger.info(f"Updated {chunks} chunks for {file_path}")
+                        logger.info(f"Updated {chunks} chunks for {file_path} (entity IDs: {len(entity_ids)})")
                 
                 # Process new files
                 for file_path in changeset.new_files:
-                    files, chunks = self.ingester.ingest_file(file_path)
+                    files, chunks, entity_ids = self.ingester.ingest_file(file_path)
                     if files > 0:
                         content_hash = self.tracker.compute_file_hash(file_path)
                         self.tracker.track_file(
@@ -484,10 +482,10 @@ class IncrementalIndexer:
                             self.collection_name,
                             content_hash,
                             chunks,
-                            []  # TODO: Get actual entity IDs from ingester
+                            entity_ids
                         )
                         chunks_added += chunks
-                        logger.info(f"Added {chunks} chunks for {file_path}")
+                        logger.info(f"Added {chunks} chunks for {file_path} (entity IDs: {len(entity_ids)})")
                 
                 duration = time.time() - start_time
                 

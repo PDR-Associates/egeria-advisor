@@ -38,6 +38,10 @@ def test_analytics_manager():
         "How many functions are in the codebase?",
         "What is the total lines of code?",
         "How many files are there?",
+        "How many CLI commands are available?",
+        "What CLI commands are there?",
+        "How is the codebase structured and what are the relationships?",
+        "How many modules and packages are in pyegeria?",
         "Show me a summary of the codebase",
     ]
     

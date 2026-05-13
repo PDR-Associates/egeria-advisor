@@ -379,11 +379,12 @@ class MetadataExtractor:
 if __name__ == "__main__":
     # Test the extractor
     import sys
-    
+    from advisor.config import settings
+
     if len(sys.argv) > 1:
         test_path = Path(sys.argv[1])
     else:
-        test_path = Path("/home/dwolfson/localGit/egeria-v6/egeria-python")
+        test_path = settings.advisor_data_path
     
     extractor = MetadataExtractor(root_path=test_path)
     

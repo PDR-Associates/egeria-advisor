@@ -12,6 +12,14 @@ from pathlib import Path
 import json
 from loguru import logger
 
+# Import sentiment analyzer
+try:
+    from advisor.sentiment_analysis import get_sentiment_analyzer
+    SENTIMENT_AVAILABLE = True
+except ImportError:
+    SENTIMENT_AVAILABLE = False
+    logger.warning("Sentiment analysis not available")
+
 
 @dataclass
 class FeedbackEntry:
@@ -26,10 +34,29 @@ class FeedbackEntry:
     suggested_collection: Optional[str] = None  # Better collection suggestion
     session_id: Optional[str] = None
     user_comment: Optional[str] = None  # Additional user comment/explanation
+    # Phase 1 enhancements
+    star_rating: Optional[int] = None  # 1-5 star rating
+    category: Optional[str] = None  # accuracy, completeness, clarity, relevance
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return asdict(self)
+    
+    def get_normalized_rating(self) -> float:
+        """
+        Get normalized rating score (0-1).
+        
+        Returns:
+            Normalized rating between 0 and 1
+        """
+        if self.star_rating is not None:
+            return self.star_rating / 5.0
+        elif self.rating == "positive":
+            return 1.0
+        elif self.rating == "negative":
+            return 0.0
+        else:  # neutral
+            return 0.5
 
 
 class FeedbackCollector:
@@ -60,7 +87,9 @@ class FeedbackCollector:
         feedback_text: Optional[str] = None,
         suggested_collection: Optional[str] = None,
         session_id: Optional[str] = None,
-        user_comment: Optional[str] = None
+        user_comment: Optional[str] = None,
+        star_rating: Optional[int] = None,
+        category: Optional[str] = None
     ) -> bool:
         """
         Record user feedback.
@@ -74,11 +103,25 @@ class FeedbackCollector:
             feedback_text: Optional free-text feedback
             suggested_collection: User's suggested collection (if routing was wrong)
             session_id: Optional session identifier
+            user_comment: Optional user comment
+            star_rating: Optional 1-5 star rating
+            category: Optional category (accuracy, completeness, clarity, relevance)
             
         Returns:
             True if feedback was recorded successfully
         """
         try:
+            # Validate star rating if provided
+            if star_rating is not None and not (1 <= star_rating <= 5):
+                logger.warning(f"Invalid star rating {star_rating}, must be 1-5")
+                star_rating = None
+            
+            # Validate category if provided
+            valid_categories = {"accuracy", "completeness", "clarity", "relevance"}
+            if category is not None and category not in valid_categories:
+                logger.warning(f"Invalid category {category}, must be one of {valid_categories}")
+                category = None
+            
             entry = FeedbackEntry(
                 timestamp=datetime.utcnow().isoformat(),
                 query=query,
@@ -89,12 +132,34 @@ class FeedbackCollector:
                 feedback_text=feedback_text,
                 suggested_collection=suggested_collection,
                 session_id=session_id,
-                user_comment=user_comment
+                user_comment=user_comment,
+                star_rating=star_rating,
+                category=category
             )
             
+            # Perform sentiment analysis on comments if available
+            sentiment_result = None
+            if SENTIMENT_AVAILABLE and user_comment:
+                try:
+                    analyzer = get_sentiment_analyzer()
+                    sentiment_result = analyzer.analyze(user_comment)
+                    logger.debug(f"Sentiment analysis: {sentiment_result.sentiment} ({sentiment_result.confidence:.2f})")
+                except Exception as e:
+                    logger.warning(f"Sentiment analysis failed: {e}")
+            
             # Append to JSONL file
+            entry_dict = entry.to_dict()
+            if sentiment_result:
+                entry_dict['sentiment'] = sentiment_result.sentiment
+                entry_dict['sentiment_confidence'] = sentiment_result.confidence
+                entry_dict['sentiment_emotion'] = sentiment_result.emotion
+                entry_dict['sentiment_keywords'] = sentiment_result.keywords_found
+            
             with open(self.feedback_file, 'a') as f:
-                f.write(json.dumps(entry.to_dict()) + '\n')
+                f.write(json.dumps(entry_dict) + '\n')
+            
+            # Log to MLflow if available
+            self.log_feedback_to_mlflow(entry, sentiment_result)
             
             logger.info(f"Recorded {rating} feedback for query: {query[:50]}...")
             return True
@@ -126,7 +191,12 @@ class FeedbackCollector:
             "neutral": 0,
             "by_query_type": {},
             "by_collection": {},
-            "routing_corrections": []
+            "routing_corrections": [],
+            # Phase 1 enhancements
+            "star_ratings": [],
+            "avg_star_rating": 0.0,
+            "by_category": {},
+            "category_star_ratings": {}
         }
         
         try:
@@ -138,6 +208,24 @@ class FeedbackCollector:
                     # Count by rating
                     rating = entry.get("rating", "neutral")
                     stats[rating] = stats.get(rating, 0) + 1
+                    
+                    # Track star ratings
+                    star_rating = entry.get("star_rating")
+                    if star_rating is not None:
+                        stats["star_ratings"].append(star_rating)
+                    
+                    # Track by category
+                    category = entry.get("category")
+                    if category:
+                        if category not in stats["by_category"]:
+                            stats["by_category"][category] = {
+                                "total": 0, "positive": 0, "negative": 0, "star_ratings": []
+                            }
+                        stats["by_category"][category]["total"] += 1
+                        stats["by_category"][category][rating] = \
+                            stats["by_category"][category].get(rating, 0) + 1
+                        if star_rating is not None:
+                            stats["by_category"][category]["star_ratings"].append(star_rating)
                     
                     # Count by query type
                     query_type = entry.get("query_type", "unknown")
@@ -172,6 +260,16 @@ class FeedbackCollector:
                 stats["satisfaction_rate"] = stats["positive"] / stats["total"]
             else:
                 stats["satisfaction_rate"] = 0.0
+            
+            # Calculate average star rating
+            if stats["star_ratings"]:
+                stats["avg_star_rating"] = sum(stats["star_ratings"]) / len(stats["star_ratings"])
+            
+            # Calculate average star rating by category
+            for category, data in stats["by_category"].items():
+                if data["star_ratings"]:
+                    stats["category_star_ratings"][category] = \
+                        sum(data["star_ratings"]) / len(data["star_ratings"])
             
             return stats
             
@@ -227,6 +325,99 @@ class FeedbackCollector:
         
         return improvements
     
+    def log_feedback_to_mlflow(self, entry: FeedbackEntry, sentiment_result=None):
+        """
+        Log feedback entry to MLflow for tracking and analysis.
+        
+        Args:
+            entry: Feedback entry to log
+            sentiment_result: Optional sentiment analysis result
+        """
+        try:
+            import mlflow
+            from advisor.config import settings
+            
+            # Only log if MLflow tracking is enabled
+            if not settings.mlflow_enable_tracking:
+                return
+            
+            # Check if we're in an active run
+            active_run = mlflow.active_run()
+            if active_run is None:
+                # Start a new run for feedback logging
+                with mlflow.start_run(run_name=f"feedback_{entry.timestamp}", nested=True):
+                    self._log_feedback_data(entry, sentiment_result)
+            else:
+                # Log to active run
+                self._log_feedback_data(entry, sentiment_result)
+                
+        except Exception as e:
+            logger.warning(f"Failed to log feedback to MLflow: {e}")
+    
+    def _log_feedback_data(self, entry: FeedbackEntry, sentiment_result=None):
+        """
+        Internal method to log feedback data to MLflow.
+        
+        Args:
+            entry: Feedback entry to log
+            sentiment_result: Optional sentiment analysis result
+        """
+        import mlflow
+        
+        # Log as metrics
+        metrics = {
+            "feedback_rating_normalized": entry.get_normalized_rating(),
+            "feedback_response_length": float(entry.response_length),
+        }
+        
+        if entry.star_rating is not None:
+            metrics["feedback_star_rating"] = float(entry.star_rating)
+        
+        # Add sentiment metrics if available
+        if sentiment_result:
+            metrics["feedback_sentiment_confidence"] = sentiment_result.confidence
+        
+        mlflow.log_metrics(metrics)
+        
+        # Log as parameters
+        params = {
+            "feedback_query_type": entry.query_type,
+            "feedback_rating": entry.rating,
+            "feedback_collections_count": str(len(entry.collections_searched)),
+        }
+        
+        if entry.category:
+            params["feedback_category"] = entry.category
+        
+        if entry.session_id:
+            params["feedback_session_id"] = entry.session_id
+        
+        # Add sentiment parameters if available
+        if sentiment_result:
+            params["feedback_sentiment"] = sentiment_result.sentiment
+            params["feedback_sentiment_confidence"] = f"{sentiment_result.confidence:.2f}"
+            if sentiment_result.emotions:
+                params["feedback_emotions"] = ", ".join(sentiment_result.emotions)
+        
+        mlflow.log_params(params)
+        
+        # Log collections as tags for easy filtering
+        for i, collection in enumerate(entry.collections_searched):
+            mlflow.set_tag(f"collection_{i}", collection)
+        
+        # Log the full feedback as a JSON artifact with sentiment data
+        feedback_dict = entry.to_dict()
+        if sentiment_result:
+            feedback_dict["sentiment"] = {
+                "sentiment": sentiment_result.sentiment,
+                "confidence": sentiment_result.confidence,
+                "emotions": sentiment_result.emotions,
+                "keywords_found": sentiment_result.keywords_found
+            }
+        mlflow.log_dict(feedback_dict, f"feedback_{entry.timestamp}.json")
+        
+        logger.debug(f"Logged feedback to MLflow: {entry.rating} rating for {entry.query_type}")
+    
     def export_feedback(self, output_file: Path) -> bool:
         """
         Export feedback to a different format.
@@ -267,6 +458,7 @@ class FeedbackCollector:
             
         except Exception as e:
             logger.error(f"Failed to export feedback: {e}")
+    
             return False
 
 

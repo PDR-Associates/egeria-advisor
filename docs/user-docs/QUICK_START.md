@@ -42,9 +42,7 @@ python scripts/test_setup.py
 
 Expected output:
 ```
-================================================================================
 Egeria Advisor Setup Test
-================================================================================
 Testing imports...
   ✓ pydantic
   ✓ loguru
@@ -85,9 +83,7 @@ cat data/cache/pipeline_summary.json
 
 ### Pipeline Output
 ```
-================================================================================
 Starting Data Preparation Pipeline
-================================================================================
 
 [1/4] Parsing Python code files...
 Parsing /home/dwolfson/localGit/egeria-v6/egeria-python/pyegeria...
@@ -105,7 +101,6 @@ Parsing /home/dwolfson/localGit/egeria-v6/egeria-python/pyegeria...
 Pipeline completed in 45.23 seconds
 
 PIPELINE SUMMARY
-================================================================================
 📝 Code Elements: 5247
    - Functions: 2103
    - Classes: 521

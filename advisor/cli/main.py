@@ -4,6 +4,7 @@ Egeria Advisor CLI - Main Entry Point
 This module provides the main command-line interface for the Egeria Advisor.
 """
 
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -61,6 +62,11 @@ console = Console()
     help='Enable/disable MLflow tracking'
 )
 @click.option(
+    '--feedback/--no-feedback',
+    default=True,
+    help='Enable/disable user feedback collection'
+)
+@click.option(
     '--debug', '-d',
     is_flag=True,
     help='Show debug/trace messages (loguru INFO level)'
@@ -80,6 +86,7 @@ def cli(
     no_color: bool,
     verbose: bool,
     track: bool,
+    feedback: bool,
     debug: bool,
     agent: bool
 ):
@@ -112,7 +119,6 @@ def cli(
         # Disable all loguru logs when not in debug mode
         logger.remove()  # Remove all handlers
         # Redirect stderr to suppress library warnings (like amdgpu.ids)
-        import os
         devnull = os.open(os.devnull, os.O_WRONLY)
         os.dup2(devnull, 2)  # Redirect stderr (fd 2) to /dev/null
     
@@ -127,11 +133,16 @@ def cli(
         'show_citations': not no_citations,
         'verbose': verbose,
         'track_metrics': track,
+        'enable_feedback': feedback,
         'debug': debug,
         'agent_mode': agent,
     }
     
     try:
+        # If agent mode is requested, automatically enable interactive
+        if agent and not interactive and not query:
+            interactive = True
+        
         if interactive:
             # Start interactive mode
             start_interactive(options)
@@ -237,6 +248,10 @@ def direct_query(query: str, options: dict):
     )
     
     formatter.display(result, console)
+    # MLflow >=2.10 spawns non-daemon worker threads that block Python shutdown.
+    # All output is flushed by Rich; force-exit now so the shell prompt returns immediately.
+    sys.stdout.flush()
+    os._exit(0)
 
 
 def start_interactive(options: dict):
@@ -277,6 +292,14 @@ def start_interactive(options: dict):
     
     # Standard RAG mode
     # Show welcome banner
+    feedback_status = "enabled" if options.get('enable_feedback', True) else "disabled"
+    feedback_commands = ""
+    if options.get('enable_feedback', True):
+        feedback_commands = (
+            "  [cyan]/feedback[/cyan] - Provide feedback on last response\n"
+            "  [cyan]/stats[/cyan]    - Show feedback statistics\n"
+        )
+    
     console.print(Panel(
         "[bold cyan]Egeria Advisor - Interactive Mode[/bold cyan]\n\n"
         "Ask questions about Egeria concepts, get code examples, and receive guidance.\n\n"
@@ -284,7 +307,9 @@ def start_interactive(options: dict):
         "  [cyan]/help[/cyan]     - Show help\n"
         "  [cyan]/clear[/cyan]    - Clear conversation context\n"
         "  [cyan]/history[/cyan]  - Show query history\n"
+        f"{feedback_commands}"
         "  [cyan]/exit[/cyan]     - Exit (or Ctrl+D)\n\n"
+        f"[dim]Feedback collection: {feedback_status}[/dim]\n"
         "[dim]Type your question and press Enter[/dim]",
         border_style="cyan"
     ))
@@ -321,6 +346,23 @@ def start_interactive(options: dict):
     # Start interactive session
     session = InteractiveSession(rag, options, console)
     session.run()
+
+
+@click.command("web")
+@click.option("--host", default="127.0.0.1", show_default=True, help="Bind host")
+@click.option("--port", default=8080, show_default=True, help="Bind port")
+@click.option("--reload", is_flag=True, help="Auto-reload on code changes (dev mode)")
+def web_command(host: str, port: int, reload: bool):
+    """Launch the browser-based web UI."""
+    import uvicorn
+    console.print(f"[cyan]Starting Egeria Advisor web UI at http://{host}:{port}[/cyan]")
+    uvicorn.run(
+        "advisor.web.app:app",
+        host=host,
+        port=port,
+        reload=reload,
+        log_level="warning",
+    )
 
 
 if __name__ == '__main__':

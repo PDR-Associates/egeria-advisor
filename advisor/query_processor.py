@@ -8,6 +8,7 @@ relevant information for RAG retrieval.
 from typing import Dict, Any, Optional, List, Tuple
 from loguru import logger
 import re
+import time
 
 # Import from the new extensible pattern system
 from advisor.query_patterns import (
@@ -19,6 +20,8 @@ from advisor.query_patterns import (
     add_pattern,
     add_domain_term
 )
+from advisor.mlflow_tracking import get_mlflow_tracker
+from advisor.metrics_collector import get_metrics_collector, QueryMetric
 
 
 class QueryProcessor:
@@ -47,6 +50,11 @@ class QueryProcessor:
             "error", "exception", "fail", "broken", "not working",
             "doesn't work", "isn't working", "bug", "issue"
         ]
+        
+        # Initialize monitoring
+        self.mlflow_tracker = get_mlflow_tracker()
+        self.metrics_collector = get_metrics_collector()
+        
         logger.info("Initialized query processor with extensible pattern system")
     
     def _build_query_patterns(self) -> Dict[QueryType, List[str]]:
@@ -111,43 +119,62 @@ class QueryProcessor:
         Returns:
             Dictionary with query analysis
         """
+        start_time = time.time()
         query_lower = query.lower()
         
-        # Detect query type
-        query_type = self._detect_query_type(query_lower)
-        
-        # Extract keywords
-        keywords = self._extract_keywords(query)
-        
-        # Extract path filter (for scoped queries)
-        path_filter = self.extract_path(query)
-        
-        # Determine if query should prioritize documentation
-        prioritize_docs = self._should_prioritize_docs(query_lower, query_type)
-        
-        # Determine search strategy
-        search_strategy = self._determine_search_strategy(query_type)
-        
-        # Build result
-        result = {
-            "original_query": query,
-            "query_type": query_type.value,
-            "keywords": keywords,
-            "path_filter": path_filter,  # NEW: for scoped queries
-            "search_strategy": search_strategy,
-            "enhanced_query": self._enhance_query(query, keywords),
-            "prioritize_docs": prioritize_docs,  # NEW: documentation-first flag
-            "offer_examples": prioritize_docs  # NEW: offer code examples after docs
-        }
-        
-        log_msg = f"Processed query: type={query_type.value}, keywords={len(keywords)}"
-        if path_filter:
-            log_msg += f", path_filter={path_filter}"
-        if prioritize_docs:
-            log_msg += ", prioritize_docs=True"
-        logger.info(log_msg)
-        
-        return result
+        # Track with MLflow
+        with self.mlflow_tracker.track_operation(
+            operation_name="query_processor_process",
+            params={
+                "query_length": len(query)
+            },
+            track_resources=False,  # Lightweight operation, skip resource tracking
+            track_accuracy=False
+        ) as tracker:
+            # Detect query type
+            query_type = self._detect_query_type(query_lower)
+            
+            # Extract keywords
+            keywords = self._extract_keywords(query)
+            
+            # Extract path filter (for scoped queries)
+            path_filter = self.extract_path(query)
+            
+            # Determine if query should prioritize documentation
+            prioritize_docs = self._should_prioritize_docs(query_lower, query_type)
+            
+            # Determine search strategy
+            search_strategy = self._determine_search_strategy(query_type)
+            
+            # Build result
+            result = {
+                "original_query": query,
+                "query_type": query_type.value,
+                "keywords": keywords,
+                "path_filter": path_filter,  # NEW: for scoped queries
+                "search_strategy": search_strategy,
+                "enhanced_query": self._enhance_query(query, keywords),
+                "prioritize_docs": prioritize_docs,  # NEW: documentation-first flag
+                "offer_examples": prioritize_docs  # NEW: offer code examples after docs
+            }
+            
+            # Log metrics
+            processing_time_ms = (time.time() - start_time) * 1000
+            tracker.log_metrics({
+                "processing_time_ms": processing_time_ms,
+                "num_keywords": len(keywords),
+                "has_path_filter": 1.0 if path_filter else 0.0,
+                "prioritize_docs": 1.0 if prioritize_docs else 0.0
+            })
+            
+            log_msg = f"Processed query: type={query_type.value}, keywords={len(keywords)}, time={processing_time_ms:.1f}ms"
+            if path_filter:
+                log_msg += f", path_filter={path_filter}"
+            if prioritize_docs:
+                log_msg += ", prioritize_docs=True"
+            logger.info(log_msg)
+            
+            return result
     
     def _should_prioritize_docs(self, query_lower: str, query_type: QueryType) -> bool:
         """
@@ -249,6 +276,7 @@ class QueryProcessor:
             Tuple of (QueryType, confidence_score)
             confidence_score is between 0.0 and 1.0
         """
+        start_time = time.time()
         query_lower = query.lower()
         
         # Check for context-aware indicators first
@@ -261,7 +289,7 @@ class QueryProcessor:
         
         # Calculate confidence based on context
         confidence = self._calculate_confidence(
-            query_lower, 
+            query_lower,
             query_type,
             has_quantitative,
             has_relationship,
@@ -278,6 +306,10 @@ class QueryProcessor:
         elif has_debugging and query_type == QueryType.EXPLANATION:
             query_type = QueryType.DEBUGGING
             confidence = 0.85
+        
+        # Log classification metrics (lightweight, no MLflow tracking)
+        processing_time_ms = (time.time() - start_time) * 1000
+        logger.debug(f"Query type detection: {query_type.value} (confidence={confidence:.2f}, time={processing_time_ms:.1f}ms)")
         
         return query_type, confidence
     

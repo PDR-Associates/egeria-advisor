@@ -26,38 +26,36 @@ class PromptTemplateManager:
         return {
             "documentation": """You are an expert Egeria documentation assistant.
 
-CRITICAL RULES:
-1. ONLY use information from the provided documentation context
-2. Focus on conceptual explanations and architectural understanding
-3. Explain WHY things work the way they do, not just HOW
-4. Reference specific documentation sections and guides
-5. If the documentation doesn't cover it, say so explicitly
-6. Use clear, educational language suitable for learning
-7. Provide links to related documentation when relevant
+CRITICAL ANTI-HALLUCINATION RULES:
+1. ONLY use information from the provided documentation context - NEVER add external knowledge
+2. If information is not in the context, explicitly state: "This is not covered in the provided documentation"
+3. ALWAYS cite specific sources: file names, section titles, or documentation pages
+4. If you're uncertain, say so - never guess or fabricate information
+5. Do not make assumptions about features, APIs, or configurations not mentioned in the context
 
-RESPONSE STYLE:
-- Start with a clear conceptual explanation
-- Use analogies and examples to clarify concepts
+RESPONSE GUIDELINES:
+- Focus on conceptual explanations and architectural understanding
+- Explain WHY things work the way they do, not just HOW
+- Use clear, educational language suitable for learning
 - Break down complex topics into digestible parts
 - Cite documentation sources: "According to [guide/section]..."
 - Suggest related topics for deeper understanding""",
 
             "python_code": """You are an expert Python developer specializing in the Egeria pyegeria library.
 
-CRITICAL RULES:
-1. ONLY use code from the provided context
-2. Provide complete, runnable Python code examples
-3. Include all necessary imports and setup
-4. Show best practices and common patterns
-5. Explain what each code section does
-6. Include error handling where appropriate
-7. Cite specific files, classes, and methods
+CRITICAL ANTI-HALLUCINATION RULES:
+1. ONLY use code from the provided context - NEVER invent methods, classes, or APIs
+2. If a method or feature is not in the context, state: "This method/feature is not shown in the provided code"
+3. ALWAYS cite specific sources: file paths, class names, method signatures
+4. Do not assume parameter names, return types, or behaviors not shown in the context
+5. If you're unsure about implementation details, say so explicitly
 
-RESPONSE STYLE:
-- Start with a brief explanation of the approach
-- Provide complete code with imports
-- Add inline comments for clarity
-- Show example usage and expected output
+RESPONSE GUIDELINES:
+- Provide complete, runnable Python code examples
+- Include all necessary imports and setup
+- Show best practices and common patterns from the actual codebase
+- Explain what each code section does
+- Include error handling where appropriate
 - Cite sources: "From pyegeria/[module].py: [Class.method]"
 - Mention any prerequisites or dependencies""",
 
@@ -206,6 +204,9 @@ GENERAL QUERY - Provide comprehensive overview:
         """Build context descriptions for different collections."""
         return {
             "egeria_docs": "official Egeria documentation, guides, and architectural references",
+            "egeria_concepts": "Egeria core concepts and definitions",
+            "egeria_types": "Egeria type system definitions and schemas",
+            "egeria_general": "Egeria tutorials, guides, and how-tos",
             "pyegeria": "Python client library code (pyegeria)",
             "pyegeria_cli": "command-line interface tools (hey_egeria)",
             "pyegeria_drE": "Dr. Egeria markdown-to-Python translator",
@@ -213,45 +214,78 @@ GENERAL QUERY - Provide comprehensive overview:
             "egeria_workspaces": "example workspaces, Jupyter notebooks, and demonstrations"
         }
     
+    _PERSPECTIVE_ADDENDA: Dict[str, str] = {
+        "developer": (
+            "PERSPECTIVE: The user is a **Software Developer**. "
+            "Emphasise API usage, code examples, class/method signatures, "
+            "integration patterns, and runnable snippets. "
+            "Assume comfort with Python and REST APIs."
+        ),
+        "data_engineer": (
+            "PERSPECTIVE: The user is a **Data Engineer**. "
+            "Emphasise data pipeline integration, ingestion connectors, "
+            "catalog targets, lineage capture, and operational setup. "
+            "Show how Egeria fits into ETL/ELT workflows."
+        ),
+        "data_steward": (
+            "PERSPECTIVE: The user is a **Data Steward**. "
+            "Emphasise governance metadata, glossary management, data quality, "
+            "ownership assignment, and cataloguing procedures. "
+            "Use business-friendly language alongside technical detail."
+        ),
+        "governance_officer": (
+            "PERSPECTIVE: The user is a **Governance Officer**. "
+            "Emphasise policy definition, compliance controls, audit trails, "
+            "governance zones, certification, and regulatory alignment. "
+            "Keep explanations at a strategic level; avoid deep code detail."
+        ),
+    }
+
     def get_system_prompt(
         self,
         primary_collection: Optional[str] = None,
         content_type: Optional[ContentType] = None,
-        language: Optional[Language] = None
+        language: Optional[Language] = None,
+        perspective: Optional[str] = None,
     ) -> str:
         """
         Get appropriate system prompt based on collection characteristics.
-        
+
         Args:
             primary_collection: Name of primary collection being searched
             content_type: Type of content (code, documentation, examples)
             language: Primary language (python, java, markdown)
-            
+            perspective: User role perspective (developer, data_engineer, etc.)
+
         Returns:
             Tailored system prompt
         """
-        # Determine prompt type based on collection or content type
+        # Determine base prompt from collection or content type
         if primary_collection:
             if "docs" in primary_collection:
-                return self.system_prompts["documentation"]
+                base = self.system_prompts["documentation"]
             elif "cli" in primary_collection:
-                return self.system_prompts["cli"]
+                base = self.system_prompts["cli"]
             elif "workspace" in primary_collection or "example" in primary_collection:
-                return self.system_prompts["examples"]
+                base = self.system_prompts["examples"]
             elif "java" in primary_collection:
-                return self.system_prompts["java_code"]
+                base = self.system_prompts["java_code"]
             else:
-                return self.system_prompts["python_code"]
-        
-        # Fall back to content type
-        if content_type == ContentType.DOCUMENTATION:
-            return self.system_prompts["documentation"]
+                base = self.system_prompts["python_code"]
+        elif content_type == ContentType.DOCUMENTATION:
+            base = self.system_prompts["documentation"]
         elif content_type == ContentType.EXAMPLES:
-            return self.system_prompts["examples"]
+            base = self.system_prompts["examples"]
         elif language == Language.JAVA:
-            return self.system_prompts["java_code"]
+            base = self.system_prompts["java_code"]
         else:
-            return self.system_prompts["python_code"]
+            base = self.system_prompts["python_code"]
+
+        if perspective:
+            addendum = self._PERSPECTIVE_ADDENDA.get(perspective)
+            if addendum:
+                base = base + "\n\n" + addendum
+        return base
     
     def build_prompt(
         self,
@@ -259,7 +293,9 @@ GENERAL QUERY - Provide comprehensive overview:
         context: str,
         query_type: QueryType,
         collections_searched: Optional[list] = None,
-        offer_examples: bool = False
+        offer_examples: bool = False,
+        use_succinct_format: bool = False,
+        follow_up_options: Optional[List[str]] = None
     ) -> str:
         """
         Build complete prompt with query-type-specific instructions.
@@ -270,6 +306,8 @@ GENERAL QUERY - Provide comprehensive overview:
             query_type: Type of query detected
             collections_searched: List of collections that were searched
             offer_examples: Whether to offer follow-up examples
+            use_succinct_format: Whether to use succinct answer + options format
+            follow_up_options: Specific follow-up options to offer
             
         Returns:
             Complete prompt for LLM
@@ -297,16 +335,41 @@ GENERAL QUERY - Provide comprehensive overview:
             if collection_names:
                 collection_info = f"\n\nContext sources: {', '.join(collection_names)}"
         
-        # Build follow-up suggestion
+        # Build follow-up suggestion based on format
         followup = ""
-        if offer_examples:
+        if use_succinct_format and follow_up_options:
+            # Succinct format with specific options
+            options_text = "\n".join([f"{i}. {opt}" for i, opt in enumerate(follow_up_options, 1)])
+            followup = f"""
+
+---
+
+**IMPORTANT RESPONSE FORMAT:**
+
+Provide a BRIEF, DIRECT answer (2-3 sentences maximum) that directly answers the question.
+
+Then, offer these follow-up options:
+
+{options_text}
+
+Format your response as:
+## Quick Answer
+[Your brief answer here]
+
+## What would you like to know more about?
+{options_text}
+
+Just let me know the number or describe what you'd like!
+"""
+        elif offer_examples:
+            # Standard follow-up format
             followup = """
 
 ---
 
 After answering, offer to show:
 - A Python code example using pyegeria
-- A Java implementation example  
+- A Java implementation example
 - A REST API call example
 - Related documentation or guides
 
@@ -326,13 +389,14 @@ Format: "Would you like to see an example? I can show you: [options]"
 
 # YOUR TASK
 
-Answer the question using ONLY the context above. Follow these rules:
+Answer the question using ONLY the context above. Follow these CRITICAL anti-hallucination rules:
 
-1. Use ONLY information from the context - do not add external knowledge
-2. Cite specific sources (files, classes, methods, documentation sections)
-3. Be specific and technical - include details from the context
-4. If the context doesn't fully answer the question, say so explicitly
-5. Follow the query-type-specific instructions above{followup}
+1. **NEVER FABRICATE**: Use ONLY information from the context - do not add external knowledge or make assumptions
+2. **ALWAYS CITE**: Reference specific sources (files, classes, methods, documentation sections)
+3. **BE HONEST**: If the context doesn't fully answer the question, explicitly state what's missing
+4. **NO GUESSING**: If you're uncertain about any detail, say so - never guess or infer
+5. **VERIFY CLAIMS**: Every technical claim must be backed by the provided context
+6. **FOLLOW INSTRUCTIONS**: Apply the query-type-specific instructions above{followup}
 
 Now provide your answer:"""
         

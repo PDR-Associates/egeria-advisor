@@ -11,6 +11,8 @@ license = {text = "Apache-2.0"}
 
 dependencies = [
     "pymilvus>=2.4.0",
+    "psycopg2-binary>=2.9.9",
+    "pgvector>=0.3.0",
     "docling>=1.0.0",
     "click>=8.1.0",
     "rich>=13.7.0",
@@ -28,6 +30,14 @@ dependencies = [
     "loguru>=0.7.0",
     "radon>=6.0.1",        # Code metrics (CC, MI, Halstead)
     "pygount>=1.6.1",      # Accurate line counting
+    "psutil>=5.9.0",       # System metrics
+    "onnx>=1.15.0",        # ONNX model format
+    "onnxruntime>=1.16.0", # ONNX inference (CPU)
+    "onnxscript>=0.1.0",   # Required for PyTorch to ONNX conversion
+    "transformers>=4.30.0", # For tokenizer in ONNX
+    "scikit-learn>=1.3.0", # For cosine similarity in benchmarks
+    "mcp>=1.0.0",
+    "beeai-framework>=0.1.72",
 ]
 
 [project.optional-dependencies]
@@ -40,8 +50,24 @@ dev = [
     "mypy>=1.8.0",
 ]
 
+dashboard = [
+    "streamlit>=1.30.0",
+    "plotly>=5.18.0",
+    "pandas>=2.1.0",
+]
+
+gpu = [
+    "onnxruntime-gpu>=1.16.0",  # NVIDIA GPU support
+]
+
+onnx-tools = [
+    "onnx>=1.15.0",
+    "onnxruntime-tools>=1.7.0",  # Model optimization tools
+]
+
 [project.scripts]
 egeria-advisor = "advisor.cli.main:cli"
+egeria-advisor-web = "advisor.cli.main:web_command"
 
 [build-system]
 requires = ["setuptools>=68.0.0", "wheel"]

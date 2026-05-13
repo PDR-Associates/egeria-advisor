@@ -10,7 +10,7 @@ Also provides CodeIngester for directly ingesting code files from repositories.
 import json
 import hashlib
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from loguru import logger
 import sys
 
@@ -35,6 +35,48 @@ class DataIngester:
         self.embedding_generator = get_embedding_generator()
         
         logger.info(f"Initialized DataIngester with cache dir: {self.cache_dir}")
+    
+    def _extract_module_path(self, file_path: str) -> str:
+        """
+        Extract module path from file path.
+        
+        Example: /path/to/pyegeria/admin_services.py -> pyegeria.admin_services
+        
+        Args:
+            file_path: Full file path
+            
+        Returns:
+            Module path string
+        """
+        if not file_path:
+            return ""
+        
+        try:
+            path = Path(file_path)
+            # Find the package root (look for common package names)
+            parts = path.parts
+            
+            # Common package names to look for
+            package_roots = ['pyegeria', 'egeria', 'advisor', 'src']
+            
+            # Find where the package starts
+            start_idx = -1
+            for i, part in enumerate(parts):
+                if part in package_roots:
+                    start_idx = i
+                    break
+            
+            if start_idx >= 0:
+                # Get parts from package root to file (without extension)
+                module_parts = list(parts[start_idx:])
+                module_parts[-1] = path.stem  # Remove .py extension
+                return ".".join(module_parts)
+            
+            # Fallback: just use the filename without extension
+            return path.stem
+        except Exception as e:
+            logger.warning(f"Error extracting module path from {file_path}: {e}")
+            return ""
     
     def load_json_file(self, filename: str) -> List[Dict[str, Any]]:
         """Load data from a JSON file."""
@@ -109,14 +151,32 @@ class DataIngester:
                 elem_id = f"{elem.get('file', 'unknown')}::{elem.get('name', 'unknown')}"
                 ids.append(elem_id)
                 
-                # Store metadata
+                # Store metadata - preserve ALL extracted metadata for filtering
                 meta = {
+                    # Basic identification
                     "name": elem.get("name", ""),
-                    "type": elem.get("type", ""),
-                    "file": elem.get("file", ""),
+                    "element_type": elem.get("type", ""),  # function, class, method
+                    "file_path": elem.get("file", ""),
                     "line_number": elem.get("line_number", 0),
-                    "is_public": elem.get("is_public", False),
-                    "complexity": elem.get("complexity", 0)
+                    "end_line_number": elem.get("end_line_number", 0),
+                    
+                    # Code structure metadata
+                    "class_name": elem.get("parent_class", "") if elem.get("type") == "method" else elem.get("name", "") if elem.get("type") == "class" else "",
+                    "method_name": elem.get("name", "") if elem.get("type") in ["method", "function"] else "",
+                    "parent_class": elem.get("parent_class", ""),
+                    "signature": elem.get("signature", ""),
+                    "parameters": ",".join(elem.get("parameters", [])),  # Store as comma-separated string
+                    "return_type": elem.get("return_type", ""),
+                    
+                    # Attributes
+                    "is_async": elem.get("is_async", False),
+                    "is_private": elem.get("is_private", False),
+                    "is_public": elem.get("is_public", True),
+                    "decorators": ",".join(elem.get("decorators", [])),  # Store as comma-separated string
+                    "complexity": elem.get("complexity", 0),
+                    
+                    # Module path (extract from file path)
+                    "module_path": self._extract_module_path(elem.get("file", "")),
                 }
                 metadata.append(meta)
             
@@ -382,20 +442,32 @@ if __name__ == "__main__":
 class CodeIngester:
     """Ingest code files directly from repositories into Milvus."""
     
-    def __init__(self, collection_name: str, chunk_size: int = 1000, chunk_overlap: int = 200):
+    def __init__(self, collection_name: str, chunk_size: Optional[int] = None, chunk_overlap: Optional[int] = None):
         """
         Initialize code ingester.
         
         Args:
             collection_name: Name of the Milvus collection
-            chunk_size: Size of text chunks
-            chunk_overlap: Overlap between chunks
+            chunk_size: Size of text chunks (defaults to collection-specific value)
+            chunk_overlap: Overlap between chunks (defaults to collection-specific value)
         """
+        from advisor.collection_config import get_collection
+        
         self.collection_name = collection_name
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
         self.vector_store = get_vector_store()
         self.embedding_generator = get_embedding_generator()
+        
+        # Get collection-specific parameters if not provided
+        collection_meta = get_collection(collection_name)
+        if collection_meta:
+            self.chunk_size = chunk_size if chunk_size is not None else collection_meta.chunk_size
+            self.chunk_overlap = chunk_overlap if chunk_overlap is not None else collection_meta.chunk_overlap
+            logger.info(f"Using collection-specific parameters: chunk_size={self.chunk_size}, chunk_overlap={self.chunk_overlap}")
+        else:
+            # Fallback to defaults if collection not found
+            self.chunk_size = chunk_size if chunk_size is not None else 1000
+            self.chunk_overlap = chunk_overlap if chunk_overlap is not None else 200
+            logger.warning(f"Collection {collection_name} not found in config, using defaults")
         
         logger.info(f"Initialized CodeIngester for collection: {collection_name}")
     
@@ -423,52 +495,216 @@ class CodeIngester:
         
         return chunks
     
-    def ingest_file(self, file_path: Path) -> Tuple[int, int]:
+    def ingest_file(self, file_path: Path) -> Tuple[int, int, List[str]]:
         """
-        Ingest a single file.
+        Ingest a single file with code structure extraction for Python files.
         
         Args:
             file_path: Path to file
             
         Returns:
-            Tuple of (files_processed, chunks_created)
+            Tuple of (files_processed, chunks_created, entity_ids)
         """
         try:
-            # Read file content
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            
-            # Create chunks
-            chunks = self._chunk_text(content)
-            
-            # Prepare data
-            texts = []
-            ids = []
-            metadata = []
-            
-            for i, chunk in enumerate(chunks):
-                texts.append(chunk)
-                ids.append(f"{file_path}::chunk_{i}")
-                metadata.append({
-                    "file": str(file_path),
-                    "chunk_index": i,
-                    "total_chunks": len(chunks)
-                })
-            
-            # Insert into Milvus
-            if texts:
-                self.vector_store.insert_data(
-                    self.collection_name,
-                    texts=texts,
-                    ids=ids,
-                    metadata=metadata
-                )
-            
-            return 1, len(chunks)
+            # Check if this is a Python file - if so, extract code structure
+            if file_path.suffix == '.py':
+                return self._ingest_python_file(file_path)
+            else:
+                return self._ingest_text_file(file_path)
             
         except Exception as e:
             logger.error(f"Error ingesting {file_path}: {e}")
-            return 0, 0
+            return 0, 0, []
+    
+    def _ingest_python_file(self, file_path: Path) -> Tuple[int, int, List[str]]:
+        """
+        Ingest Python file with code structure extraction.
+        
+        Args:
+            file_path: Path to Python file
+            
+        Returns:
+            Tuple of (files_processed, chunks_created, entity_ids)
+        """
+        from advisor.data_prep.code_parser import CodeParser
+        
+        # Parse Python file to extract code elements
+        parser = CodeParser()
+        elements = parser.parse_file(file_path)
+        
+        if not elements:
+            # Fallback to text chunking if parsing fails
+            logger.warning(f"No code elements found in {file_path}, using text chunking")
+            return self._ingest_text_file(file_path)
+        
+        # Prepare data with rich metadata
+        texts = []
+        ids = []
+        metadata = []
+        
+        for elem in elements:
+            # Create searchable text
+            text_parts = [
+                f"Name: {elem.name}",
+                f"Type: {elem.type}",
+            ]
+            
+            if elem.parent_class:
+                text_parts.append(f"Class: {elem.parent_class}")
+            
+            if elem.signature:
+                text_parts.append(f"Signature: {elem.signature}")
+            
+            if elem.docstring:
+                text_parts.append(f"Documentation: {elem.docstring}")
+            
+            # Add body for context (truncate if too long)
+            if elem.body and len(elem.body) < 2000:
+                text_parts.append(f"Code:\n{elem.body}")
+            
+            text = "\n\n".join(text_parts)
+            texts.append(text)
+            
+            # Generate ID
+            elem_id = f"{file_path}::{elem.name}::{elem.line_number}"
+            if len(elem_id) > 250:
+                path_hash = hashlib.md5(str(file_path).encode()).hexdigest()[:16]
+                elem_id = f"{path_hash}::{elem.name}::{elem.line_number}"
+            ids.append(elem_id)
+            
+            # Store rich metadata
+            meta = {
+                # Basic identification
+                "file_path": str(file_path),
+                "collection": self.collection_name,
+                "chunk_index": 0,  # Single element, not chunked
+                "total_chunks": 1,
+                
+                # Code structure metadata
+                "element_type": elem.type,
+                "name": elem.name,
+                "class_name": elem.parent_class if elem.type == "method" else (elem.name if elem.type == "class" else ""),
+                "method_name": elem.name if elem.type in ["method", "function"] else "",
+                "parent_class": elem.parent_class or "",
+                "signature": elem.signature or "",
+                "parameters": ",".join(elem.parameters),
+                "return_type": elem.return_type or "",
+                
+                # Attributes
+                "is_async": elem.is_async,
+                "is_private": elem.is_private,
+                "is_public": elem.is_public,
+                "decorators": ",".join(elem.decorators),
+                "complexity": elem.complexity,
+                "line_number": elem.line_number,
+                "end_line_number": elem.end_line_number,
+                
+                # Module path
+                "module_path": self._extract_module_path(str(file_path)),
+            }
+            metadata.append(meta)
+        
+        # Insert into Milvus
+        if texts:
+            self.vector_store.insert_data(
+                self.collection_name,
+                texts=texts,
+                ids=ids,
+                metadata=metadata
+            )
+        
+        return 1, len(elements), ids
+    
+    def _ingest_text_file(self, file_path: Path) -> Tuple[int, int, List[str]]:
+        """
+        Ingest non-Python file using text chunking.
+        
+        Args:
+            file_path: Path to file
+            
+        Returns:
+            Tuple of (files_processed, chunks_created, entity_ids)
+        """
+        # Read file content
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Create chunks
+        chunks = self._chunk_text(content)
+        
+        # Prepare data
+        texts = []
+        ids = []
+        metadata = []
+        
+        for i, chunk in enumerate(chunks):
+            texts.append(chunk)
+            # Generate ID with hash if path is too long (Milvus limit: 256 chars)
+            chunk_id = f"{file_path}::chunk_{i}"
+            if len(chunk_id) > 250:  # Leave margin for safety
+                # Use hash of path + chunk index
+                path_hash = hashlib.md5(str(file_path).encode()).hexdigest()[:16]
+                chunk_id = f"{path_hash}::chunk_{i}"
+            ids.append(chunk_id)
+            metadata.append({
+                "file_path": str(file_path),
+                "collection": self.collection_name,
+                "chunk_index": i,
+                "total_chunks": len(chunks)
+            })
+        
+        # Insert into Milvus
+        if texts:
+            self.vector_store.insert_data(
+                self.collection_name,
+                texts=texts,
+                ids=ids,
+                metadata=metadata
+            )
+        
+        return 1, len(chunks), ids
+    
+    def _extract_module_path(self, file_path: str) -> str:
+        """
+        Extract module path from file path.
+        
+        Example: /path/to/pyegeria/admin_services.py -> pyegeria.admin_services
+        
+        Args:
+            file_path: Full file path
+            
+        Returns:
+            Module path string
+        """
+        if not file_path:
+            return ""
+        
+        try:
+            path = Path(file_path)
+            # Find the package root (look for common package names)
+            parts = path.parts
+            
+            # Common package names to look for
+            package_roots = ['pyegeria', 'egeria', 'advisor', 'src']
+            
+            # Find where the package starts
+            start_idx = -1
+            for i, part in enumerate(parts):
+                if part in package_roots:
+                    start_idx = i
+                    break
+            
+            if start_idx >= 0:
+                # Get parts from package root to file (without extension)
+                module_parts = list(parts[start_idx:])
+                module_parts[-1] = path.stem  # Remove .py extension
+                return ".".join(module_parts)
+            
+            # Fallback: just use the filename without extension
+            return path.stem
+        except Exception as e:
+            logger.warning(f"Error extracting module path from {file_path}: {e}")
+            return ""
     
     def ingest_directory(
         self,
@@ -505,57 +741,21 @@ class CodeIngester:
         
         logger.info(f"Found {len(files)} files matching {file_pattern}")
         
-        # Batch processing for better performance
-        batch_texts = []
-        batch_ids = []
-        batch_metadata = []
-        files_in_batch = 0
-        
+        # Process files individually to use Python parsing
         for idx, file_path in enumerate(files, 1):
             try:
-                # Read file content
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
+                # Use ingest_file which handles Python parsing vs text chunking
+                files_processed, chunks_created, entity_ids = self.ingest_file(file_path)
                 
-                # Create chunks
-                chunks = self._chunk_text(content)
+                # Note: ingest_file inserts directly, so we don't batch here
+                # This is a trade-off: better metadata extraction vs batching efficiency
+                # For Python files, we get rich metadata; for others, text chunking
                 
-                # Add to batch
-                for i, chunk in enumerate(chunks):
-                    batch_texts.append(chunk)
-                    # Generate ID with hash if path is too long (Milvus limit: 256 chars)
-                    chunk_id = f"{file_path}::chunk_{i}"
-                    if len(chunk_id) > 250:  # Leave margin for safety
-                        # Use hash of path + chunk index
-                        path_hash = hashlib.md5(str(file_path).encode()).hexdigest()[:16]
-                        chunk_id = f"{path_hash}::chunk_{i}"
-                    batch_ids.append(chunk_id)
-                    batch_metadata.append({
-                        "file_path": str(file_path),  # Changed from "file" for consistency
-                        "collection": self.collection_name,  # Add collection name at ingestion
-                        "chunk_index": i,
-                        "total_chunks": len(chunks)
-                    })
+                total_files += files_processed
+                total_chunks += chunks_created
                 
-                files_in_batch += 1
-                total_files += 1
-                total_chunks += len(chunks)
-                
-                # Insert batch when it reaches batch_size or at the end
-                if files_in_batch >= batch_size or idx == len(files):
-                    if batch_texts:
-                        logger.info(f"Inserting batch: {files_in_batch} files, {len(batch_texts)} chunks (progress: {idx}/{len(files)})")
-                        self.vector_store.insert_data(
-                            self.collection_name,
-                            texts=batch_texts,
-                            ids=batch_ids,
-                            metadata=batch_metadata
-                        )
-                        # Reset batch
-                        batch_texts = []
-                        batch_ids = []
-                        batch_metadata = []
-                        files_in_batch = 0
+                if idx % 10 == 0:  # Log progress every 10 files
+                    logger.info(f"Progress: {idx}/{len(files)} files processed, {total_chunks} chunks created")
                 
             except Exception as e:
                 logger.error(f"Error processing {file_path}: {e}")

@@ -330,12 +330,18 @@ class DrEgeriaActionAgent:
         self._egeria_conn: Optional[Dict[str, str]] = None  # lazy
 
     def _ensure_mcp(self) -> None:
-        """Connect to MCP servers if not already done."""
+        """Connect to MCP servers if not already done. Raises ConnectionError if unreachable."""
         if self._mcp_agent is not None and self._mcp_agent._initialized:
             return
         from advisor.report_pipeline import _run_async
         from advisor.mcp_agent import initialize_mcp_agent
-        self._mcp_agent = _run_async(initialize_mcp_agent(config_path=self._config_path))
+        try:
+            self._mcp_agent = _run_async(
+                initialize_mcp_agent(config_path=self._config_path), timeout=8
+            )
+        except (TimeoutError, Exception) as exc:
+            self._mcp_agent = None
+            raise ConnectionError(f"Egeria MCP server not reachable: {exc}") from exc
 
     def _get_egeria_conn(self) -> Dict[str, str]:
         """Extract Egeria connection params from MCP server config."""

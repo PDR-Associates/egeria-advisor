@@ -214,45 +214,78 @@ GENERAL QUERY - Provide comprehensive overview:
             "egeria_workspaces": "example workspaces, Jupyter notebooks, and demonstrations"
         }
     
+    _PERSPECTIVE_ADDENDA: Dict[str, str] = {
+        "developer": (
+            "PERSPECTIVE: The user is a **Software Developer**. "
+            "Emphasise API usage, code examples, class/method signatures, "
+            "integration patterns, and runnable snippets. "
+            "Assume comfort with Python and REST APIs."
+        ),
+        "data_engineer": (
+            "PERSPECTIVE: The user is a **Data Engineer**. "
+            "Emphasise data pipeline integration, ingestion connectors, "
+            "catalog targets, lineage capture, and operational setup. "
+            "Show how Egeria fits into ETL/ELT workflows."
+        ),
+        "data_steward": (
+            "PERSPECTIVE: The user is a **Data Steward**. "
+            "Emphasise governance metadata, glossary management, data quality, "
+            "ownership assignment, and cataloguing procedures. "
+            "Use business-friendly language alongside technical detail."
+        ),
+        "governance_officer": (
+            "PERSPECTIVE: The user is a **Governance Officer**. "
+            "Emphasise policy definition, compliance controls, audit trails, "
+            "governance zones, certification, and regulatory alignment. "
+            "Keep explanations at a strategic level; avoid deep code detail."
+        ),
+    }
+
     def get_system_prompt(
         self,
         primary_collection: Optional[str] = None,
         content_type: Optional[ContentType] = None,
-        language: Optional[Language] = None
+        language: Optional[Language] = None,
+        perspective: Optional[str] = None,
     ) -> str:
         """
         Get appropriate system prompt based on collection characteristics.
-        
+
         Args:
             primary_collection: Name of primary collection being searched
             content_type: Type of content (code, documentation, examples)
             language: Primary language (python, java, markdown)
-            
+            perspective: User role perspective (developer, data_engineer, etc.)
+
         Returns:
             Tailored system prompt
         """
-        # Determine prompt type based on collection or content type
+        # Determine base prompt from collection or content type
         if primary_collection:
             if "docs" in primary_collection:
-                return self.system_prompts["documentation"]
+                base = self.system_prompts["documentation"]
             elif "cli" in primary_collection:
-                return self.system_prompts["cli"]
+                base = self.system_prompts["cli"]
             elif "workspace" in primary_collection or "example" in primary_collection:
-                return self.system_prompts["examples"]
+                base = self.system_prompts["examples"]
             elif "java" in primary_collection:
-                return self.system_prompts["java_code"]
+                base = self.system_prompts["java_code"]
             else:
-                return self.system_prompts["python_code"]
-        
-        # Fall back to content type
-        if content_type == ContentType.DOCUMENTATION:
-            return self.system_prompts["documentation"]
+                base = self.system_prompts["python_code"]
+        elif content_type == ContentType.DOCUMENTATION:
+            base = self.system_prompts["documentation"]
         elif content_type == ContentType.EXAMPLES:
-            return self.system_prompts["examples"]
+            base = self.system_prompts["examples"]
         elif language == Language.JAVA:
-            return self.system_prompts["java_code"]
+            base = self.system_prompts["java_code"]
         else:
-            return self.system_prompts["python_code"]
+            base = self.system_prompts["python_code"]
+
+        if perspective:
+            addendum = self._PERSPECTIVE_ADDENDA.get(perspective)
+            if addendum:
+                base = base + "\n\n" + addendum
+        return base
     
     def build_prompt(
         self,

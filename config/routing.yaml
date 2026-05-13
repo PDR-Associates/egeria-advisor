@@ -19,7 +19,41 @@ clarification:
 # Priority levels: critical (1), high (2), medium (3), low (4), fallback (5)
 query_patterns:
   critical:
+    example:
+      # Python/code example requests — must beat command and report patterns
+      - "python example"
+      - "write python"
+      - "give me a python"
+      - "give me python"
+      - "show me python"
+      - "python code example"
+      - "python code for"
+      - "python snippet"
+      - "give me an example"
+      - "give me a code"
+      - "code example for"
+      - "code sample for"
     code_search:
+      # API / method discovery — must appear before lower-priority patterns
+      - "what methods"
+      - "which methods"
+      - "list methods"
+      - "available methods"
+      - "what api"
+      - "available api"
+      - "what functions"
+      - "list functions"
+      - "what operations"
+      - "available operations"
+      - "what can i do with"
+      - "api reference"
+      - "api for"
+      - "methods for"
+      - "methods to"
+      - "what pyegeria"
+      - "what class"
+      - "which class"
+      # How-to navigation
       - "how do i create"
       - "how do i add"
       - "how do i use"
@@ -52,6 +86,7 @@ query_patterns:
 
   high:
     report:
+      # Explicit report commands
       - "generate report"
       - "create report"
       - "run report"
@@ -63,6 +98,34 @@ query_patterns:
       - "list reports"
       - "available reports"
       - "what reports"
+      # Live Egeria data listing — must be here (HIGH) so they win over MEDIUM code_search
+      - "show me available"
+      - "show me all"
+      - "list available"
+      - "list all"
+      - "display all"
+      - "view all"
+      - "show all"
+      - "show glossaries"
+      - "list glossaries"
+      - "view glossaries"
+      - "show collections"
+      - "list collections"
+      - "view collections"
+      - "show assets"
+      - "list assets"
+      - "view assets"
+      - "show zones"
+      - "list zones"
+      - "view zones"
+      - "available glossaries"
+      - "available collections"
+      - "available assets"
+      - "what glossaries"
+      - "what collections"
+      - "what assets"
+      - "what data assets"
+      - "what governance zones"
     command:
       - "run command"
       - "execute command"

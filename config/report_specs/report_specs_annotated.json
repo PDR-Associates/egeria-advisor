@@ -184,6 +184,21 @@
     "question_spec": [
       {
         "perspectives": [
+          "Business Analyst",
+          "Data Steward",
+          "Individual"
+        ],
+        "questions": [
+          "Show me available collections",
+          "List all collections",
+          "What collections do we have?",
+          "Display available collections",
+          "Show me all collections",
+          "View available collections"
+        ]
+      },
+      {
+        "perspectives": [
           "Data Steward",
           "Governance Officer",
           "Data Owner"
@@ -774,6 +789,21 @@
     },
     "get_additional_props": null,
     "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst",
+          "Data Steward",
+          "Individual"
+        ],
+        "questions": [
+          "Show me available collections",
+          "List all collections",
+          "What collections do we have?",
+          "Display available collections",
+          "Show me all collections",
+          "View available collections"
+        ]
+      },
       {
         "perspectives": [
           "Data Steward",
@@ -30099,6 +30129,22 @@
     },
     "get_additional_props": null,
     "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst",
+          "Data Steward",
+          "Individual"
+        ],
+        "questions": [
+          "Show me available glossaries",
+          "List all glossaries",
+          "What glossaries do we have?",
+          "Display available glossaries",
+          "Show me all glossaries",
+          "What glossaries are defined?",
+          "View available glossaries"
+        ]
+      },
       {
         "perspectives": [
           "Data Steward",

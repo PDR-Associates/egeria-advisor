@@ -1,0 +1,200 @@
+"""BeeAI @tool functions shared across Egeria Advisor agents."""
+from __future__ import annotations
+import re
+from pathlib import Path
+
+from beeai_framework.tools import tool
+
+
+@tool(description=(
+    "Search indexed Egeria content for text relevant to the query. "
+    "collections is a comma-separated list of collection names from: "
+    "pyegeria, pyegeria_cli, pyegeria_drE, egeria_concepts, egeria_general, egeria_types, "
+    "egeria_workspaces, egeria_java, egeria_templates. "
+    "Call multiple times with different queries or collections to broaden coverage. "
+    "Returns the most relevant chunks with their source file and score."
+))
+def search_egeria_content(query: str, collections: str) -> str:
+    from advisor.multi_collection_store import get_multi_collection_store
+    names = [c.strip() for c in collections.split(",") if c.strip()]
+    if not names:
+        return "Error: no collection names provided."
+    store = get_multi_collection_store()
+    result = store.search_specific_collections(query=query, collection_names=names, top_k=6)
+    if not result.results:
+        return "No relevant content found."
+    parts = []
+    for r in result.results:
+        col = r.metadata.get("_collection", r.metadata.get("collection", "?"))
+        fp = r.metadata.get("file_path", r.metadata.get("source", ""))
+        parts.append(f"[{col} | {fp} | score={r.score:.2f}]\n{r.text}")
+    return "\n\n---\n\n".join(parts)
+
+
+def _search_egeria_content_raw(query: str, collections: list[str], top_k: int = 8) -> str:
+    """Direct call to the search logic without going through the BeeAI tool wrapper."""
+    from advisor.multi_collection_store import get_multi_collection_store
+    if not collections:
+        return "No collections specified."
+    store = get_multi_collection_store()
+    result = store.search_specific_collections(query=query, collection_names=collections, top_k=top_k)
+    if not result.results:
+        return "No relevant content found."
+    parts = []
+    for r in result.results:
+        col = r.metadata.get("_collection", r.metadata.get("collection", "?"))
+        fp = r.metadata.get("file_path", r.metadata.get("source", ""))
+        parts.append(f"[{col} | {fp} | score={r.score:.2f}]\n{r.text}")
+    return "\n\n---\n\n".join(parts)
+
+
+@tool(description=(
+    "Look up detailed information about a specific pyegeria class, method, or function by name. "
+    "Useful when you know the exact symbol name (e.g. 'ProjectManager', 'create_project', "
+    "'get_glossary_terms'). Returns the class/function signature, docstring, and source location."
+))
+def get_egeria_symbol(name: str) -> str:
+    return _get_egeria_symbol_raw(name)
+
+
+def _get_egeria_symbol_raw(name: str) -> str:
+    """Direct call to symbol lookup without the BeeAI tool wrapper."""
+    from advisor.multi_collection_store import get_multi_collection_store
+    store = get_multi_collection_store()
+    # Search pyegeria collection with name as query, filtered to high precision
+    result = store.search_specific_collections(
+        query=name,
+        collection_names=["pyegeria"],
+        top_k=5,
+    )
+    if not result.results:
+        return f"No symbol found named '{name}'."
+    hits = [r for r in result.results if name.lower() in r.text.lower()]
+    targets = hits[:3] if hits else result.results[:3]
+    parts = []
+    for r in targets:
+        fp = r.metadata.get("file_path", r.metadata.get("source", ""))
+        parts.append(f"[{fp} | score={r.score:.2f}]\n{r.text}")
+    return "\n\n---\n\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Dr.Egeria markdown command template lookup
+# ---------------------------------------------------------------------------
+
+def _templates_root() -> Path | None:
+    """
+    Return the Dr.Egeria templates root directory, or None if not found.
+
+    Candidate paths tried in order:
+      1. {pyegeria_root}/Templates/Dr-Egeria-Templates   (case-sensitive, workspace layout)
+      2. {pyegeria_root}/templates                       (lower-case fallback)
+      3. {EGERIA_ROOT_PATH|PYEGERIA_ROOT_PATH}/Templates/Dr-Egeria-Templates
+      4. {EGERIA_ROOT_PATH|PYEGERIA_ROOT_PATH}/templates
+    """
+    import os
+
+    def _try(root: str | Path) -> Path | None:
+        root = Path(root)
+        for sub in ("Templates/Dr-Egeria-Templates", "templates"):
+            p = root / sub
+            if p.is_dir():
+                return p
+        return None
+
+    try:
+        from pyegeria.core.config import get_app_config
+        root = get_app_config().Environment.pyegeria_root
+        if root:
+            found = _try(root)
+            if found:
+                return found
+    except Exception:
+        pass
+
+    env_root = os.getenv("EGERIA_ROOT_PATH") or os.getenv("PYEGERIA_ROOT_PATH")
+    if env_root:
+        found = _try(env_root)
+        if found:
+            return found
+
+    return None
+
+
+def _normalise(s: str) -> str:
+    """Lower-case, strip punctuation/spaces for fuzzy comparison."""
+    return re.sub(r"[\s_\-]+", "", s).lower()
+
+
+def _find_dre_template_raw(query: str, level: str = "basic") -> str:
+    """
+    Search the Dr.Egeria template files for commands matching *query*.
+
+    Templates live at {EGERIA_ROOT_PATH}/templates/{level}/{family}/{command}.md.
+    Returns up to 3 matching template bodies concatenated, or a "not found" message.
+    """
+    root = _templates_root()
+    if root is None:
+        return (
+            "Dr.Egeria template directory not found. "
+            "Run `generate_md_cmd_templates.py` to generate templates, "
+            "or set EGERIA_ROOT_PATH / PYEGERIA_ROOT_PATH to the pyegeria workspace root."
+        )
+
+    level_dir = root / level
+    if not level_dir.is_dir():
+        # Fall back to basic if the requested level doesn't exist
+        level_dir = root / "basic"
+    if not level_dir.is_dir():
+        return f"No templates found at {root}."
+
+    query_norm = _normalise(query)
+
+    # Score every template file: exact substring in stem > family match > partial
+    scored: list[tuple[int, Path]] = []
+    for md_file in sorted(level_dir.rglob("*.md")):
+        stem_norm = _normalise(md_file.stem)
+        family_norm = _normalise(md_file.parent.name)
+        score = 0
+        if query_norm in stem_norm or stem_norm in query_norm:
+            score = 3
+        elif any(_normalise(w) in stem_norm for w in query.split() if len(w) > 3):
+            score = 2
+        elif any(_normalise(w) in family_norm for w in query.split() if len(w) > 3):
+            score = 1
+        if score > 0:
+            scored.append((score, md_file))
+
+    if not scored:
+        # List available families to help the user
+        families = sorted({p.parent.name for p in level_dir.rglob("*.md")})
+        return (
+            f"No Dr.Egeria template found matching '{query}' at {level} level.\n\n"
+            f"Available families: {', '.join(families)}\n\n"
+            "Try a more specific term (e.g. 'create glossary', 'create term', 'link term')."
+        )
+
+    scored.sort(key=lambda x: (-x[0], x[1].stem))
+    top = scored[:3]
+
+    parts = []
+    for _, md_file in top:
+        family = md_file.parent.name
+        try:
+            content = md_file.read_text(encoding="utf-8")
+            parts.append(f"**Family: {family} | Template: {md_file.stem}**\n\n{content}")
+        except Exception as exc:
+            parts.append(f"[Could not read {md_file}: {exc}]")
+
+    return "\n\n---\n\n".join(parts)
+
+
+@tool(description=(
+    "Find and return Dr.Egeria markdown command templates matching the user's topic. "
+    "Templates cover Create, Update, Link, and Set operations for Egeria metadata objects "
+    "(glossaries, terms, collections, governance definitions, projects, people, etc.). "
+    "level should be 'basic' (most users) or 'advanced' (full attribute set). "
+    "Returns the raw markdown template(s) the user can copy into a Dr.Egeria notebook."
+))
+def find_dre_template(query: str, level: str = "basic") -> str:
+    return _find_dre_template_raw(query, level=level)

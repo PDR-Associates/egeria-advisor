@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from advisor.mcp_client import (
     MCPClient,
+    MCPSSEClient,
     MCPServerConfig,
     MCPTool,
     MCPResource,
@@ -71,15 +72,18 @@ class MCPConfig:
         servers = {}
         for name, server_data in data.get("mcpServers", {}).items():
             servers[name] = MCPServerConfig(
-                command=server_data["command"],
+                command=server_data.get("command"),
                 args=server_data.get("args", []),
                 env=server_data.get("env", {}),
+                url=server_data.get("url"),
+                transport=server_data.get("transport", "stdio"),
+                headers=server_data.get("headers", {}),
                 enabled=server_data.get("enabled", True),
                 description=server_data.get("description", "")
             )
-        
+
         settings = data.get("settings", {})
-        
+
         return cls(
             servers=servers,
             auto_discover_tools=settings.get("auto_discover_tools", True),
@@ -88,24 +92,27 @@ class MCPConfig:
             enable_tool_caching=settings.get("enable_tool_caching", True),
             cache_ttl=settings.get("cache_ttl", 300)
         )
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'MCPConfig':
         """
         Create configuration from dictionary.
-        
+
         Args:
             data: Configuration dictionary
-            
+
         Returns:
             MCPConfig instance
         """
         servers = {}
         for name, server_data in data.get("mcpServers", {}).items():
             servers[name] = MCPServerConfig(
-                command=server_data["command"],
+                command=server_data.get("command"),
                 args=server_data.get("args", []),
                 env=server_data.get("env", {}),
+                url=server_data.get("url"),
+                transport=server_data.get("transport", "stdio"),
+                headers=server_data.get("headers", {}),
                 enabled=server_data.get("enabled", True),
                 description=server_data.get("description", "")
             )
@@ -211,8 +218,12 @@ class MCPAgent:
         for server_name in enabled_servers:
             try:
                 server_config = self.config.servers[server_name]
-                client = MCPClient(server_name, server_config)
-                
+                # Choose transport: SSE for remote servers, stdio for local
+                if server_config.is_remote():
+                    client = MCPSSEClient(server_name, server_config)
+                else:
+                    client = MCPClient(server_name, server_config)
+
                 await client.connect()
                 self.clients[server_name] = client
                 

@@ -63,6 +63,10 @@ class InteractiveSession:
         self.running = True
         self.last_response: Optional[Dict[str, Any]] = None
         self.last_query: Optional[str] = None
+
+        # Clarification state — set when the last response was a disambiguation prompt
+        # Format: {'candidates': [str, ...], 'original_query': str}
+        self._pending_clarification: Optional[Dict[str, Any]] = None
         
         # Options
         self.verbose = options.get('verbose', False)
@@ -183,15 +187,62 @@ class InteractiveSession:
             self.console.print(f"[yellow]Unknown command:[/yellow] {cmd}")
             self.console.print("[dim]Type /help for available commands[/dim]")
     
+    def _resolve_clarification(self, user_input: str) -> Optional[str]:
+        """
+        If we are waiting for a disambiguation reply, resolve the user's input
+        (a digit or a candidate name) to a "run report <name>" query.
+
+        Returns the resolved query string, or None if not in clarification state
+        or the input doesn't match any candidate.
+        """
+        if not self._pending_clarification:
+            return None
+
+        candidates: List[str] = self._pending_clarification.get("candidates", [])
+        text = user_input.strip()
+
+        # Numeric choice: "1", "2", "3"
+        if text.isdigit():
+            idx = int(text) - 1
+            if 0 <= idx < len(candidates):
+                return f"run report {candidates[idx]}"
+            self.console.print(
+                f"[yellow]Please enter a number between 1 and {len(candidates)}.[/yellow]"
+            )
+            return ""  # Stay in clarification state, don't clear
+
+        # Name match (full or partial, case-insensitive)
+        text_lower = text.lower()
+        for name in candidates:
+            if text_lower == name.lower() or text_lower in name.lower():
+                return f"run report {name}"
+
+        # Not recognised — fall through to normal query processing and clear state
+        return None
+
     def _handle_query(self, query: str):
         """
         Handle user query.
-        
+
         Parameters
         ----------
         query : str
             User's query
         """
+        # --- Clarification intercept ---
+        if self._pending_clarification:
+            resolved = self._resolve_clarification(query)
+            if resolved == "":
+                # Bad number — stay in clarification state, prompt again
+                return
+            if resolved is not None:
+                # Good selection — clear state and re-run with resolved query
+                self._pending_clarification = None
+                query = resolved
+            else:
+                # Unrecognised input — treat as new query, clear state
+                self._pending_clarification = None
+
         # Show processing indicator
         with Progress(
             SpinnerColumn(),
@@ -227,11 +278,20 @@ class InteractiveSession:
 
                 self.formatter.display(result, self.console)
 
+                # Disambiguation: save pending state so next input resolves the choice
+                if result.get('query_type') == 'clarification' and result.get('candidates'):
+                    self._pending_clarification = {
+                        'candidates': result['candidates'],
+                        'original_query': query,
+                    }
+
                 # Clarification loop for command queries with missing required params
-                if result.get('query_type') == 'command' and result.get('missing_params'):
+                elif result.get('query_type') == 'command' and result.get('missing_params'):
                     self._handle_command_clarification(query, result)
 
-                if self.enable_feedback and self.feedback_collector:
+                # Don't ask for feedback while waiting for a clarification reply —
+                # the user's next keystroke must go to the clarification handler.
+                if self.enable_feedback and self.feedback_collector and not self._pending_clarification:
                     self._prompt_for_feedback()
 
             except Exception as e:

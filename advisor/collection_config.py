@@ -298,7 +298,11 @@ EGERIA_WORKSPACES_COLLECTION = CollectionMetadata(
 _DEFAULT_EGERIA_CONCEPTS_TERMS = [
     "concept", "definition", "what is", "explain",
     "metadata", "governance", "lineage", "catalog",
-    "asset", "glossary", "classification", "relationship"
+    "asset", "glossary", "classification", "relationship",
+    "reference data", "reference data management",
+    "valid values", "valid value", "reference data set",
+    "governance zone", "zone", "project", "collection",
+    "agreement", "digital product", "data class",
 ]
 
 EGERIA_CONCEPTS_COLLECTION = CollectionMetadata(

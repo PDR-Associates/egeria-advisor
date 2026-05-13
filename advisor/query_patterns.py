@@ -69,9 +69,20 @@ QUERY_PATTERNS = {
     # HIGH PRIORITY - Specific multi-word patterns
     PatternPriority.HIGH: {
         QueryType.REPORT: [
+            # Explicit report commands
             "generate report", "create report", "run report", "show report",
             "report on", "get report", "produce report", "make report",
-            "list reports", "available reports", "what reports"
+            "list reports", "available reports", "what reports",
+            # Live Egeria data listing queries — must appear before MEDIUM CODE_SEARCH patterns
+            "show me available", "show me all", "list available", "list all",
+            "show available", "display all", "view all",
+            "show glossaries", "list glossaries", "view glossaries",
+            "show collections", "list collections", "view collections",
+            "show assets", "list assets", "view assets",
+            "show zones", "list zones", "view zones",
+            "available glossaries", "available collections", "available assets",
+            "what glossaries", "what collections", "what assets",
+            "what data assets", "what governance zones",
         ],
         QueryType.COMMAND: [
             "run command", "execute command", "invoke", "call",

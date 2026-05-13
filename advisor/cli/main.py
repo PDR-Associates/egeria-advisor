@@ -348,5 +348,22 @@ def start_interactive(options: dict):
     session.run()
 
 
+@click.command("web")
+@click.option("--host", default="127.0.0.1", show_default=True, help="Bind host")
+@click.option("--port", default=8080, show_default=True, help="Bind port")
+@click.option("--reload", is_flag=True, help="Auto-reload on code changes (dev mode)")
+def web_command(host: str, port: int, reload: bool):
+    """Launch the browser-based web UI."""
+    import uvicorn
+    console.print(f"[cyan]Starting Egeria Advisor web UI at http://{host}:{port}[/cyan]")
+    uvicorn.run(
+        "advisor.web.app:app",
+        host=host,
+        port=port,
+        reload=reload,
+        log_level="warning",
+    )
+
+
 if __name__ == '__main__':
     cli()

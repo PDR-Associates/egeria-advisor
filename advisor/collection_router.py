@@ -19,7 +19,21 @@ from advisor.query_patterns import get_domain_terms
 
 class CollectionRouter:
     """Routes queries to appropriate Milvus collections."""
-    
+
+    # Collections that contain action/command templates — not suitable for
+    # informational "how do I find / what is / explain" queries.
+    _ACTION_ONLY_COLLECTIONS = {"egeria_templates"}
+
+    # Patterns that signal an informational (non-action) query.
+    _INFORMATIONAL_PATTERNS = (
+        "how do i find", "how do i get", "how do i list", "how do i search",
+        "how do i retrieve", "how do i view", "how do i access", "how do i query",
+        "how to find", "how to get", "how to list", "how to search",
+        "how to retrieve", "how to view", "how to query",
+        "what is", "what are", "explain", "describe", "tell me about",
+        "show me examples", "give me examples", "show me an example",
+    )
+
     def __init__(self):
         """Initialize collection router."""
         self.collections = get_enabled_collections()
@@ -83,7 +97,12 @@ class CollectionRouter:
             List of matching collection names, ordered by priority
         """
         matches: List[Tuple[str, int, int, float]] = []  # (name, priority, match_count, intent_boost)
-        
+
+        # Informational queries (how do I find, what is, explain…) should not route
+        # to action-only collections like egeria_templates — those are command templates,
+        # not API documentation.
+        is_informational = any(p in query_lower for p in self._INFORMATIONAL_PATTERNS)
+
         # Detect query intent for boosting
         intent_keywords = {
             "documentation": ["documentation", "docs", "guide", "tutorial", "manual", "reference"],
@@ -99,9 +118,13 @@ class CollectionRouter:
                 break
         
         for collection in self.collections:
+            # Skip action-only collections for informational queries
+            if is_informational and collection.name in self._ACTION_ONLY_COLLECTIONS:
+                continue
+
             match_count = 0
             intent_boost = 0.0
-            
+
             # Check for explicit collection name mention (highest priority)
             # Use word boundaries to avoid substring matches (e.g., "pyegeria" shouldn't match "pyegeria_drE")
             collection_name_variants = [

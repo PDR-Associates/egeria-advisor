@@ -55,6 +55,8 @@ class RAGSystem:
         include_context: bool = True,
         track_metrics: bool = True,
         dry_run: bool = False,
+        query_type_override: Optional[str] = None,
+        perspective: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Process a user query and generate a response.
@@ -71,7 +73,11 @@ class RAGSystem:
         logger.info(f"Processing query: {user_query[:100]}...")
 
         # Process the query
-        result = self._process_query(user_query, include_context, dry_run=dry_run)
+        result = self._process_query(
+            user_query, include_context, dry_run=dry_run,
+            query_type_override=query_type_override,
+            perspective=perspective,
+        )
         
         # Always record metrics in local database (for dashboard)
         try:
@@ -121,16 +127,180 @@ class RAGSystem:
         except Exception as e:
             logger.warning(f"MLflow tracking failed: {e}")
 
+    # Phrases that signal a definitional/conceptual question, NOT a data retrieval query.
+    # These go to RAG even when the semantic score is high.
+    _DEFINITIONAL_PREFIXES = (
+        "what is ", "what's a ", "what's the ", "what are the ",
+        "how does ", "how do ", "explain ", "define ", "describe ",
+        "tell me about ", "what does ", "what do you mean by ",
+        "can you explain", "give me an overview",
+    )
+
+    # Keywords that signal the user wants Python code, not live Egeria data.
+    _CODE_EXAMPLE_SIGNALS = (
+        "python", "code example", "code sample", "write python",
+        "python code", "pyegeria example", "python snippet",
+    )
+
+    def _is_report_query(self, query: str) -> bool:
+        """
+        Return True if the query is a data-retrieval request that the report
+        pipeline can answer by running a report spec.
+
+        Semantic similarity against question_spec entries with three guards:
+        1. Score must be >= 0.50 (lowered from 0.65 — listing questions now in index).
+        2. Query must not start with a definitional phrase (those go to RAG).
+        3. Query must not explicitly request Python code / code examples.
+        """
+        q = query.strip().lower()
+        if any(q.startswith(p) for p in self._DEFINITIONAL_PREFIXES):
+            return False
+        if any(sig in q for sig in self._CODE_EXAMPLE_SIGNALS):
+            return False
+        try:
+            from advisor.report_pipeline import _question_index
+            hits = _question_index.search(query, top_k=1, threshold=0.50)
+            if hits:
+                logger.info(
+                    f"Semantic report pre-check: {hits[0]['report_spec']} "
+                    f"(score={hits[0]['score']:.2f})"
+                )
+                return True
+        except Exception as exc:
+            logger.debug(f"_is_report_query check failed: {exc}")
+        return False
+
+    def _report_alternatives(self, query: str) -> Optional[Dict[str, Any]]:
+        """
+        When semantic similarity is medium (0.35–0.50), return a clarification
+        response offering the matched report spec alongside a RAG alternative.
+        Returns None if no medium-confidence hit exists.
+        """
+        q = query.strip().lower()
+        if any(q.startswith(p) for p in self._DEFINITIONAL_PREFIXES):
+            return None
+        if any(sig in q for sig in self._CODE_EXAMPLE_SIGNALS):
+            return None
+        try:
+            from advisor.report_pipeline import _question_index
+            hits = _question_index.search(query, top_k=2, threshold=0.35)
+            # Only surface alternatives for medium confidence (below the run threshold)
+            medium_hits = [h for h in hits if h["score"] < 0.50]
+            if not medium_hits:
+                return None
+            best = medium_hits[0]
+            spec = best["report_spec"]
+            score = best["score"]
+            logger.info(f"Medium-confidence report match: {spec} ({score:.2f}) — offering alternatives")
+            return {
+                "query": query,
+                "response": (
+                    f"Your query could be answered in a couple of ways:\n\n"
+                    f"**Option 1 — Run the Egeria report** (recommended if you want current live data):\n"
+                    f"I found the **{spec}** report that may match your question "
+                    f"(confidence: {score:.0%}). "
+                    f"To run it, use Dr.Egeria: `[[{spec}]]`  \n"
+                    f"Or ask me: *\"run the {spec} report\"*\n\n"
+                    f"**Option 2 — Explain or show code examples**:\n"
+                    f"I can also explain how to work with this in pyegeria — just ask "
+                    f"*\"how do I...\"* or *\"show me an example of...\"*\n\n"
+                    f"Which do you want?"
+                ),
+                "query_type": "clarification",
+                "report_name": spec,
+                "sources": [],
+                "num_sources": 0,
+                "retrieval_time": 0.0,
+                "generation_time": 0.0,
+                "avg_relevance_score": score,
+                "context_length": 0,
+            }
+        except Exception as exc:
+            logger.debug(f"_report_alternatives check failed: {exc}")
+        return None
+
     def _process_query(
         self,
         user_query: str,
         include_context: bool,
         dry_run: bool = False,
+        query_type_override: Optional[str] = None,
+        perspective: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Internal query processing."""
         # Process query to understand intent
         query_analysis = self.query_processor.process(user_query)
         logger.info(f"Query type: {query_analysis['query_type']}")
+
+        # Explicit user intent overrides automatic classification.
+        if query_type_override:
+            logger.info(f"Intent override from UI: '{query_type_override}'")
+            query_analysis = dict(query_analysis)
+            query_analysis['query_type'] = query_type_override
+        # When pattern matching returns 'general', use the LLM classifier to
+        # narrow the intent before committing to RAG retrieval.
+        elif query_analysis['query_type'] == 'general':
+            from advisor.llm_intent_classifier import get_intent_classifier
+            refined = get_intent_classifier().classify(user_query)
+            if refined != 'general':
+                logger.info(f"LLM intent classifier refined 'general' → '{refined}'")
+                query_analysis = dict(query_analysis)
+                query_analysis['query_type'] = refined
+
+        # Role-aware routing: apply perspective signals before pipeline dispatch.
+        #
+        # Developer / Data Engineer + example/code keywords → force ExamplesAgent.
+        # This overrides both the pattern classifier and the LLM intent classifier,
+        # which frequently mistake "create X in Python" for a WRITE_COMMAND.
+        #
+        # Data Steward / Governance Officer + ambiguous "show me / example / sample"
+        # → return a clarification asking whether they want Python code or Dr.Egeria.
+        if not query_type_override:
+            query_lower = user_query.lower()
+            code_signals = any(sig in query_lower for sig in self._CODE_EXAMPLE_SIGNALS)
+            example_signals = any(kw in query_lower for kw in (
+                "example", "sample", "show me", "how do i", "how to",
+                "what methods", "which methods", "available methods", "list methods",
+                "what api", "api for", "methods for", "what functions",
+                "what can i do with", "what class", "which class",
+            ))
+            tech_roles = {"developer", "data_engineer"}
+            steward_roles = {"data_steward", "governance_officer"}
+
+            if perspective in tech_roles and (code_signals or example_signals):
+                logger.info(
+                    f"Role '{perspective}' + code/example signal → routing to ExamplesAgent"
+                )
+                try:
+                    from advisor.agents.examples_agent import get_examples_agent
+                    return get_examples_agent().handle(user_query)
+                except Exception as exc:
+                    logger.warning(f"ExamplesAgent failed ({exc}), continuing normal routing")
+
+            elif perspective in steward_roles and example_signals and not code_signals:
+                # Ambiguous: could be Dr.Egeria command or a conceptual/code example.
+                logger.info(
+                    f"Role '{perspective}' + ambiguous example signal → returning clarification"
+                )
+                return {
+                    "query": user_query,
+                    "response": (
+                        "Would you like me to:\n\n"
+                        "1. **Show a Python (pyegeria) code example** — how to do this "
+                        "programmatically using the pyegeria SDK?\n"
+                        "2. **Show a Dr.Egeria markdown template** — the notebook command "
+                        "you paste into an Egeria Workspaces Jupyter cell and fill in?\n\n"
+                        "You can also click **Show me** (Python) or **Act** (Dr.Egeria) "
+                        "above to set your intent before asking."
+                    ),
+                    "query_type": "clarification",
+                    "sources": [],
+                    "num_sources": 0,
+                    "retrieval_time": 0.0,
+                    "generation_time": 0.0,
+                    "avg_relevance_score": 0.0,
+                    "context_length": 0,
+                }
 
         # Handle quantitative queries directly with analytics
         if query_analysis['query_type'] == 'quantitative':
@@ -168,24 +338,70 @@ class RAGSystem:
                 "context_length": 0
             }
 
-        # Handle report queries via MCP pyegeria server
-        if query_analysis['query_type'] == 'report':
+        # Handle report queries via MCP pyegeria server.
+        # When the user explicitly overrides intent to a non-report type, skip the
+        # semantic pre-check so the override is honoured unconditionally.
+        if query_type_override and query_type_override != 'report':
+            is_report = False
+        else:
+            is_report = (
+                query_analysis['query_type'] == 'report'
+                or self._is_report_query(user_query)
+            )
+        if is_report:
             logger.info("Handling report query via MCP report pipeline")
             try:
                 from advisor.report_pipeline import get_report_pipeline
-                return get_report_pipeline().process(user_query)
+                return get_report_pipeline().process(user_query, perspective=perspective)
             except Exception as e:
                 logger.warning(f"Report pipeline failed ({e}), falling back to RAG")
                 # Fall through to RAG below
 
-        # Handle command/action queries via DrEgeriaActionAgent
+        # Handle command/action queries.
+        # If the query asks for a sample/template, return the Dr.Egeria markdown template.
+        # Otherwise execute the command via DrEgeriaActionAgent.
         if query_analysis['query_type'] == 'command':
+            _template_signals = ("template", "sample", "example", "show me", "give me")
+            wants_template = any(sig in user_query.lower() for sig in _template_signals)
+            if wants_template:
+                logger.info("Handling Dr.Egeria template request via DrEgeriaTemplateAgent")
+                try:
+                    from advisor.agents.dre_template_agent import get_dre_template_agent
+                    return get_dre_template_agent().handle(user_query)
+                except Exception as e:
+                    logger.warning(f"DrEgeriaTemplateAgent failed ({e}), falling back to DrEgeriaActionAgent")
             logger.info("Handling command query via DrEgeriaActionAgent")
             try:
                 from advisor.agents.dr_egeria_agent import get_dr_egeria_agent
                 return get_dr_egeria_agent().handle(user_query, dry_run=dry_run)
             except Exception as e:
                 logger.warning(f"DrEgeriaActionAgent failed ({e}), falling back to RAG")
+
+        # Before falling through to RAG, offer alternatives when there is a medium-confidence
+        # report match — prevents silent wrong-route responses.
+        # Skip when the user has explicitly specified a non-report intent.
+        if not query_type_override or query_type_override == 'report':
+            alt = self._report_alternatives(user_query)
+            if alt is not None:
+                return alt
+
+        # Route code/example queries to ExamplesAgent (BeeAI + fallback).
+        if query_analysis['query_type'] in ('code_search', 'example'):
+            logger.info(f"Routing {query_analysis['query_type']} query to ExamplesAgent")
+            try:
+                from advisor.agents.examples_agent import get_examples_agent
+                return get_examples_agent().handle(user_query)
+            except Exception as exc:
+                logger.warning(f"ExamplesAgent failed ({exc}), falling back to RAG")
+
+        # Route explanation/conceptual/debugging queries to DocAgent (BeeAI + fallback).
+        if query_analysis['query_type'] in ('explanation', 'best_practice', 'comparison', 'debugging', 'general'):
+            logger.info(f"Routing {query_analysis['query_type']} query to DocAgent")
+            try:
+                from advisor.agents.doc_agent import get_doc_agent
+                return get_doc_agent().handle(user_query, mode=query_analysis['query_type'])
+            except Exception as exc:
+                logger.warning(f"DocAgent failed ({exc}), falling back to RAG")
 
         # Get search strategy
         search_strategy = query_analysis["search_strategy"]
@@ -217,24 +433,39 @@ class RAGSystem:
         
         # Build prompt using template manager
         prompt_manager = get_prompt_manager()
-        
+
         # Convert query_type string to QueryType enum if needed
         if isinstance(query_analysis["query_type"], str):
             query_type_enum = QueryType(query_analysis["query_type"])
         else:
             query_type_enum = query_analysis["query_type"]
-        
+
+        # Prepend perspective so the LLM tailors depth and terminology
+        effective_query = user_query
+        if perspective:
+            perspective_labels = {
+                "developer": "Software Developer",
+                "data_engineer": "Data Engineer",
+                "data_steward": "Data Steward",
+                "governance_officer": "Governance Officer",
+            }
+            role_label = perspective_labels.get(perspective, perspective.replace("_", " ").title())
+            effective_query = f"[User role: {role_label}]\n{user_query}"
+
         prompt = prompt_manager.build_prompt(
-            user_query=user_query,
+            user_query=effective_query,
             context=context,
             query_type=query_type_enum,
             collections_searched=collections_searched,
             offer_examples=offer_examples
         )
-        
-        # Get appropriate system prompt based on collections
+
+        # Get appropriate system prompt based on collections, optionally tailored to perspective
         primary_collection = collections_searched[0] if collections_searched else None
-        system_prompt = prompt_manager.get_system_prompt(primary_collection=primary_collection)
+        system_prompt = prompt_manager.get_system_prompt(
+            primary_collection=primary_collection,
+            perspective=perspective,
+        )
 
         # Generate response with timing
         generation_start = time.time()

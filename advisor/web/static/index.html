@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Egeria Advisor</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+  <script>mermaid.initialize({ startOnLoad: false, theme: 'dark' });</script>
+  <script src="https://cdn.jsdelivr.net/npm/vega@5/build/vega.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vega-lite@5/build/vega-lite.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vega-embed@6/build/vega-embed.min.js"></script>
+  <script>tailwind.config = { darkMode: 'class' };</script>
+  <style>
+    body { font-family: 'Inter', system-ui, sans-serif; }
+    #messages { scroll-behavior: smooth; }
+
+    /* Intent border colours */
+    .msg-you       { border-left: 3px solid #06b6d4; }
+    .msg-assistant { border-left: 3px solid #10b981; }
+    .msg-clarify   { border-left: 3px solid #f59e0b; }
+
+    /* Markdown prose */
+    .prose pre  { background:#1e293b; padding:.75rem; border-radius:.375rem; overflow-x:auto; }
+    .prose code { background:#1e293b; padding:.1em .3em; border-radius:.2em; font-size:.85em; }
+    .prose p    { margin-bottom:.5rem; }
+    .prose ul, .prose ol { margin-left:1.25rem; margin-bottom:.5rem; }
+    .prose li   { margin-bottom:.15rem; }
+    .prose h1,.prose h2,.prose h3 { font-weight:600; margin:.75rem 0 .4rem; }
+    .prose table { border-collapse:collapse; width:100%; margin-bottom:.5rem; }
+    .prose th, .prose td { border:1px solid #334155; padding:.3rem .6rem; text-align:left; }
+    .prose th { background:#1e293b; }
+
+    /* Sidebar pane scrolling */
+    .sidebar-pane { overflow-y:auto; min-height:0; }
+
+    /* Scrollbars */
+    ::-webkit-scrollbar { width:5px; }
+    ::-webkit-scrollbar-track { background:#0f172a; }
+    ::-webkit-scrollbar-thumb { background:#334155; border-radius:3px; }
+
+    /* Report group toggle */
+    details > summary { cursor:pointer; list-style:none; }
+    details > summary::-webkit-details-marker { display:none; }
+    details > summary::before { content:'▶'; font-size:.6rem; margin-right:.35rem; color:#64748b; transition:transform .15s; display:inline-block; }
+    details[open] > summary::before { transform:rotate(90deg); }
+  </style>
+</head>
+<body class="dark bg-slate-900 text-slate-100 h-screen flex flex-col overflow-hidden">
+
+<!-- ── Header ─────────────────────────────────────────────────────────────── -->
+<header class="flex items-center justify-between px-4 py-2 bg-slate-800 border-b border-slate-700 shrink-0">
+  <div class="flex items-center gap-3">
+    <img src="/static/egeria-logo.png" alt="Egeria" class="h-8 w-auto">
+    <span class="text-cyan-400 font-bold text-lg">Egeria Advisor</span>
+    <span id="status-dot" class="w-2 h-2 rounded-full bg-slate-500" title="MCP status"></span>
+  </div>
+  <div class="flex items-center gap-3 text-xs text-slate-500">
+    <label class="flex items-center gap-1 cursor-pointer select-none">
+      <input type="checkbox" id="dre-toggle" onchange="loadReports()" class="accent-cyan-500">
+      <span>Show DrE specs</span>
+    </label>
+    <span>·</span>
+    <span>Enter=send &nbsp; Shift+Enter=newline</span>
+  </div>
+</header>
+
+<!-- ── Main layout ─────────────────────────────────────────────────────────── -->
+<div class="flex flex-1 overflow-hidden">
+
+  <!-- ── Sidebar ─────────────────────────────────────────────────────────── -->
+  <aside class="w-72 shrink-0 flex flex-col bg-slate-800 border-r border-slate-700 overflow-hidden">
+
+    <!-- Top pane: Available Reports -->
+    <div class="flex flex-col flex-1 sidebar-pane border-b border-slate-700 min-h-0">
+      <div class="px-3 pt-3 pb-1 shrink-0 flex items-center justify-between">
+        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Available Reports</span>
+        <span id="report-count" class="text-xs text-slate-600"></span>
+      </div>
+      <div id="report-catalog" class="px-2 pb-2 flex flex-col gap-0.5 text-sm"></div>
+    </div>
+
+    <!-- Bottom pane: Recent Queries -->
+    <div class="flex flex-col sidebar-pane" style="max-height:40%">
+      <div class="px-3 pt-2 pb-1 shrink-0 flex items-center justify-between">
+        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Recent Queries</span>
+        <button onclick="clearHistory()" class="text-xs text-slate-600 hover:text-slate-400 transition-colors">clear</button>
+      </div>
+      <div id="recent-queries" class="px-2 pb-2 flex flex-col gap-0.5 text-xs"></div>
+    </div>
+  </aside>
+
+  <!-- ── Chat panel ──────────────────────────────────────────────────────── -->
+  <main class="flex flex-col flex-1 overflow-hidden">
+
+    <!-- Messages -->
+    <div id="messages" class="flex-1 overflow-y-auto px-4 py-3 space-y-3"></div>
+
+    <!-- Thinking indicator -->
+    <div id="thinking" class="hidden px-4 py-1 shrink-0">
+      <div class="flex items-center gap-2 text-slate-400 text-sm">
+        <div class="w-2 h-2 bg-cyan-400 rounded-full animate-bounce"></div>
+        <div class="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style="animation-delay:.15s"></div>
+        <div class="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style="animation-delay:.3s"></div>
+        <span class="text-xs">Thinking…</span>
+      </div>
+    </div>
+
+    <!-- Input area -->
+    <div class="px-4 py-3 border-t border-slate-700 bg-slate-800 shrink-0">
+      <!-- Perspective selector -->
+      <div class="flex gap-1 mb-1 flex-wrap">
+        <span class="text-xs text-slate-500 self-center mr-1">As:</span>
+        <button class="persp-btn active" data-perspective="" onclick="setPerspective(this)" title="No role filter — general answer">Anyone</button>
+        <button class="persp-btn" data-perspective="developer" onclick="setPerspective(this)" title="Code examples, APIs, integration patterns">Developer</button>
+        <button class="persp-btn" data-perspective="data_engineer" onclick="setPerspective(this)" title="Pipelines, connectors, ingestion patterns">Data&nbsp;Engineer</button>
+        <button class="persp-btn" data-perspective="data_steward" onclick="setPerspective(this)" title="Glossary, ownership, data quality">Data&nbsp;Steward</button>
+        <button class="persp-btn" data-perspective="governance_officer" onclick="setPerspective(this)" title="Policies, compliance, governance zones">Governance</button>
+      </div>
+      <!-- Intent override -->
+      <div class="flex gap-1 mb-1.5 flex-wrap">
+        <span class="text-xs text-slate-500 self-center mr-1">Intent:</span>
+        <button class="intent-btn active" data-intent="" onclick="setIntent(this)" title="Let the system decide">Auto</button>
+        <button class="intent-btn" data-intent="explanation" onclick="setIntent(this)" title="Explain a concept">Explain</button>
+        <button class="intent-btn" data-intent="code_search" onclick="setIntent(this)" title="Show pyegeria API usage / How do I…">Show&nbsp;me</button>
+        <button class="intent-btn" data-intent="report" onclick="setIntent(this)" title="Run a live Egeria report">Report</button>
+        <button class="intent-btn" data-intent="command" onclick="setIntent(this)" title="Execute a Dr.Egeria command">Act</button>
+        <button class="intent-btn" data-intent="debugging" onclick="setIntent(this)" title="Diagnose a problem">Troubleshoot</button>
+      </div>
+
+      <div class="flex gap-2">
+        <textarea id="query-input" rows="2"
+          class="flex-1 resize-none bg-slate-700 text-slate-100 rounded-lg px-3 py-2 text-sm
+                 placeholder-slate-400 border border-slate-600 focus:outline-none focus:border-cyan-500
+                 transition-colors"
+          placeholder="Ask a question about Egeria…"></textarea>
+        <button id="send-btn" onclick="sendQuery()"
+          class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg text-sm
+                 font-medium transition-colors self-end">
+          Send
+        </button>
+      </div>
+      <div class="mt-1 flex items-center justify-between">
+        <span id="intent-badge" class="text-xs text-slate-500"></span>
+        <span id="clarify-hint" class="hidden text-xs text-amber-400 animate-pulse">
+          Choose an option above or type a number
+        </span>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- ── Search-string modal ─────────────────────────────────────────────────── -->
+<div id="search-modal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50" onclick="if(event.target===this)closeSearchModal()">
+  <div class="bg-slate-800 border border-slate-600 rounded-xl p-5 w-80 shadow-2xl">
+    <h3 class="text-sm font-semibold text-slate-200 mb-1">Run Report</h3>
+    <p id="modal-report-name" class="text-xs text-cyan-400 mb-3 truncate"></p>
+    <label class="text-xs text-slate-400 block mb-1">
+      Search string
+      <span class="text-slate-600 ml-1">(leave blank for all records)</span>
+    </label>
+    <input id="search-string-input" type="text" placeholder="e.g. finance  or  *"
+      class="w-full bg-slate-700 text-slate-100 rounded-lg px-3 py-1.5 text-sm
+             border border-slate-600 focus:outline-none focus:border-cyan-500 mb-4">
+    <div class="flex gap-2 justify-end">
+      <button onclick="closeSearchModal()"
+        class="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>
+      <button onclick="confirmRunReport()"
+        class="px-4 py-1.5 text-xs bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg font-medium transition-colors">Run</button>
+    </div>
+  </div>
+</div>
+
+<style>
+  .fmt-btn, .intent-btn, .persp-btn {
+    padding: .15rem .5rem;
+    border-radius: .25rem;
+    font-size: .7rem;
+    background: #334155;
+    color: #94a3b8;
+    cursor: pointer;
+    transition: background .15s, color .15s;
+  }
+  .fmt-btn:hover, .intent-btn:hover, .persp-btn:hover { background: #475569; color: #e2e8f0; }
+  .fmt-btn.active { background: #0e7490; color: #fff; }
+  .intent-btn.active { background: #7c3aed; color: #fff; }
+  .persp-btn.active { background: #065f46; color: #6ee7b7; }
+</style>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────────
+let pendingClarification = null;  // { candidates: [string] } when disambiguation shown
+let selectedIntent = '';          // '', 'explanation', 'code_search', 'report', 'command', 'debugging'
+let selectedPerspective = '';     // '', 'developer', 'data_engineer', 'data_steward', 'governance_officer'
+let pendingReportName = null;     // report name awaiting search-string confirmation
+let recentQueries = JSON.parse(sessionStorage.getItem('ea_recent') || '[]');
+
+// ── Init ───────────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  loadStatus();
+  loadReports();
+  renderRecent();
+  appendMessage('assistant',
+    'Welcome to **Egeria Advisor**.\n\n' +
+    'Ask me about Egeria concepts, how to use pyegeria or Dr.Egeria, run a report to see live metadata, or ask me to create/update something.'
+  );
+  const inp = document.getElementById('query-input');
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendQuery(); }
+  });
+});
+
+// ── Status dot ─────────────────────────────────────────────────────────────────
+async function loadStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const data = await r.json();
+    const dot = document.getElementById('status-dot');
+    const enabled = (data.mcp_servers || []).filter(s => s.enabled).length;
+    dot.className = `w-2 h-2 rounded-full ${enabled > 0 ? 'bg-green-400' : 'bg-red-400'}`;
+    dot.title = enabled > 0
+      ? `${enabled} MCP server(s) configured`
+      : 'No MCP servers enabled';
+  } catch {}
+}
+
+// ── Report catalog ─────────────────────────────────────────────────────────────
+async function loadReports() {
+  const dre = document.getElementById('dre-toggle').checked;
+  const r = await fetch(`/api/reports?include_dre=${dre}`);
+  const data = await r.json();
+  document.getElementById('report-count').textContent = `${data.total}`;
+  const el = document.getElementById('report-catalog');
+  el.innerHTML = '';
+  for (const [topic, names] of Object.entries(data.catalog)) {
+    const det = document.createElement('details');
+    det.className = 'mt-0.5';
+    const sum = document.createElement('summary');
+    sum.className = 'px-2 py-1 rounded text-xs font-semibold text-slate-400 uppercase tracking-wider hover:bg-slate-700/50 select-none';
+    sum.textContent = topic;
+    det.appendChild(sum);
+    const ul = document.createElement('div');
+    ul.className = 'ml-1 mt-0.5 flex flex-col gap-0.5';
+    names.forEach(name => {
+      const btn = document.createElement('button');
+      const isDre = name.toLowerCase().includes('-dre-');
+      btn.className = 'text-left px-2 py-0.5 rounded text-xs hover:bg-slate-700 transition-colors ' +
+        (isDre ? 'text-slate-500 italic' : 'text-slate-300');
+      btn.textContent = name;
+      btn.title = isDre ? 'Dr.Egeria operator report' : '';
+      btn.onclick = () => runReport(name);
+      ul.appendChild(btn);
+    });
+    det.appendChild(ul);
+    el.appendChild(det);
+  }
+}
+
+function runReport(name) {
+  pendingReportName = name;
+  document.getElementById('modal-report-name').textContent = name;
+  document.getElementById('search-string-input').value = '';
+  document.getElementById('search-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('search-string-input').focus(), 50);
+}
+
+function closeSearchModal() {
+  document.getElementById('search-modal').classList.add('hidden');
+  pendingReportName = null;
+}
+
+function confirmRunReport() {
+  const name = pendingReportName;
+  const filter = document.getElementById('search-string-input').value.trim();
+  closeSearchModal();
+  if (!name) return;
+  const label = filter ? `Run report: **${name}** — filter: *${filter}*` : `Run report: **${name}**`;
+  appendMessage('you', label);
+  // Always force report intent so the current intent-button selection doesn't interfere
+  submitQuery(`run report ${name}`, { search_string: filter || null, intent_override: 'report' });
+}
+
+// Handle Enter key in search modal
+document.addEventListener('keydown', e => {
+  if (!document.getElementById('search-modal').classList.contains('hidden') && e.key === 'Enter')
+    confirmRunReport();
+  if (e.key === 'Escape') closeSearchModal();
+});
+
+// ── Recent queries ─────────────────────────────────────────────────────────────
+function renderRecent() {
+  const el = document.getElementById('recent-queries');
+  el.innerHTML = '';
+  const shown = recentQueries.slice(-15).reverse();
+  if (!shown.length) {
+    el.innerHTML = '<div class="px-2 text-slate-600 italic">No queries yet</div>';
+    return;
+  }
+  shown.forEach(q => {
+    const btn = document.createElement('button');
+    btn.className = 'text-left px-2 py-0.5 rounded text-slate-400 hover:bg-slate-700 hover:text-slate-200 transition-colors truncate';
+    btn.title = q;
+    btn.textContent = q.length > 48 ? q.slice(0, 47) + '…' : q;
+    btn.onclick = () => { document.getElementById('query-input').value = q; document.getElementById('query-input').focus(); };
+    el.appendChild(btn);
+  });
+}
+
+function clearHistory() {
+  recentQueries = [];
+  sessionStorage.removeItem('ea_recent');
+  renderRecent();
+}
+
+function pushRecent(q) {
+  recentQueries = recentQueries.filter(x => x !== q);
+  recentQueries.push(q);
+  if (recentQueries.length > 30) recentQueries.shift();
+  sessionStorage.setItem('ea_recent', JSON.stringify(recentQueries));
+  renderRecent();
+}
+
+// ── Perspective picker ─────────────────────────────────────────────────────────
+function setPerspective(btn) {
+  document.querySelectorAll('.persp-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  selectedPerspective = btn.dataset.perspective;
+}
+
+// ── Intent picker ──────────────────────────────────────────────────────────────
+function setIntent(btn) {
+  document.querySelectorAll('.intent-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  selectedIntent = btn.dataset.intent;
+}
+
+// ── Send / query ───────────────────────────────────────────────────────────────
+function sendQuery() {
+  const inp = document.getElementById('query-input');
+  const raw = inp.value.trim();
+  if (!raw) return;
+  inp.value = '';
+
+  // If awaiting clarification and user typed a digit, resolve it
+  if (pendingClarification && /^\d+$/.test(raw)) {
+    const idx = parseInt(raw, 10) - 1;
+    const candidates = pendingClarification.candidates || [];
+    clearClarification();
+    if (idx >= 0 && idx < candidates.length) {
+      appendMessage('you', raw);
+      submitQuery(`run report ${candidates[idx]}`);
+    } else {
+      appendMessage('assistant', `Please enter a number between 1 and ${candidates.length}.`, { isClarify: true });
+    }
+    return;
+  }
+
+  clearClarification();
+  appendMessage('you', raw);
+  submitQuery(raw, {});
+}
+
+async function submitQuery(query, extra = {}) {
+  setThinking(true);
+  document.getElementById('intent-badge').textContent = '';
+  pushRecent(query);
+
+  const body = {
+    query,
+    intent_override: selectedIntent || null,
+    perspective: selectedPerspective || null,
+    ...extra,
+  };
+
+  let result;
+  try {
+    const r = await fetch('/api/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    result = await r.json();
+  } catch (e) {
+    appendMessage('assistant', `**Error:** ${e.message}`);
+    setThinking(false);
+    return;
+  } finally {
+    setThinking(false);
+  }
+
+  const qtype = result.query_type || 'general';
+  const intent = result.intent || {};
+  const isClarify = qtype === 'clarification';
+  const candidates = result.candidates || [];
+
+  // Badge
+  if (intent.label) {
+    const badge = document.getElementById('intent-badge');
+    badge.textContent = intent.label;
+    badge.style.color = intent.color || '#64748b';
+  }
+
+  // If disambiguation, render as buttons instead of plain markdown
+  if (isClarify && candidates.length) {
+    renderClarification(result.response, candidates);
+    pendingClarification = { candidates };
+    document.getElementById('clarify-hint').classList.remove('hidden');
+    return;
+  }
+
+  // Normal response
+  const wrap = appendMessage('assistant', result.response, { isClarify: false, color: intent.color });
+
+  // Sources footer — show collection + file path only (not full chunk content)
+  const sources = result.sources || [];
+  const srcLabels = sources
+    .map(s => {
+      if (typeof s === 'string') return s;
+      const col = s._collection || s.collection || '';
+      const fp  = (s.file_path || '').split('/').pop();
+      return col && fp ? `${col} › ${fp}` : (col || fp || null);
+    })
+    .filter(Boolean);
+  const uniqueSrcs = [...new Set(srcLabels)].slice(0, 6);
+  if (uniqueSrcs.length) {
+    const src = document.createElement('div');
+    src.className = 'mt-1 text-xs text-slate-600';
+    src.textContent = 'Sources: ' + uniqueSrcs.join(' · ');
+    wrap.appendChild(src);
+  }
+
+  // Feedback buttons — use data attributes to avoid JSON/HTML escaping issues
+  const fb = document.createElement('div');
+  fb.className = 'mt-1.5 flex gap-2 items-center';
+  const btnUp = document.createElement('button');
+  btnUp.className = 'text-xs text-slate-500 hover:text-green-400 transition-colors';
+  btnUp.textContent = '👍';
+  btnUp.dataset.q = query;
+  btnUp.dataset.qt = qtype;
+  btnUp.dataset.vote = '1';
+  btnUp.addEventListener('click', feedbackClick);
+  const btnDown = document.createElement('button');
+  btnDown.className = 'text-xs text-slate-500 hover:text-red-400 transition-colors';
+  btnDown.textContent = '👎';
+  btnDown.dataset.q = query;
+  btnDown.dataset.qt = qtype;
+  btnDown.dataset.vote = '-1';
+  btnDown.addEventListener('click', feedbackClick);
+  fb.appendChild(btnUp);
+  fb.appendChild(btnDown);
+  wrap.appendChild(fb);
+}
+
+// ── Clarification rendering ────────────────────────────────────────────────────
+function renderClarification(mdText, candidates) {
+  const messages = document.getElementById('messages');
+  const wrap = document.createElement('div');
+  wrap.className = 'msg-clarify pl-3 pr-2 py-2 rounded-r-lg bg-slate-800/60';
+
+  const header = document.createElement('div');
+  header.className = 'text-xs font-semibold mb-1 text-amber-400';
+  header.textContent = 'Assistant · multiple matches found';
+  wrap.appendChild(header);
+
+  // Render the text portion (without the numbered list — we replace it with buttons)
+  const intro = mdText.split('\n').slice(0, 2).join('\n');
+  const body = document.createElement('div');
+  body.className = 'prose prose-invert text-sm text-slate-200 max-w-none mb-2';
+  body.innerHTML = marked.parse(intro);
+  wrap.appendChild(body);
+
+  // Candidate buttons
+  const btnRow = document.createElement('div');
+  btnRow.className = 'flex flex-wrap gap-2';
+  candidates.forEach((name, i) => {
+    const btn = document.createElement('button');
+    const isDre = name.toLowerCase().includes('-dre-');
+    btn.className = 'px-3 py-1 rounded text-sm font-medium transition-colors border ' +
+      (isDre
+        ? 'border-slate-600 bg-slate-700/40 text-slate-400 hover:bg-slate-700 italic'
+        : 'border-cyan-700 bg-cyan-900/40 text-cyan-300 hover:bg-cyan-800/60');
+    btn.textContent = `${i + 1}. ${name}`;
+    if (isDre) btn.title = 'Dr.Egeria operator report';
+    btn.onclick = () => {
+      clearClarification();
+      appendMessage('you', `${i + 1}`);
+      submitQuery(`run report ${name}`, { intent_override: 'report' });
+    };
+    btnRow.appendChild(btn);
+  });
+  wrap.appendChild(btnRow);
+
+  messages.appendChild(wrap);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function clearClarification() {
+  pendingClarification = null;
+  document.getElementById('clarify-hint').classList.add('hidden');
+}
+
+// ── Message helpers ────────────────────────────────────────────────────────────
+function appendMessage(role, text, opts = {}) {
+  const messages = document.getElementById('messages');
+  const wrap = document.createElement('div');
+  const isClarify = opts.isClarify;
+  wrap.className = `msg-${role === 'you' ? 'you' : (isClarify ? 'clarify' : 'assistant')} pl-3 pr-2 py-2 rounded-r-lg bg-slate-800/60`;
+
+  const header = document.createElement('div');
+  header.className = 'text-xs font-semibold mb-1 ' + (
+    role === 'you' ? 'text-cyan-400' : isClarify ? 'text-amber-400' : 'text-emerald-400'
+  );
+  if (opts.color && role !== 'you' && !isClarify) header.style.color = opts.color;
+  header.textContent = role === 'you' ? 'You' : 'Assistant';
+  wrap.appendChild(header);
+
+  const body = document.createElement('div');
+  body.className = 'prose prose-invert text-sm text-slate-200 max-w-none';
+  body.innerHTML = marked.parse(text);
+  wrap.appendChild(body);
+  // Render Mermaid diagrams inside this message
+  body.querySelectorAll('code.language-mermaid').forEach((el, i) => {
+    const container = document.createElement('div');
+    container.className = 'mermaid my-2';
+    container.textContent = el.textContent;
+    el.closest('pre').replaceWith(container);
+  });
+  mermaid.run({ nodes: body.querySelectorAll('.mermaid') });
+  // Render Vega-lite specs (```vega-lite ... ```)
+  body.querySelectorAll('code.language-vega-lite').forEach(el => {
+    try {
+      const spec = JSON.parse(el.textContent);
+      const div = document.createElement('div');
+      div.style.cssText = 'background:#0f172a;padding:8px;border-radius:6px;';
+      el.closest('pre').replaceWith(div);
+      vegaEmbed(div, spec, { theme: 'dark', actions: false }).catch(() => {});
+    } catch {}
+  });
+
+  messages.appendChild(wrap);
+  messages.scrollTop = messages.scrollHeight;
+  return wrap;
+}
+
+// ── Feedback ───────────────────────────────────────────────────────────────────
+async function feedbackClick(e) {
+  const btn = e.currentTarget;
+  const vote = parseInt(btn.dataset.vote, 10);
+  const query = btn.dataset.q;
+  const queryType = btn.dataset.qt;
+  await fetch('/api/feedback', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, query_type: queryType, vote }),
+  }).catch(() => {});
+  const fb = btn.parentElement;
+  fb.innerHTML = vote > 0
+    ? '<span class="text-xs text-green-400">👍 Thanks!</span>'
+    : '<span class="text-xs text-red-400">👎 Noted.</span>';
+}
+
+// ── Utils ──────────────────────────────────────────────────────────────────────
+function setThinking(on) {
+  document.getElementById('thinking').classList.toggle('hidden', !on);
+  document.getElementById('send-btn').disabled = on;
+  document.getElementById('send-btn').classList.toggle('opacity-50', on);
+}
+</script>
+</body>
+</html>

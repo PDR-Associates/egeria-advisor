@@ -1,91 +1,58 @@
-"""
-Base agent class for Egeria Advisor agents.
+"""Base agent — BeeAI RequirementAgent wrapper for Egeria Advisor."""
+from __future__ import annotations
 
-This module defines the abstract base class that all specialized agents
-must inherit from.
-"""
-
+import asyncio
+import concurrent.futures
 from abc import ABC, abstractmethod
-from typing import Dict, Any, List, Optional
-from loguru import logger
-
-from advisor.rag_system import get_rag_system
-from advisor.config import get_full_config
+from typing import Any
 
 
-class BaseAgent(ABC):
-    """Abstract base class for all advisor agents."""
+class BaseAdvisorAgent(ABC):
+    """
+    Wraps BeeAI RequirementAgent with standard Egeria Advisor configuration.
 
-    def __init__(self, name: str):
-        """
-        Initialize the agent.
-
-        Args:
-            name: Name of the agent
-        """
-        self.name = name
-        self.rag_system = get_rag_system()
-
-        # Load config
-        full_config = get_full_config()
-        agents_config = full_config.get("agents")
-
-        # Access specific agent config by name (e.g., query -> query_agent)
-        # Handle both dict and Pydantic model for robustness
-        agent_attr = f"{name}_agent"
-        if hasattr(agents_config, agent_attr):
-             self.agent_config = getattr(agents_config, agent_attr)
-        elif isinstance(agents_config, dict):
-             self.agent_config = agents_config.get(agent_attr, {})
-        else:
-             self.agent_config = {}
-
-        # Convert to dict if it's a Pydantic model
-        if hasattr(self.agent_config, "model_dump"):
-            self.agent_config = self.agent_config.model_dump()
-        elif hasattr(self.agent_config, "dict"):
-            self.agent_config = self.agent_config.dict()
-
-        logger.info(f"Initialized agent: {name}")
+    Subclasses implement system_prompt() and tools() and call _run_agent(prompt).
+    The BeeAI loop, retry logic, and streaming are handled here.
+    """
 
     @abstractmethod
-    def process(self, query: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """
-        Process a user query.
+    def system_prompt(self) -> str: ...
 
-        Args:
-            query: User query string
-            context: Optional context dictionary
+    @abstractmethod
+    def tools(self) -> list[Any]: ...
 
-        Returns:
-            Dictionary with response and metadata
-        """
-        pass
+    def _build_agent(self):
+        from beeai_framework.agents.requirement import RequirementAgent
+        from advisor.config import get_full_config
+        config = get_full_config()
+        llm_cfg = config.get("llm")
+        model = getattr(llm_cfg, "models", None)
+        model_name = getattr(model, "conversation", "llama3.1:8b") if model else "llama3.1:8b"
+        base_url = getattr(llm_cfg, "base_url", "http://localhost:11434")
+        # BeeAI expects "ollama:model" for Ollama backends
+        llm_id = f"ollama:{model_name}"
+        return RequirementAgent(
+            llm=llm_id,
+            tools=self.tools(),
+            instructions=self.system_prompt(),
+        )
 
-    def get_config(self) -> Dict[str, Any]:
-        """Get agent configuration."""
-        return self.agent_config
+    def _run_agent(self, prompt: str) -> str:
+        """Run the BeeAI RequirementAgent synchronously, handling nested event loops."""
+        async def _inner():
+            agent = self._build_agent()
+            result = await agent.run(prompt)
+            if hasattr(result, "output") and result.output:
+                first = result.output[0]
+                return first.text if hasattr(first, "text") else str(first)
+            return str(result)
 
-    def _format_response(
-        self,
-        response: str,
-        sources: List[Dict[str, Any]] = None,
-        confidence: float = 1.0
-    ) -> Dict[str, Any]:
-        """
-        Format the standard response structure.
-
-        Args:
-            response: Text response
-            sources: List of sources used
-            confidence: Confidence score (0.0 - 1.0)
-
-        Returns:
-            Formatted response dictionary
-        """
-        return {
-            "agent": self.name,
-            "response": response,
-            "sources": sources or [],
-            "confidence": confidence
-        }
+        try:
+            asyncio.get_running_loop()
+            # Already inside an async context (e.g. FastAPI executor thread) — spawn fresh loop
+            def _in_thread():
+                return asyncio.run(_inner())
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                return ex.submit(_in_thread).result(timeout=120)
+        except RuntimeError:
+            return asyncio.run(_inner())

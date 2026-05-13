@@ -24,7 +24,8 @@ Python library by providing:
 
 - **Multi-Collection Search**: 9 specialized repository collections (~88,900 entities) with intelligent routing
 - **Action Execution**: Dr. Egeria integration to compose and execute pyegeria commands from natural-language requests
-- **Report Generation**: MCP-based report pipeline for structured Egeria data queries
+- **Report Generation**: MCP-based report pipeline for structured Egeria data queries; reports browsable in the sidebar, results rendered as markdown tables
+- **Perspective-Aware Responses**: Select a user role (Developer / Data Engineer / Data Steward / Governance Officer) and responses are tailored in depth, terminology, and focus
 - **Conversational Agent**: Multi-turn conversations with context and memory (BeeAI)
 - **Code Analysis**: Deep understanding of Python/Java code, APIs, and patterns
 - **Performance Optimization**: Query cache speedup, parallel collection search, universal GPU support
@@ -36,6 +37,7 @@ Python library by providing:
 
 ✅ **Multi-Collection Architecture**: 9 specialized collections with intelligent query routing  
 ✅ **Action & Report Pipeline**: Dr. Egeria command execution and MCP-based report generation  
+✅ **Perspective-Aware Responses**: Role selector tailors every response (Developer / Data Engineer / Data Steward / Governance)  
 ✅ **Universal GPU Support**: Auto-detection for CUDA, ROCm, MPS, and CPU  
 ✅ **Conversational Agent**: BeeAI framework integration with memory  
 ✅ **Rich CLI**: 3 interaction modes (query, interactive, agent)  
@@ -80,23 +82,117 @@ classified intent; see `advisor/collection_router.py`.
 ### Query Flow
 
 ```
-User Query
-  → CLI (advisor/cli/main.py)
+User Query  [+ perspective + intent_override]
+  → Web UI / CLI
   → RAGSystem (advisor/rag_system.py)
-      ├─ QueryCache                   ← checked first; large speedup on cache hits
-      ├─ QueryProcessor               ← classifies query type/intent
-      │    ├─ quantitative  → Analytics module (direct SQL answer)
-      │    ├─ relationship  → Relationship graph handler
-      │    ├─ report        → MCP report pipeline (advisor/report_pipeline.py)
-      │    ├─ command       → DrEgeriaActionAgent (advisor/agents/dr_egeria_agent.py)
-      │    └─ general       → RAG retrieval + LLM generation (below)
-      ├─ CollectionRouter             ← selects relevant collections
-      ├─ RAGRetrieval
-      │    └─ MultiCollectionStore   ← parallel search across collections
-      │         └─ pgvector (HNSW, 384-dim sentence-transformer embeddings)
-      ├─ LLMClient                   ← Ollama wrapper
-      └─ PromptTemplates
+      ├─ QueryCache                   ← checked first; instant for repeated queries
+      ├─ QueryProcessor               ← pattern-match classifier (config/routing.yaml)
+      │    └─ if 'general': LLM intent classifier → refines to code_search / report / command / …
+      │
+      ├─ Role-aware routing (Developer|Data Engineer + code/example signals)
+      │    └─ → ExamplesAgent         ← bypasses pipeline before intent dispatch
+      │
+      ├─ quantitative  → Analytics module (direct SQL)
+      ├─ relationship  → Relationship graph handler
+      ├─ report        → MCP report pipeline  ← semantic pre-check (score ≥ 0.50)
+      ├─ command + template/example keyword
+      │    → DrEgeriaTemplateAgent    ← returns filesystem markdown template
+      ├─ command (no template keyword)
+      │    → DrEgeriaActionAgent      ← composes/executes pyegeria command
+      ├─ code_search|example
+      │    → ExamplesAgent
+      │         ├─ method-discovery  → API reference table (classes + methods)
+      │         └─ code example      → runnable Python (canonical pyegeria pattern)
+      ├─ explanation|debugging|general → DocAgent
+      └─ fallback → RAG retrieval + LLM generation
+           ├─ CollectionRouter       ← selects relevant collections
+           └─ MultiCollectionStore   ← parallel search, pgvector HNSW
 ```
+
+## Web UI
+
+A browser-based chat interface is the primary way to interact with Egeria Advisor.
+
+```bash
+# Start the web server (default: http://localhost:8000)
+uvicorn advisor.web.app:app --reload
+```
+
+### Layout
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  [Egeria logo]  Egeria Advisor  ●  [ Show DrE specs ]   │  ← Header
+├──────────────────────┬──────────────────────────────────┤
+│  Available Reports   │                                  │
+│  ▶ Glossary          │  [chat messages]                 │
+│  ▶ Collections       │                                  │
+│  ▶ Assets            │                                  │
+│  ▶ ...               │                                  │
+│  ─────────────────── │  As: Anyone  Developer  Data     │
+│  Recent Queries      │       Engineer  Steward  Gov.   │
+│  ...                 │  Intent: Auto  Explain  Report  │
+│                      │  [query input]         [Send]   │
+└──────────────────────┴──────────────────────────────────┘
+```
+
+### Running Reports
+
+**From the sidebar** (recommended): Click any report name to open a modal. Enter an optional *Search string* to filter results (e.g. `finance`) then click **Run**. The report result is rendered as a markdown table in the chat.
+
+**From the chat input**: Type `run report <exact-report-name>` or let the system classify your query as a report query automatically (e.g. *"show me all glossaries"*).
+
+### Perspective Selector
+
+The **As:** row above the input lets you declare your role. This affects both the response framing and the routing:
+
+| Role | What changes |
+|------|-------------|
+| **Anyone** (default) | General response, no role-specific framing |
+| **Developer** | Code signals ("example", "show me", "what methods") are automatically routed to ExamplesAgent — returns runnable Python or API reference tables |
+| **Data Engineer** | Same as Developer for code signals; pipeline/connector/ingestion context in explanations |
+| **Data Steward** | Ambiguous "show me" / "example" without a Python keyword → clarification offered (Python code vs Dr.Egeria template) |
+| **Governance** | Policies, compliance controls, governance zones; same clarification behaviour as Data Steward |
+
+### Intent Override
+
+The **Intent:** row overrides automatic query classification:
+
+| Button | Sends intent | Use when |
+|--------|-------------|----------|
+| Auto | *(system decides)* | Default — role + signals determine routing |
+| Explain | `explanation` | You want a conceptual explanation |
+| Show me | `code_search` | Force a pyegeria code example or API reference listing |
+| Report | `report` | Force live Egeria data from the MCP report pipeline |
+| Act | `command` | Force Dr. Egeria to compose or execute a command |
+| Troubleshoot | `debugging` | You're diagnosing a problem |
+
+> **Tip:** When using **Show me**, the system distinguishes between code-example queries ("give me a python example of…") and method-discovery queries ("what methods are available for…") and returns the appropriate output automatically.
+
+### Sample Query Patterns
+
+The advisor generates different responses depending on your role and what you ask. A few examples:
+
+| Role | Intent | Query | Response |
+|---|---|---|---|
+| Developer | Auto | "Give me a python example to create a governance zone" | Runnable Python using `GovernanceOfficer.create_governance_definition` |
+| Developer | Show me | "What methods are available for governance definitions?" | Class + method table (GovernanceOfficer) |
+| Data Steward | Act | "Show me a Dr.Egeria template for creating a glossary" | Markdown template for Jupyter |
+| Data Steward | Act | "Create a governance zone called Finance" | Dr.Egeria command execution |
+| Anyone | Report | "List available glossaries" | Live data table from Egeria |
+| Anyone | Explain | "What is a governance zone?" | Concept explanation from docs |
+
+See **[Prompt Patterns Guide](docs/user-docs/PROMPT_PATTERNS_GUIDE.md)** for comprehensive examples covering all roles, intents, multi-turn patterns, and common mistakes.
+
+### Key points for Python code (Developer / Data Engineer role)
+
+Every generated example follows the canonical pyegeria pattern: both constructor options (explicit parameters and zero-argument from `.env`), `create_egeria_bearer_token()` before any API call, try/except `PyegeriaException`, and `close_session()` in `finally`.
+
+Egeria uses a unified creation API for governance definitions — `GovernanceZone`, `GovernancePrinciple`, `GovernanceObligation`, etc. are all created via `GovernanceOfficer.create_governance_definition(body)` with `"typeName": "GovernanceZone"` in the body. The advisor will generate the correct body structure, not an invented `create_governance_zone()` method.
+
+### Dr.Egeria Templates (Data Steward / Governance role + Act intent)
+
+Dr.Egeria templates are markdown commands you paste into an Egeria Workspaces Jupyter cell. They cover all create/update/link operations. Templates are read from `{EGERIA_ROOT_PATH}/Templates/Dr-Egeria-Templates/` and can be regenerated with `generate_md_cmd_templates.py --advanced`.
 
 ## Quick Start
 
@@ -266,33 +362,32 @@ pytest --cov=advisor --cov-report=html
 egeria-advisor/
 ├── advisor/                    # Main package
 │   ├── agents/                 # Agent implementations
-│   │   ├── pyegeria_agent.py   # Python SDK query agent
-│   │   ├── dr_egeria_agent.py  # Action agent (Dr. Egeria commands)
-│   │   └── ...
+│   │   ├── base.py             # BaseAdvisorAgent (BeeAI RequirementAgent wrapper)
+│   │   ├── tools.py            # Shared BeeAI @tool functions + _raw helpers
+│   │   ├── dr_egeria_agent.py  # DrEgeriaActionAgent — composes/executes commands via MCP
+│   │   ├── dre_template_agent.py  # DrEgeriaTemplateAgent — returns filesystem .md templates
+│   │   ├── examples_agent.py   # ExamplesAgent — code examples + API reference listings
+│   │   ├── doc_agent.py        # DocAgent — conceptual explanations
+│   │   ├── conversation_agent.py  # ConversationAgent — multi-turn BeeAI sessions
+│   │   └── cli_command_agent.py   # CLICommandAgent — hey_egeria command lookup
+│   ├── llm_intent_classifier.py   # LLM-based intent refinement (general → code_search/command/…)
 │   ├── cli/                    # CLI interface
-│   │   ├── main.py             # Entry point and direct-query handler
-│   │   ├── interactive.py      # Interactive REPL session
-│   │   └── formatters.py       # Response formatting
+│   ├── web/                    # FastAPI web UI + static SPA
 │   ├── data_prep/              # Data preparation pipeline
-│   ├── vector_store_base.py    # Abstract base class for vector backends
-│   ├── vector_store.py         # Milvus backend (legacy)
-│   ├── vector_store_pg.py      # pgvector backend (active)
 │   ├── multi_collection_store.py
-│   ├── rag_system.py           # Main RAG orchestrator
+│   ├── rag_system.py           # Main RAG orchestrator + role-aware routing
 │   ├── report_pipeline.py      # MCP report pipeline
 │   └── collection_config.py    # Collection definitions
 ├── config/
 │   ├── advisor.yaml            # Primary configuration
-│   ├── routing.yaml            # Collection routing rules
-│   └── report_specs/           # Report specification templates
+│   ├── routing.yaml            # Intent routing rules (CRITICAL/HIGH/MEDIUM/LOW priority patterns)
+│   └── report_specs/           # Report specification JSON
 ├── scripts/
-│   ├── ingest_collections.py   # Full re-index a collection
-│   ├── count_vectors.py        # Count vectors per collection
-│   ├── generate_question_specs.py  # Generate report question specs
-│   └── ...
 ├── data/                       # SQLite metrics database
 ├── tests/                      # Test suite
 └── docs/                       # Architecture and design docs
+    ├── user-docs/QUERY_ROUTING_GUIDE.md   # Intent routing reference
+    └── design/SYSTEM_ARCHITECTURE.md
 ```
 
 ## Configuration
@@ -349,9 +444,10 @@ All query metrics are stored locally in `data/metrics.db` regardless of MLflow s
 
 ### Usage Guides
 
-- [Quick Start](docs/user-docs/quick-start-guide.md)
+- [Quick Start](docs/user-docs/QUICK_START.md)
+- [Prompt Patterns Guide](docs/user-docs/PROMPT_PATTERNS_GUIDE.md) — examples by role, intent, and use case
+- [Query Routing Guide](docs/user-docs/QUERY_ROUTING_GUIDE.md) — how routing works under the hood
 - [Multi-Collection Usage Guide](docs/user-docs/MULTI_COLLECTION_USAGE_GUIDE.md)
-- [Query Routing Guide](docs/user-docs/QUERY_ROUTING_GUIDE.md)
 - [MLflow Enhanced Tracking](docs/user-docs/MLFLOW_ENHANCED_TRACKING.md)
 
 ## Contributing

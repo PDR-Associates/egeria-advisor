@@ -15,6 +15,7 @@ feedback collected to drive ongoing improvements.
 
 Feedback and comments are welcome. Please share your thoughts and suggestions to help improve the system.
 
+
 ## Overview
 
 Egeria Advisor is a RAG (Retrieval-Augmented Generation) system that helps users and maintainers work with the Egeria
@@ -449,6 +450,49 @@ All query metrics are stored locally in `data/metrics.db` regardless of MLflow s
 - [Query Routing Guide](docs/user-docs/QUERY_ROUTING_GUIDE.md) — how routing works under the hood
 - [Multi-Collection Usage Guide](docs/user-docs/MULTI_COLLECTION_USAGE_GUIDE.md)
 - [MLflow Enhanced Tracking](docs/user-docs/MLFLOW_ENHANCED_TRACKING.md)
+### Architecture & Design
+- [System Architecture](docs/design/SYSTEM_ARCHITECTURE.md) - Complete architecture with 11 Mermaid diagrams
+- [Multi-Collection Design](docs/design/MULTI_COLLECTION_DESIGN.md) - Collection architecture and routing
+- [Incremental Indexing Design](docs/design/INCREMENTAL_INDEXING_DESIGN.md) - Fast update system (10-100x faster)
+- [Monitoring Dashboard Design](docs/user-docs/MONITORING_DASHBOARD_DESIGN.md) - Metrics and monitoring architecture
+- [Airflow Integration Design](docs/design/AIRFLOW_INTEGRATION_DESIGN.md) - Automation with 5 DAG designs
+- [Airflow 3.x & OpenLineage](docs/design/AIRFLOW_V3_OPENLINEAGE.md) - Modern Airflow with data lineage
+
+### Usage Guides
+- [Quick Start](docs/user-docs/QUICK_START.md) - Get started in 5 minutes
+- [Multi-Collection Usage Guide](docs/user-docs/MULTI_COLLECTION_USAGE_GUIDE.md) - How to use 6 collections effectively
+- [Testing Guide](docs/user-docs/TESTING_GUIDE.md) - Running tests, coverage, troubleshooting
+- [CLI Guide](docs/history/PHASE6_CLI_GUIDE.md) - Command-line interface usage (3 modes)
+- [MLflow Enhanced Tracking](docs/user-docs/MLFLOW_ENHANCED_TRACKING.md) - Comprehensive experiment tracking
+- [Query Routing Guide](docs/user-docs/QUERY_ROUTING_GUIDE.md) - Intelligent query routing system
+
+### Implementation Details
+- [Phase 2 Complete](docs/history/PHASE2_COMPLETE.md) - Data preparation pipeline
+- [Phase 3 Complete](docs/history/PHASE3_COMPLETE.md) - Vector store integration (99,822 entities)
+- [Phase 5 Complete](docs/history/PHASE5_BEEAI_COMPLETE.md) - Agent framework with BeeAI
+- [Phase 6 Complete](docs/history/PHASE6_COMPLETE.md) - CLI interface implementation
+- [AMD Optimization](docs/design/AMD_OPTIMIZATION.md) - ROCm GPU support for AMD hardware
+- [GPU Detection Enhancement](docs/design/GPU_DETECTION_ENHANCEMENT.md) - Universal device support
+
+## Performance Metrics
+
+### Query Performance
+- **Latency**: <1s (p95), <500ms (p50)
+- **Cache Speedup**: 17,997x for repeated queries, 4.8x for multiple queries
+- **Cache Hit Rate**: >70% in typical usage
+- **Throughput**: 100+ queries/minute
+
+### System Scale
+- **Total Entities**: 99,822 across 6 collections
+- **Embedding Dimensions**: 384 (all-MiniLM-L6-v2)
+- **Index Type**: HNSW (Hierarchical Navigable Small World)
+- **Search Accuracy**: >95% relevance for domain queries
+
+### Update Performance
+- **Incremental Updates**: 10-100x faster than full re-index
+- **Change Detection**: <1s for 10,000 files
+- **Parallel Processing**: 4x speedup with multi-threading
+- **Automated Updates**: Every 6 hours via Airflow
 
 ## Contributing
 

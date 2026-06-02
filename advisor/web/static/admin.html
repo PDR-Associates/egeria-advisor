@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Egeria Advisor — Admin</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config = { darkMode: 'class' };</script>
+  <style>
+    body { font-family: 'Inter', system-ui, sans-serif; }
+    .badge-healthy  { background:#14532d; color:#86efac; }
+    .badge-stale    { background:#451a03; color:#fb923c; }
+    .badge-empty    { background:#450a0a; color:#fca5a5; }
+    .badge-error    { background:#1c1917; color:#f87171; }
+    .badge-disabled { background:#1e293b; color:#64748b; }
+    .badge-running  { background:#1e3a5f; color:#7dd3fc; }
+    .badge-done     { background:#14532d; color:#86efac; }
+    .badge-failed   { background:#450a0a; color:#fca5a5; }
+    .sys-ok   { background:#14532d; color:#86efac; }
+    .sys-err  { background:#450a0a; color:#fca5a5; }
+    pre { white-space: pre-wrap; word-break: break-all; }
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+  </style>
+</head>
+<body class="dark bg-slate-900 text-slate-100 min-h-screen">
+
+<!-- Header -->
+<header class="flex items-center justify-between px-6 py-3 bg-slate-800 border-b border-slate-700 sticky top-0 z-10">
+  <div class="flex items-center gap-4">
+    <img src="/static/egeria-logo.png" alt="Egeria" class="h-7 w-auto">
+    <span class="text-cyan-400 font-bold text-lg">Egeria Advisor</span>
+    <span class="text-slate-500 text-sm">/ Admin</span>
+  </div>
+  <div class="flex items-center gap-3">
+    <div id="sys-health" class="flex gap-2 text-xs"></div>
+    <span class="text-slate-600 text-xs">Auto-refresh <span id="countdown" class="text-slate-400">10s</span></span>
+    <button onclick="refresh()" class="px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded transition-colors">↺ Refresh</button>
+    <a href="/" class="px-3 py-1 text-xs bg-cyan-800 hover:bg-cyan-700 rounded text-white transition-colors">← Chat</a>
+  </div>
+</header>
+
+<div class="max-w-7xl mx-auto px-6 py-6 space-y-6">
+
+  <!-- ── Vector Collections ──────────────────────────────────────────────── -->
+  <section>
+    <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">Vector Collections</h2>
+    <div class="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-slate-700 text-xs text-slate-500 uppercase tracking-wider">
+            <th class="text-left px-4 py-2">Collection</th>
+            <th class="text-left px-4 py-2 hidden md:table-cell">Repository</th>
+            <th class="text-right px-4 py-2">Vectors</th>
+            <th class="text-left px-4 py-2">Last Indexed</th>
+            <th class="text-center px-4 py-2">Status</th>
+            <th class="text-right px-4 py-2">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="collections-body">
+          <tr><td colspan="6" class="px-4 py-6 text-center text-slate-500">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ── Source Repositories ─────────────────────────────────────────────── -->
+  <section>
+    <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">Source Repositories</h2>
+    <div class="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-slate-700 text-xs text-slate-500 uppercase tracking-wider">
+            <th class="text-left px-4 py-2">Repository</th>
+            <th class="text-left px-4 py-2 hidden lg:table-cell">Last Commit</th>
+            <th class="text-left px-4 py-2 hidden xl:table-cell">Message</th>
+            <th class="text-center px-4 py-2">Status</th>
+            <th class="text-right px-4 py-2">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="repos-body">
+          <tr><td colspan="5" class="px-4 py-6 text-center text-slate-500">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ── Maintenance + Jobs (2-col) ─────────────────────────────────────── -->
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+    <!-- Maintenance -->
+    <section>
+      <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">Maintenance</h2>
+      <div class="bg-slate-800 rounded-lg border border-slate-700 p-4 space-y-3">
+        <p class="text-xs text-slate-500 mb-2">Quick operations that complete in seconds.</p>
+        <div class="grid grid-cols-2 gap-2">
+          <button onclick="maintenance('refresh_perspectives')"
+            class="maint-btn">↺ Refresh Perspectives</button>
+          <button onclick="maintenance('refresh_specs')"
+            class="maint-btn">↺ Refresh Report Specs</button>
+          <button onclick="maintenance('clear_cache')"
+            class="maint-btn">🗑 Clear Query Cache</button>
+          <button onclick="maintenance('invalidate_index')"
+            class="maint-btn">⟳ Invalidate Spec Index</button>
+        </div>
+        <div id="maint-msg" class="text-xs text-emerald-400 hidden mt-2"></div>
+      </div>
+    </section>
+
+    <!-- Active Jobs -->
+    <section>
+      <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">
+        Jobs
+        <span id="jobs-running-badge" class="hidden ml-2 px-1.5 py-0.5 rounded text-xs badge-running">running</span>
+      </h2>
+      <div class="bg-slate-800 rounded-lg border border-slate-700 p-3 space-y-2" id="jobs-list">
+        <div class="text-xs text-slate-500 italic">No recent jobs.</div>
+      </div>
+    </section>
+  </div>
+
+</div>
+
+<!-- Job output modal -->
+<div id="job-modal" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50"
+     onclick="if(event.target===this)closeJobModal()">
+  <div class="bg-slate-800 border border-slate-600 rounded-xl w-3/4 max-h-[70vh] flex flex-col shadow-2xl">
+    <div class="flex items-center justify-between px-4 py-3 border-b border-slate-700 shrink-0">
+      <span id="modal-job-title" class="text-sm font-semibold text-slate-200"></span>
+      <button onclick="closeJobModal()" class="text-slate-500 hover:text-slate-200">✕</button>
+    </div>
+    <pre id="modal-job-output" class="flex-1 overflow-y-auto text-xs text-slate-300 p-4 font-mono"></pre>
+    <div class="px-4 py-2 border-t border-slate-700 shrink-0 flex items-center justify-between">
+      <span id="modal-job-status" class="text-xs"></span>
+      <button onclick="closeJobModal()" class="px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded">Close</button>
+    </div>
+  </div>
+</div>
+
+<style>
+  .maint-btn {
+    padding: .4rem .75rem; border-radius: .375rem; font-size: .75rem;
+    background: #334155; color: #94a3b8; cursor: pointer;
+    transition: background .15s, color .15s; text-align: left;
+  }
+  .maint-btn:hover { background: #475569; color: #e2e8f0; }
+  .action-btn {
+    padding: .2rem .5rem; border-radius: .25rem; font-size: .7rem;
+    cursor: pointer; transition: background .15s; white-space: nowrap;
+  }
+  .btn-blue  { background:#1e3a5f; color:#7dd3fc; }  .btn-blue:hover  { background:#1d4ed8; color:#fff; }
+  .btn-amber { background:#451a03; color:#fb923c; }  .btn-amber:hover { background:#d97706; color:#fff; }
+  .btn-red   { background:#450a0a; color:#fca5a5; }  .btn-red:hover   { background:#dc2626; color:#fff; }
+  .btn-slate { background:#1e293b; color:#64748b; }  .btn-slate:hover { background:#334155; color:#e2e8f0; }
+</style>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let _pollTimer = null;
+let _countdownVal = 10;
+let _countdownTimer = null;
+let _modalJobId = null;
+let _modalPollTimer = null;
+
+// ── Init ───────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  refresh();
+  startCountdown();
+});
+
+function startCountdown() {
+  _countdownVal = 10;
+  clearInterval(_countdownTimer);
+  _countdownTimer = setInterval(() => {
+    _countdownVal--;
+    document.getElementById('countdown').textContent = _countdownVal + 's';
+    if (_countdownVal <= 0) {
+      refresh();
+      startCountdown();
+    }
+  }, 1000);
+}
+
+async function refresh() {
+  startCountdown();
+  let data;
+  try {
+    const r = await fetch('/api/admin/status');
+    data = await r.json();
+  } catch (e) { return; }
+
+  renderSystemHealth(data.system || {});
+  renderCollections(data.collections || []);
+  renderRepos(data.repos || []);
+  await refreshJobs();
+}
+
+// ── System health ──────────────────────────────────────────────────────────
+function renderSystemHealth(sys) {
+  const el = document.getElementById('sys-health');
+  el.innerHTML = '';
+  const items = [
+    { label: 'pgvector', ok: sys.pgvector },
+    { label: 'Ollama',   ok: sys.ollama },
+  ];
+  items.forEach(({ label, ok }) => {
+    const span = document.createElement('span');
+    span.className = `px-2 py-0.5 rounded text-xs font-medium ${ok ? 'sys-ok' : 'sys-err'}`;
+    span.textContent = label;
+    el.appendChild(span);
+  });
+}
+
+// ── Collections ────────────────────────────────────────────────────────────
+function fmtAge(ageDays) {
+  if (ageDays === null || ageDays === undefined) return '—';
+  if (ageDays < 0.042) return '<1h';
+  if (ageDays < 1) return `${Math.round(ageDays * 24)}h ago`;
+  return `${Math.round(ageDays)}d ago`;
+}
+
+function renderCollections(cols) {
+  const tbody = document.getElementById('collections-body');
+  if (!cols.length) { tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-6 text-center text-slate-500">No collections found</td></tr>'; return; }
+  tbody.innerHTML = '';
+  cols.forEach(c => {
+    const tr = document.createElement('tr');
+    tr.className = 'border-b border-slate-700/50 hover:bg-slate-700/20 transition-colors';
+    const countStr = c.vector_count < 0 ? '—' : c.vector_count.toLocaleString();
+    const badge = `<span class="px-2 py-0.5 rounded text-xs font-medium badge-${c.badge}">${c.badge}</span>`;
+    const actions = c.enabled ? `
+      <button class="action-btn btn-blue mr-1" onclick="reindex('${c.name}', false)" title="Incremental update (changed files only)">▲ Update</button>
+      <button class="action-btn btn-amber" onclick="reindex('${c.name}', true)" title="Drop and rebuild the full collection">▲▲ Rebuild</button>
+    ` : `<span class="text-xs text-slate-600">disabled</span>`;
+    tr.innerHTML = `
+      <td class="px-4 py-2.5 font-mono text-xs text-cyan-300">${c.name}</td>
+      <td class="px-4 py-2.5 text-xs text-slate-500 hidden md:table-cell">${c.repo || '—'}</td>
+      <td class="px-4 py-2.5 text-xs text-right font-mono">${countStr}</td>
+      <td class="px-4 py-2.5 text-xs text-slate-400">${fmtAge(c.age_days)}</td>
+      <td class="px-4 py-2.5 text-center">${badge}</td>
+      <td class="px-4 py-2.5 text-right">${actions}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+async function reindex(name, force) {
+  const label = force ? 'Full rebuild' : 'Incremental update';
+  if (force && !confirm(`Force rebuild of "${name}"?\n\nThis drops and recreates the collection — may take several minutes.`)) return;
+  const r = await fetch(`/api/admin/collections/${encodeURIComponent(name)}/reindex?force=${force}`, { method: 'POST' });
+  const data = await r.json();
+  if (data.job_id) openJobModal(data.job_id, data.description);
+  await refreshJobs();
+}
+
+// ── Repos ──────────────────────────────────────────────────────────────────
+function renderRepos(repos) {
+  const tbody = document.getElementById('repos-body');
+  if (!repos.length) { tbody.innerHTML = '<tr><td colspan="5" class="px-4 py-6 text-center text-slate-500">No repositories found in data/repos/</td></tr>'; return; }
+  tbody.innerHTML = '';
+  repos.forEach(r => {
+    const tr = document.createElement('tr');
+    tr.className = 'border-b border-slate-700/50 hover:bg-slate-700/20 transition-colors';
+    const badge = r.exists
+      ? `<span class="px-2 py-0.5 rounded text-xs badge-healthy">cloned</span>`
+      : `<span class="px-2 py-0.5 rounded text-xs badge-empty">missing</span>`;
+    const action = r.exists
+      ? `<button class="action-btn btn-blue" onclick="pullRepo('${r.name}')">↓ Pull</button>`
+      : `<span class="text-xs text-slate-600">—</span>`;
+    tr.innerHTML = `
+      <td class="px-4 py-2.5 font-mono text-xs text-cyan-300">${r.name}</td>
+      <td class="px-4 py-2.5 text-xs text-slate-500 hidden lg:table-cell">${r.last_commit_date ? r.last_commit_date.slice(0,19) : '—'} <span class="font-mono text-slate-600">${r.last_commit || ''}</span></td>
+      <td class="px-4 py-2.5 text-xs text-slate-400 hidden xl:table-cell truncate max-w-xs">${r.last_commit_msg || '—'}</td>
+      <td class="px-4 py-2.5 text-center">${badge}</td>
+      <td class="px-4 py-2.5 text-right">${action}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+async function pullRepo(name) {
+  const r = await fetch(`/api/admin/repos/${encodeURIComponent(name)}/pull`, { method: 'POST' });
+  const data = await r.json();
+  if (data.job_id) openJobModal(data.job_id, data.description);
+  await refreshJobs();
+}
+
+// ── Maintenance ────────────────────────────────────────────────────────────
+async function maintenance(action) {
+  const r = await fetch(`/api/admin/maintenance/${action}`, { method: 'POST' });
+  const data = await r.json();
+  const msg = document.getElementById('maint-msg');
+  msg.textContent = data.message || data.status;
+  msg.className = `text-xs mt-2 ${data.status === 'ok' ? 'text-emerald-400' : 'text-red-400'}`;
+  msg.classList.remove('hidden');
+  setTimeout(() => msg.classList.add('hidden'), 4000);
+}
+
+// ── Jobs ───────────────────────────────────────────────────────────────────
+async function refreshJobs() {
+  const r = await fetch('/api/admin/jobs');
+  const data = await r.json();
+  renderJobs(data.jobs || []);
+  // Update modal if open
+  if (_modalJobId) {
+    const job = (data.jobs || []).find(j => j.id === _modalJobId);
+    if (job) updateModal(job);
+  }
+}
+
+function renderJobs(jobs) {
+  const el = document.getElementById('jobs-list');
+  const running = jobs.filter(j => j.status === 'running');
+  const badge = document.getElementById('jobs-running-badge');
+  if (running.length) {
+    badge.textContent = `${running.length} running`;
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+
+  if (!jobs.length) {
+    el.innerHTML = '<div class="text-xs text-slate-500 italic">No recent jobs.</div>';
+    return;
+  }
+  el.innerHTML = '';
+  jobs.forEach(job => {
+    const div = document.createElement('div');
+    div.className = 'flex items-center justify-between gap-2 py-1.5 border-b border-slate-700/40 last:border-0';
+    const statusBadge = `<span class="px-1.5 py-0.5 rounded text-xs badge-${job.status}">${job.status}</span>`;
+    const age = job.completed_at
+      ? Math.round((Date.now() - new Date(job.completed_at)) / 60000) + 'm ago'
+      : Math.round((Date.now() - new Date(job.started_at)) / 1000) + 's';
+    div.innerHTML = `
+      <div class="flex items-center gap-2 min-w-0">
+        ${statusBadge}
+        <span class="text-xs text-slate-300 truncate">${job.description}</span>
+      </div>
+      <div class="flex items-center gap-2 shrink-0">
+        <span class="text-xs text-slate-600">${age}</span>
+        <button class="action-btn btn-slate text-xs" onclick="openJobModal('${job.id}', '${job.description.replace(/'/g,"\\'")}')">View</button>
+      </div>
+    `;
+    el.appendChild(div);
+  });
+}
+
+// ── Job modal ──────────────────────────────────────────────────────────────
+function openJobModal(jobId, description) {
+  _modalJobId = jobId;
+  document.getElementById('modal-job-title').textContent = description;
+  document.getElementById('job-modal').classList.remove('hidden');
+  // Poll every 1s while open
+  clearInterval(_modalPollTimer);
+  _modalPollTimer = setInterval(() => refreshJobs(), 1000);
+}
+
+function updateModal(job) {
+  const out = document.getElementById('modal-job-output');
+  out.textContent = job.output.join('\n');
+  out.scrollTop = out.scrollHeight;
+  const status = document.getElementById('modal-job-status');
+  status.textContent = job.status === 'running'
+    ? `Running… (${job.output.length} lines)`
+    : `${job.status === 'done' ? '✓ Done' : '✗ Failed'} — ${job.completed_at?.slice(0,19) || ''}`;
+  status.className = `text-xs ${job.status === 'failed' ? 'text-red-400' : job.status === 'done' ? 'text-emerald-400' : 'text-sky-400'}`;
+  if (job.status !== 'running') clearInterval(_modalPollTimer);
+}
+
+function closeJobModal() {
+  document.getElementById('job-modal').classList.add('hidden');
+  clearInterval(_modalPollTimer);
+  _modalJobId = null;
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeJobModal(); });
+</script>
+</body>
+</html>

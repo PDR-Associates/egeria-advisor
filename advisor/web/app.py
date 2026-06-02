@@ -34,6 +34,9 @@ app = FastAPI(title="Egeria Advisor", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.mount("/static", StaticFiles(directory=_STATIC), name="static")
 
+from advisor.web.admin import router as _admin_router
+app.include_router(_admin_router)
+
 # ── lazy RAG system ────────────────────────────────────────────────────────────
 
 _rag = None

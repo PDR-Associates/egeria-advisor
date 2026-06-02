@@ -200,3 +200,24 @@ egeria-advisor --agent
 | "No relevant content found" | Check that collections are indexed: `python scripts/count_vectors.py` |
 
 See **[Query Routing Guide](QUERY_ROUTING_GUIDE.md)** for detailed routing behaviour and troubleshooting.
+
+---
+
+## Planning Multi-Step Governance Tasks
+
+For tasks that involve multiple related objects — a glossary *with* terms, categories, *and* steward roles — describe the full task in plain language and the advisor generates a complete **Plan Document**:
+
+```
+"Set up a glossary for the Finance domain with standard terms,
+ categories, and data steward assignments"
+```
+
+The advisor will:
+1. Generate a structured markdown plan with pre-filled Dr.Egeria commands
+2. Show it inline — you can ask for changes before committing
+3. Execute it against Egeria when you click **Execute**
+4. Report the outcome and run verification reports automatically
+
+Plans are saved to `~/egeria-plans/` and accessible from the **Plans** sidebar between sessions.
+
+See **[Literate Governance Guide](LITERATE_GOVERNANCE_GUIDE.md)** for the full workflow, CLI tools, and troubleshooting.

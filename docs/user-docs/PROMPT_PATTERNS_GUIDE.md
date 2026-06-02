@@ -1,8 +1,10 @@
 # Egeria Advisor — Prompt Patterns Guide
 
-**Last Updated:** 2026-05-13
+**Last Updated:** 2026-06-02
 
 This guide gives you concrete, copy-ready prompt patterns organised by what you want to accomplish. Each pattern shows the recommended role, the recommended intent button, the query text, and the type of response you will get.
+
+> **New: Literate Governance** — For multi-step tasks (set up a glossary *with* terms, categories, *and* steward assignments), the advisor generates a complete, reviewable Plan Document and executes it against Egeria. See [LITERATE_GOVERNANCE_GUIDE.md](LITERATE_GOVERNANCE_GUIDE.md).
 
 ---
 
@@ -15,7 +17,8 @@ This guide gives you concrete, copy-ready prompt patterns organised by what you 
 | Get Python code for a task | Developer | Auto or Show me | "Give me a python example to create a governance zone" | Runnable Python script |
 | Discover available API methods | Developer | Auto or Show me | "What methods are available for governance definitions?" | Class + method table |
 | Get a Dr.Egeria notebook command | Data Steward | Act | "Show me a Dr.Egeria template for creating a glossary" | Markdown command template |
-| Execute a governance action | Data Steward | Act | "Create a governance zone called Finance" | Dr.Egeria command execution |
+| Execute a single governance action | Data Steward | Act | "Create a governance zone called Finance" | Dr.Egeria command execution |
+| **Plan a multi-step governance task** | **Any** | **Auto** | **"Set up a glossary for Finance with terms, categories, and steward assignments"** | **Reviewed Plan Document → execute → outcome report** |
 | Diagnose an error | Developer | Troubleshoot | "Why am I getting a 403 when calling create_governance_definition?" | Diagnostic explanation |
 | Compare two concepts | Anyone | Explain | "What is the difference between a glossary and a data dictionary?" | Side-by-side comparison |
 | Find a CLI command | Anyone | Auto | "What hey_egeria command lists glossary terms?" | CLI command reference |

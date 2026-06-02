@@ -24,8 +24,9 @@ class QueryType(Enum):
     DEBUGGING = "debugging"
     QUANTITATIVE = "quantitative"
     RELATIONSHIP = "relationship"
-    REPORT = "report"  # MCP report generation
+    REPORT = "report"    # MCP report generation
     COMMAND = "command"  # MCP command execution
+    PLAN = "plan"        # Multi-step governance plan document generation
     GENERAL = "general"
 
 
@@ -304,6 +305,7 @@ def _load_query_patterns_from_config(patterns_config: Dict[str, Any]) -> None:
         'relationship': QueryType.RELATIONSHIP,
         'report': QueryType.REPORT,
         'command': QueryType.COMMAND,
+        'plan': QueryType.PLAN,
         'general': QueryType.GENERAL
     }
     

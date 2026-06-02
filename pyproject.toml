@@ -68,6 +68,7 @@ onnx-tools = [
 [project.scripts]
 egeria-advisor = "advisor.cli.main:cli"
 egeria-advisor-web = "advisor.cli.main:web_command"
+egeria-advisor-plans = "advisor.cli.plans:plans"
 
 [build-system]
 requires = ["setuptools>=68.0.0", "wheel"]

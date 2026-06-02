@@ -153,10 +153,25 @@ class MetricsCollector:
                 )
             """)
             
+            # Plan lifecycle events table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS plan_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp REAL NOT NULL,
+                    doc_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    title TEXT,
+                    command_families TEXT,
+                    outcome_status TEXT,
+                    perspective TEXT
+                )
+            """)
+
             # Create indexes
             conn.execute("CREATE INDEX IF NOT EXISTS idx_query_timestamp ON query_metrics(timestamp)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_query_collection ON query_metrics(collection_name)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_system_timestamp ON system_metrics(timestamp)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_plan_doc_id ON plan_events(doc_id)")
             
             conn.commit()
     
@@ -192,6 +207,27 @@ class MetricsCollector:
             ))
             conn.commit()
     
+    def record_plan_event(
+        self,
+        doc_id: str,
+        event_type: str,
+        title: Optional[str] = None,
+        command_families: Optional[str] = None,
+        outcome_status: Optional[str] = None,
+        perspective: Optional[str] = None,
+    ) -> None:
+        """Record a plan lifecycle event (created / executed / archived)."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("""
+                    INSERT INTO plan_events
+                    (timestamp, doc_id, event_type, title, command_families, outcome_status, perspective)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (time.time(), doc_id, event_type, title, command_families, outcome_status, perspective))
+                conn.commit()
+        except Exception as exc:
+            logger.warning(f"MetricsCollector.record_plan_event failed: {exc}")
+
     def record_collection_health(self, health: CollectionHealth):
         """
         Record collection health metrics.

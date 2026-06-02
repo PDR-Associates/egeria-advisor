@@ -20,6 +20,11 @@
     .msg-you       { border-left: 3px solid #06b6d4; }
     .msg-assistant { border-left: 3px solid #10b981; }
     .msg-clarify   { border-left: 3px solid #f59e0b; }
+    .msg-plan      { border-left: 3px solid #8b5cf6; }
+    .msg-executed  { border-left: 3px solid #22c55e; }
+
+    /* TODO fill-in marker */
+    .todo-fill { display:inline-block; background:#431407; color:#fb923c; border:1px solid #92400e; border-radius:3px; padding:0 5px; font-size:.75em; font-weight:700; font-family:monospace; }
 
     /* Markdown prose */
     .prose pre  { background:#1e293b; padding:.75rem; border-radius:.375rem; overflow-x:auto; }
@@ -81,8 +86,17 @@
       <div id="report-catalog" class="px-2 pb-2 flex flex-col gap-0.5 text-sm"></div>
     </div>
 
+    <!-- Middle pane: Plans (Inbox / Outbox) -->
+    <div class="flex flex-col sidebar-pane border-b border-slate-700" style="max-height:38%">
+      <div class="px-3 pt-2 pb-1 shrink-0 flex items-center justify-between">
+        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Plans</span>
+        <button onclick="loadPlans()" class="text-xs text-slate-600 hover:text-slate-400 transition-colors" title="Refresh plan list">↺</button>
+      </div>
+      <div id="plan-list" class="px-2 pb-2 flex flex-col gap-0.5 text-xs overflow-y-auto"></div>
+    </div>
+
     <!-- Bottom pane: Recent Queries -->
-    <div class="flex flex-col sidebar-pane" style="max-height:40%">
+    <div class="flex flex-col sidebar-pane" style="max-height:22%">
       <div class="px-3 pt-2 pb-1 shrink-0 flex items-center justify-between">
         <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Recent Queries</span>
         <button onclick="clearHistory()" class="text-xs text-slate-600 hover:text-slate-400 transition-colors">clear</button>
@@ -162,6 +176,13 @@
     </label>
     <input id="search-string-input" type="text" placeholder="e.g. finance  or  *"
       class="w-full bg-slate-700 text-slate-100 rounded-lg px-3 py-1.5 text-sm
+             border border-slate-600 focus:outline-none focus:border-cyan-500 mb-3">
+    <label class="text-xs text-slate-400 block mb-1">
+      Max results
+      <span class="text-slate-600 ml-1">(limits graph nodes queried; default 100)</span>
+    </label>
+    <input id="page-size-input" type="number" min="10" max="500" placeholder="100"
+      class="w-full bg-slate-700 text-slate-100 rounded-lg px-3 py-1.5 text-sm
              border border-slate-600 focus:outline-none focus:border-cyan-500 mb-4">
     <div class="flex gap-2 justify-end">
       <button onclick="closeSearchModal()"
@@ -200,6 +221,7 @@ let recentQueries = JSON.parse(sessionStorage.getItem('ea_recent') || '[]');
 document.addEventListener('DOMContentLoaded', () => {
   loadStatus();
   loadReports();
+  loadPlans();
   renderRecent();
   appendMessage('assistant',
     'Welcome to **Egeria Advisor**.\n\n' +
@@ -261,6 +283,7 @@ function runReport(name) {
   pendingReportName = name;
   document.getElementById('modal-report-name').textContent = name;
   document.getElementById('search-string-input').value = '';
+  document.getElementById('page-size-input').value = '';
   document.getElementById('search-modal').classList.remove('hidden');
   setTimeout(() => document.getElementById('search-string-input').focus(), 50);
 }
@@ -273,12 +296,15 @@ function closeSearchModal() {
 function confirmRunReport() {
   const name = pendingReportName;
   const filter = document.getElementById('search-string-input').value.trim();
+  const pageSizeRaw = document.getElementById('page-size-input').value.trim();
+  const pageSize = pageSizeRaw ? parseInt(pageSizeRaw, 10) : null;
   closeSearchModal();
   if (!name) return;
   const label = filter ? `Run report: **${name}** — filter: *${filter}*` : `Run report: **${name}**`;
   appendMessage('you', label);
-  // Always force report intent so the current intent-button selection doesn't interfere
-  submitQuery(`run report ${name}`, { search_string: filter || null, intent_override: 'report' });
+  const extra = { search_string: filter || null, intent_override: 'report' };
+  if (pageSize && pageSize > 0) extra.page_size = pageSize;
+  submitQuery(`run report ${name}`, extra);
 }
 
 // Handle Enter key in search modal
@@ -319,6 +345,86 @@ function pushRecent(q) {
   if (recentQueries.length > 30) recentQueries.shift();
   sessionStorage.setItem('ea_recent', JSON.stringify(recentQueries));
   renderRecent();
+}
+
+// ── Plans sidebar ──────────────────────────────────────────────────────────────
+async function loadPlans() {
+  let data;
+  try {
+    const r = await fetch('/api/plans');
+    data = await r.json();
+  } catch { return; }
+  const el = document.getElementById('plan-list');
+  el.innerHTML = '';
+  const inbox = data.inbox || [];
+  const outbox = data.outbox || [];
+  if (!inbox.length && !outbox.length) {
+    el.innerHTML = '<div class="px-2 text-slate-600 italic">No plans yet</div>';
+    return;
+  }
+  const renderGroup = (items, folder) => {
+    if (!items.length) return;
+    const hdr = document.createElement('div');
+    hdr.className = 'px-2 pt-1 text-slate-600 uppercase text-xs font-semibold tracking-wider';
+    hdr.textContent = folder === 'inbox' ? 'Inbox' : 'Outbox';
+    el.appendChild(hdr);
+    items.forEach(plan => {
+      const row = document.createElement('div');
+      row.className = 'flex items-center gap-1';
+      const btn = document.createElement('button');
+      btn.className = 'flex-1 text-left px-2 py-0.5 rounded transition-colors truncate ' +
+        (folder === 'inbox' ? 'text-violet-300 hover:bg-violet-900/40' : 'text-emerald-400 hover:bg-emerald-900/30');
+      btn.title = plan.doc_id;
+      btn.textContent = plan.title && plan.title !== '(untitled)' ? plan.title : plan.doc_id;
+      btn.onclick = () => restorePlan(plan.doc_id, folder, plan.title);
+      row.appendChild(btn);
+      if (folder === 'inbox') {
+        const execBtn = document.createElement('button');
+        execBtn.className = 'shrink-0 px-1.5 py-0.5 rounded bg-violet-800 hover:bg-violet-700 text-white text-xs transition-colors';
+        execBtn.title = 'Execute this plan';
+        execBtn.textContent = '▶';
+        execBtn.onclick = e => {
+          e.stopPropagation();
+          appendMessage('you', `execute the plan ${plan.doc_id}`);
+          submitQuery(`execute the plan ${plan.doc_id}`, { intent_override: 'command' });
+        };
+        row.appendChild(execBtn);
+      }
+      el.appendChild(row);
+    });
+  };
+  renderGroup(inbox, 'inbox');
+  renderGroup(outbox, 'outbox');
+}
+
+async function restorePlan(doc_id, folder, title) {
+  let data;
+  try {
+    const r = await fetch(`/api/plans/${encodeURIComponent(doc_id)}`);
+    if (!r.ok) { appendMessage('assistant', `Could not load plan \`${doc_id}\`.`); return; }
+    data = await r.json();
+  } catch (e) { appendMessage('assistant', `Error loading plan: ${e.message}`); return; }
+  const isInbox = (data.folder || folder) === 'inbox';
+  const label = title && title !== '(untitled)' ? title : doc_id;
+  appendMessage('you', `Restore plan: ${label}`);
+  const wrap = appendMessage('assistant', data.content, { isPlan: isInbox, isExecuted: !isInbox });
+  if (isInbox) {
+    const planBanner = document.createElement('div');
+    planBanner.className = 'mt-2 px-3 py-2 rounded bg-violet-950/60 border border-violet-700/50 text-xs flex items-center gap-3';
+    const planInfo = document.createElement('span');
+    planInfo.className = 'text-slate-300 flex-1';
+    planInfo.innerHTML = `<span class="text-violet-400 font-semibold">Inbox plan</span> — <code class="text-violet-300">${doc_id}.md</code>. Review and adjust, then click Execute when ready.`;
+    planBanner.appendChild(planInfo);
+    const execBtn = document.createElement('button');
+    execBtn.className = 'px-3 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold shrink-0 transition-colors';
+    execBtn.textContent = 'Execute';
+    execBtn.onclick = () => {
+      appendMessage('you', `execute the plan ${doc_id}`);
+      submitQuery(`execute the plan ${doc_id}`, { intent_override: 'command' });
+    };
+    planBanner.appendChild(execBtn);
+    wrap.appendChild(planBanner);
+  }
 }
 
 // ── Perspective picker ─────────────────────────────────────────────────────────
@@ -409,8 +515,46 @@ async function submitQuery(query, extra = {}) {
     return;
   }
 
+  // Refresh plan sidebar after any plan lifecycle event
+  if (qtype === 'plan' || qtype === 'plan_executed') loadPlans();
+
   // Normal response
-  const wrap = appendMessage('assistant', result.response, { isClarify: false, color: intent.color });
+  const wrap = appendMessage('assistant', result.response, { isClarify: false, isPlan: qtype === 'plan', isExecuted: qtype === 'plan_executed', color: intent.color });
+
+  // Plan Document banner — shown when the agent saved a new plan to inbox/
+  if (qtype === 'plan' && result.doc_id) {
+    const planBanner = document.createElement('div');
+    planBanner.className = 'mt-2 px-3 py-2 rounded bg-violet-950/60 border border-violet-700/50 text-xs flex items-center gap-3';
+
+    const planInfo = document.createElement('span');
+    planInfo.className = 'text-slate-300 flex-1';
+    planInfo.innerHTML =
+      `<span class="text-violet-400 font-semibold">Plan saved</span> — ` +
+      `<code class="text-violet-300">${result.doc_id}.md</code> is in your inbox. ` +
+      `Review and adjust, then click Execute when ready.`;
+    planBanner.appendChild(planInfo);
+
+    const execBtn = document.createElement('button');
+    execBtn.className = 'px-3 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold shrink-0 transition-colors';
+    execBtn.textContent = 'Execute';
+    execBtn.onclick = () => {
+      appendMessage('you', `execute the plan ${result.doc_id}`);
+      submitQuery(`execute the plan ${result.doc_id}`, { intent_override: 'command' });
+    };
+    planBanner.appendChild(execBtn);
+
+    wrap.appendChild(planBanner);
+  }
+
+  // Executed plan banner
+  if (qtype === 'plan_executed' && result.doc_id) {
+    const execBanner = document.createElement('div');
+    execBanner.className = 'mt-2 px-3 py-2 rounded bg-emerald-950/60 border border-emerald-700/50 text-xs';
+    execBanner.innerHTML =
+      `<span class="text-emerald-400 font-semibold">Executed</span> — ` +
+      `<code class="text-emerald-300">${result.doc_id}.md</code> has been moved to your outbox with the outcome appended.`;
+    wrap.appendChild(execBanner);
+  }
 
   // Sources footer — show collection + file path only (not full chunk content)
   const sources = result.sources || [];
@@ -505,7 +649,10 @@ function appendMessage(role, text, opts = {}) {
   const messages = document.getElementById('messages');
   const wrap = document.createElement('div');
   const isClarify = opts.isClarify;
-  wrap.className = `msg-${role === 'you' ? 'you' : (isClarify ? 'clarify' : 'assistant')} pl-3 pr-2 py-2 rounded-r-lg bg-slate-800/60`;
+  const isPlan = opts.isPlan;
+  const isExecuted = opts.isExecuted;
+  const msgClass = role === 'you' ? 'you' : (isClarify ? 'clarify' : isExecuted ? 'executed' : isPlan ? 'plan' : 'assistant');
+  wrap.className = `msg-${msgClass} pl-3 pr-2 py-2 rounded-r-lg bg-slate-800/60`;
 
   const header = document.createElement('div');
   header.className = 'text-xs font-semibold mb-1 ' + (
@@ -517,7 +664,7 @@ function appendMessage(role, text, opts = {}) {
 
   const body = document.createElement('div');
   body.className = 'prose prose-invert text-sm text-slate-200 max-w-none';
-  body.innerHTML = marked.parse(text);
+  body.innerHTML = marked.parse(preprocessMarkdown(text));
   wrap.appendChild(body);
   // Render Mermaid diagrams inside this message
   body.querySelectorAll('code.language-mermaid').forEach((el, i) => {
@@ -561,6 +708,11 @@ async function feedbackClick(e) {
 }
 
 // ── Utils ──────────────────────────────────────────────────────────────────────
+function preprocessMarkdown(text) {
+  return text.replace(/<!--\s*TODO:\s*fill\s*in\s*-->/gi,
+    '<span class="todo-fill">⚠ fill in</span>');
+}
+
 function setThinking(on) {
   document.getElementById('thinking').classList.toggle('hidden', !on);
   document.getElementById('send-btn').disabled = on;

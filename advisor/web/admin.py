@@ -35,8 +35,9 @@ _REPO_ROOT = Path(__file__).parent.parent.parent
 _CONFIG = _REPO_ROOT / "config" / "advisor.yaml"
 _DATA_DIR = _REPO_ROOT / "data"
 _REPOS_DIR = _DATA_DIR / "repos"
-_INDEX_DB = _DATA_DIR / "index_state.db"     # written by incremental_indexer
+_INDEX_DB = _DATA_DIR / "index_state.db"       # written by incremental_indexer
 _ADMIN_STATE_DB = _DATA_DIR / "admin_state.db"  # written here + ingest_collections.py
+_METRICS_DB = _DATA_DIR / "metrics.db"          # written by MetricsCollector
 
 # ---------------------------------------------------------------------------
 # Job tracking
@@ -447,3 +448,81 @@ async def maintenance_action(action: str) -> Dict[str, Any]:
         return {"status": "ok", "message": "QuestionSpecIndex invalidated — will rebuild on next search"}
 
     raise HTTPException(status_code=400, detail=f"Unknown action '{action}'")
+
+
+@router.get("/api/admin/plan-stats")
+async def plan_stats() -> Dict[str, Any]:
+    """Return LGCI plan usage analytics from the plan_events table in metrics.db."""
+    empty = {
+        "total_created": 0, "total_executed": 0, "execution_rate": 0.0,
+        "by_outcome": {}, "by_perspective": {}, "by_family": {},
+        "recent": [], "available": _METRICS_DB.exists(),
+    }
+
+    if not _METRICS_DB.exists():
+        return empty
+
+    try:
+        with sqlite3.connect(_METRICS_DB) as conn:
+            conn.row_factory = sqlite3.Row
+
+            # ── Counts ───────────────────────────────────────────────────────
+            rows = conn.execute(
+                "SELECT event_type, COUNT(*) AS n FROM plan_events GROUP BY event_type"
+            ).fetchall()
+            counts = {r["event_type"]: r["n"] for r in rows}
+            created = counts.get("created", 0)
+            executed = counts.get("executed", 0)
+
+            # ── Outcome breakdown ─────────────────────────────────────────────
+            outcome_rows = conn.execute("""
+                SELECT COALESCE(outcome_status, 'Unknown') AS status, COUNT(*) AS n
+                FROM plan_events WHERE event_type = 'executed'
+                GROUP BY status ORDER BY n DESC
+            """).fetchall()
+            by_outcome = {r["status"]: r["n"] for r in outcome_rows}
+
+            # ── By perspective ────────────────────────────────────────────────
+            persp_rows = conn.execute("""
+                SELECT COALESCE(perspective, 'none') AS perspective, COUNT(*) AS n
+                FROM plan_events WHERE event_type = 'created'
+                GROUP BY perspective ORDER BY n DESC
+            """).fetchall()
+            by_perspective = {r["perspective"]: r["n"] for r in persp_rows}
+
+            # ── Command family frequency ──────────────────────────────────────
+            family_counts: Dict[str, int] = {}
+            fam_rows = conn.execute(
+                "SELECT command_families FROM plan_events "
+                "WHERE event_type = 'created' AND command_families IS NOT NULL"
+            ).fetchall()
+            for row in fam_rows:
+                for fam in (row["command_families"] or "").split(","):
+                    fam = fam.strip()
+                    if fam:
+                        family_counts[fam] = family_counts.get(fam, 0) + 1
+            by_family = dict(sorted(family_counts.items(), key=lambda x: -x[1])[:10])
+
+            # ── Recent events (last 15) ───────────────────────────────────────
+            recent_rows = conn.execute("""
+                SELECT doc_id, event_type, title, outcome_status, perspective, timestamp
+                FROM plan_events ORDER BY timestamp DESC LIMIT 15
+            """).fetchall()
+            recent = [dict(r) for r in recent_rows]
+
+        execution_rate = round(executed / created, 2) if created else 0.0
+
+        return {
+            "total_created": created,
+            "total_executed": executed,
+            "execution_rate": execution_rate,
+            "by_outcome": by_outcome,
+            "by_perspective": by_perspective,
+            "by_family": by_family,
+            "recent": recent,
+            "available": True,
+        }
+
+    except Exception as exc:
+        logger.warning(f"plan_stats: {exc}")
+        return {**empty, "error": str(exc)}

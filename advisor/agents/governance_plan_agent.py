@@ -386,13 +386,45 @@ class GovernancePlanAgent:
 A user has described a data management task. Extract the specific Dr.Egeria commands needed.
 
 Common Dr.Egeria command names include:
-  Create Glossary, Create Glossary Term, Create Glossary Category,
-  Create Project, Create Collection, Create Governance Zone,
-  Create Governance Role, Create Governance Definition,
-  Create Personal Profile, Create Actor Profile, Create Team,
-  Create Data Asset, Create Schema Type,
-  Link Term to Category, Link Term to Glossary,
-  Link Person Role Appointment, Set Classification
+
+  Glossary family:
+    Create Glossary, Create Glossary Term, Create Glossary Category,
+    Link Term to Category, Link Term to Glossary, Link Term-Term Relationship,
+    Classify Glossary as Canonical, Classify Term as Question
+
+  Projects family:
+    Create Campaign, Create Project, Create Personal Project, Create Study Project,
+    Create Task, Link Project Hierarchy, Link Project Dependency
+
+  Actor Manager family:
+    Create Person, Create Team, Create Organization,
+    Create Person Role, Create Team Role, Create Governance Role,
+    Link Person Role Appointment, Link Team Role Appointment,
+    Link Team Membership, Link Team Leader, Link Team Structure
+
+  Governance Officer family:
+    Create Governance Zone, Create Governance Definition, Create Governance Policy,
+    Create Governance Role, Create Governance Driver, Create Business Imperative,
+    Link Governance Policies, Link Governance Drivers, Link Governed By
+
+  Collections family:
+    Create Collection, Create Collection Folder, Add Member to Collection
+
+  Data Designer family:
+    Create Data Dictionary, Create Data Structure, Create Data Field,
+    Create Data Class, Link Data Field, Link Data Class Composition
+
+  Digital Product Manager family:
+    Create Digital Product, Create Agreement, Create Data Sharing Agreement
+
+  External Reference family:
+    Create External Reference, Link External Reference
+
+IMPORTANT — person role appointments:
+  When a person is named as a role holder (e.g. "Tom Tally as Project Leader"):
+  1. Use "Create Person Role" to define the role (e.g. "Project Leader")
+  2. Use "Link Person Role Appointment" to assign the named person to that role
+  Do NOT use "Create Glossary" or other unrelated commands for people or roles.
 
 {perspective_hint}User description: "{query}"
 

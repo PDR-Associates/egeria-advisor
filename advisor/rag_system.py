@@ -236,11 +236,22 @@ class RAGSystem:
         query_analysis = self.query_processor.process(user_query)
         logger.info(f"Query type: {query_analysis['query_type']}")
 
-        # Explicit user intent overrides automatic classification.
+        # Explicit user intent overrides automatic classification —
+        # EXCEPT when the pattern classifier already identified a multi-step
+        # plan request.  A plan description like "set up X with Y and Z" must
+        # route to the plan generator even if the user had "Show me" selected
+        # from a previous query.
         if query_type_override:
-            logger.info(f"Intent override from UI: '{query_type_override}'")
-            query_analysis = dict(query_analysis)
-            query_analysis['query_type'] = query_type_override
+            if query_analysis['query_type'] == 'plan' and \
+                    query_type_override not in ('plan', 'command'):
+                logger.info(
+                    f"Pattern classifier identified 'plan'; "
+                    f"ignoring intent override '{query_type_override}'"
+                )
+            else:
+                logger.info(f"Intent override from UI: '{query_type_override}'")
+                query_analysis = dict(query_analysis)
+                query_analysis['query_type'] = query_type_override
         # When pattern matching returns 'general', use the LLM classifier to
         # narrow the intent before committing to RAG retrieval.
         elif query_analysis['query_type'] == 'general':

@@ -13,19 +13,21 @@ def _load_perspective_families() -> dict[str, list[str]]:
     """Load perspective→template-family mappings from config/perspective_template_families.csv.
 
     Returns a dict keyed by lowercase advisor perspective key (e.g. 'developer', 'any')
-    with values being lists of normalised family names that are relevant at *any* level.
-    Comment lines (starting with #) are skipped.
+    with values being dicts of {normalised_family: boost} where boost is 2 for level='both'
+    and 1 for level='basic'.  Comment lines (starting with #) are skipped.
     """
     csv_path = Path(__file__).parent.parent.parent / "config" / "perspective_template_families.csv"
-    result: dict[str, list[str]] = {}
+    result: dict[str, dict[str, int]] = {}
     try:
         with open(csv_path, newline="", encoding="utf-8") as f:
             for row in csv.DictReader(f):
                 perspective = row.get("perspective", "").strip()
                 family = row.get("family", "").strip()
+                level = row.get("level", "basic").strip().lower()
                 if not perspective or not family or perspective.startswith("#"):
                     continue
-                result.setdefault(perspective.lower(), []).append(family.lower())
+                boost = 2 if level == "both" else 1
+                result.setdefault(perspective.lower(), {})[family.lower()] = boost
     except Exception:
         pass
     return result
@@ -184,13 +186,15 @@ def _find_dre_template_raw(query: str, level: str = "basic", perspective: str | 
 
     query_norm = _normalise(query)
 
-    # Build the set of perspective-relevant family names (normalised) for boosting.
-    priority_families: set[str] = set()
+    # Build perspective-relevant family → boost map (+2 for both, +1 for basic).
+    priority_families: dict[str, int] = {}
     if perspective:
         mappings = _load_perspective_families()
         for key in (perspective.lower(), "any"):
-            for fam in mappings.get(key, []):
-                priority_families.add(_normalise(fam))
+            for fam, boost in mappings.get(key, {}).items():
+                norm = _normalise(fam)
+                # Take the higher boost if the same family appears in both "any" and perspective
+                priority_families[norm] = max(priority_families.get(norm, 0), boost)
 
     # Score every template file.
     # Tier 4: exact substring match between full normalised query and stem (or vice-versa).
@@ -215,8 +219,7 @@ def _find_dre_template_raw(query: str, level: str = "basic", perspective: str | 
             elif any(w in family_norm for w in words):
                 score = 10  # tier 1: family match only
         if score > 0:
-            if priority_families and family_norm in priority_families:
-                score += 1
+            score += priority_families.get(family_norm, 0)
             scored.append((score, md_file))
 
     if not scored:

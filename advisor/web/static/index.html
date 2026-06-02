@@ -123,14 +123,10 @@
 
     <!-- Input area -->
     <div class="px-4 py-3 border-t border-slate-700 bg-slate-800 shrink-0">
-      <!-- Perspective selector -->
-      <div class="flex gap-1 mb-1 flex-wrap">
+      <!-- Perspective selector (populated dynamically from /api/perspectives) -->
+      <div class="flex gap-1 mb-1 flex-wrap" id="perspective-bar">
         <span class="text-xs text-slate-500 self-center mr-1">As:</span>
         <button class="persp-btn active" data-perspective="" onclick="setPerspective(this)" title="No role filter — general answer">Anyone</button>
-        <button class="persp-btn" data-perspective="developer" onclick="setPerspective(this)" title="Code examples, APIs, integration patterns">Developer</button>
-        <button class="persp-btn" data-perspective="data_engineer" onclick="setPerspective(this)" title="Pipelines, connectors, ingestion patterns">Data&nbsp;Engineer</button>
-        <button class="persp-btn" data-perspective="data_steward" onclick="setPerspective(this)" title="Glossary, ownership, data quality">Data&nbsp;Steward</button>
-        <button class="persp-btn" data-perspective="governance_officer" onclick="setPerspective(this)" title="Policies, compliance, governance zones">Governance</button>
       </div>
       <!-- Intent override -->
       <div class="flex gap-1 mb-1.5 flex-wrap">
@@ -222,6 +218,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadStatus();
   loadReports();
   loadPlans();
+  loadPerspectives();
   renderRecent();
   appendMessage('assistant',
     'Welcome to **Egeria Advisor**.\n\n' +
@@ -345,6 +342,34 @@ function pushRecent(q) {
   if (recentQueries.length > 30) recentQueries.shift();
   sessionStorage.setItem('ea_recent', JSON.stringify(recentQueries));
   renderRecent();
+}
+
+// ── Perspective bar ────────────────────────────────────────────────────────────
+async function loadPerspectives() {
+  let data;
+  try {
+    const r = await fetch('/api/perspectives');
+    data = await r.json();
+  } catch { return; }
+
+  const perspectives = data.perspectives || [];
+  if (!perspectives.length) return;
+
+  const bar = document.getElementById('perspective-bar');
+  // Remove all buttons except the first "Anyone" button
+  [...bar.querySelectorAll('button:not(:first-of-type)')].forEach(b => b.remove());
+
+  perspectives.forEach(p => {
+    const btn = document.createElement('button');
+    btn.className = 'persp-btn';
+    btn.dataset.perspective = p.advisor_key;
+    btn.title = p.tooltip || p.description || p.display_name;
+    btn.onclick = () => setPerspective(btn);
+    // Shorten long display names to keep the bar compact
+    const label = p.display_name.replace('Data ', 'Data ').replace('Governance Officer', 'Governance');
+    btn.textContent = label;
+    bar.appendChild(btn);
+  });
 }
 
 // ── Plans sidebar ──────────────────────────────────────────────────────────────

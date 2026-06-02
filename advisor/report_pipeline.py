@@ -432,7 +432,7 @@ class ReportPipeline:
                 _question_index.invalidate()
                 logger.info("ReportPipeline: merged Egeria question specs into index")
         except Exception as exc:
-            logger.debug(f"ReportPipeline: Egeria spec refresh skipped — {exc}")
+            logger.info(f"ReportPipeline: Egeria spec refresh skipped [{type(exc).__name__}] — {exc}")
 
     def _ensure_agent(self):
         """Connect to MCP servers if not already done. Raises ConnectionError if unreachable."""
@@ -578,11 +578,17 @@ class ReportPipeline:
             if isinstance(raw, str):
                 return raw
             if isinstance(raw, dict):
-                # pyegeria wraps DICT output as {"kind": "json", "data": ...}
-                if "kind" in raw and "data" in raw:
+                kind = raw.get("kind")
+                # pyegeria format_set_executor shapes:
+                if kind == "empty":
+                    return None   # no records — caller shows "no results" message
+                if kind == "json" and "data" in raw:
                     val = raw["data"]
                     return val if isinstance(val, str) else json.dumps(val, indent=2)
-                for key in ("output", "result", "content", "report", "text"):
+                if kind == "text" and "content" in raw:
+                    return raw["content"]
+                # Legacy / fallback shapes
+                for key in ("data", "output", "result", "content", "report", "text"):
                     if key in raw:
                         val = raw[key]
                         return val if isinstance(val, str) else json.dumps(val, indent=2)
@@ -591,7 +597,7 @@ class ReportPipeline:
         except ConnectionError:
             raise
         except Exception as e:
-            logger.warning(f"run_report({report_name}) failed: {e}")
+            logger.error(f"run_report({report_name}) failed [{type(e).__name__}]: {e}")
             return None
 
     # ------------------------------------------------------------------
@@ -847,8 +853,11 @@ class ReportPipeline:
 
         Falls back to a helpful message if no spec is found or Egeria is unreachable.
         """
-        # Refresh question specs from Egeria on first call (no-op if unreachable or cached).
-        self._try_refresh_egeria_specs()
+        # Kick off spec refresh in background on first call — non-blocking so the
+        # current query is never delayed.  Subsequent queries benefit once done.
+        if not self._egeria_specs_tried:
+            import threading
+            threading.Thread(target=self._try_refresh_egeria_specs, daemon=True).start()
 
         # Direct dispatch: "run report <name>" bypasses find_specs / disambiguation.
         m = self._RUN_REPORT_RE.match(query.strip())

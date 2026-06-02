@@ -79,7 +79,9 @@ class QueryRequest(BaseModel):
 class FeedbackRequest(BaseModel):
     query: str
     query_type: str
-    vote: int   # 1 = positive, -1 = negative
+    vote: int                           # 1 = positive, -1 = negative
+    perspective: Optional[str] = None
+    routing_agent: Optional[str] = None
 
 
 # ── intent → badge metadata ────────────────────────────────────────────────────
@@ -287,7 +289,28 @@ async def record_feedback(req: FeedbackRequest) -> Dict[str, str]:
             collections_searched=[],
             response_length=0,
             rating=rating,
+            perspective=req.perspective or None,
+            routing_agent=req.routing_agent or None,
         )
     except Exception as exc:
         logger.warning(f"Feedback recording failed: {exc}")
     return {"status": "ok"}
+
+
+@app.get("/api/perspectives")
+async def list_perspectives() -> Dict[str, Any]:
+    """Return available perspectives (live from Egeria or CSV fallback)."""
+    from advisor.perspective_manager import get_all
+    return {"perspectives": get_all()}
+
+
+@app.get("/api/feedback/analysis")
+async def feedback_analysis() -> Dict[str, Any]:
+    """Return feedback statistics plus gap analysis."""
+    from advisor.feedback_collector import get_feedback_collector
+    fc = get_feedback_collector()
+    return {
+        "stats": fc.get_feedback_stats(),
+        "gaps": fc.get_gap_analysis(),
+        "improvements": fc.get_routing_improvements(),
+    }

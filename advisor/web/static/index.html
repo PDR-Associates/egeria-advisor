@@ -583,6 +583,8 @@ async function submitQuery(query, extra = {}) {
   btnUp.dataset.q = query;
   btnUp.dataset.qt = qtype;
   btnUp.dataset.vote = '1';
+  btnUp.dataset.perspective = selectedPerspective || '';
+  btnUp.dataset.routingAgent = qtype || '';
   btnUp.addEventListener('click', feedbackClick);
   const btnDown = document.createElement('button');
   btnDown.className = 'text-xs text-slate-500 hover:text-red-400 transition-colors';
@@ -590,6 +592,8 @@ async function submitQuery(query, extra = {}) {
   btnDown.dataset.q = query;
   btnDown.dataset.qt = qtype;
   btnDown.dataset.vote = '-1';
+  btnDown.dataset.perspective = selectedPerspective || '';
+  btnDown.dataset.routingAgent = qtype || '';
   btnDown.addEventListener('click', feedbackClick);
   fb.appendChild(btnUp);
   fb.appendChild(btnDown);
@@ -696,10 +700,12 @@ async function feedbackClick(e) {
   const vote = parseInt(btn.dataset.vote, 10);
   const query = btn.dataset.q;
   const queryType = btn.dataset.qt;
+  const perspective = btn.dataset.perspective || null;
+  const routingAgent = btn.dataset.routingAgent || null;
   await fetch('/api/feedback', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, query_type: queryType, vote }),
+    body: JSON.stringify({ query, query_type: queryType, vote, perspective, routing_agent: routingAgent }),
   }).catch(() => {});
   const fb = btn.parentElement;
   fb.innerHTML = vote > 0

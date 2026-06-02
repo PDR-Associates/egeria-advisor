@@ -1,6 +1,6 @@
 [project]
 name = "egeria-advisor"
-version = "0.1.0"
+version = "0.1.2"
 description = "AI-powered advisor for egeria-python using local LLMs"
 requires-python = ">=3.12"
 authors = [
@@ -10,6 +10,7 @@ readme = "README.md"
 license = {text = "Apache-2.0"}
 
 dependencies = [
+    "pyegeria>=6.0.12.9",
     "pymilvus>=2.4.0",
     "psycopg2-binary>=2.9.9",
     "pgvector>=0.3.0",
@@ -28,14 +29,14 @@ dependencies = [
     "langchain-community>=0.1.0",
     "pyyaml>=6.0.0",
     "loguru>=0.7.0",
-    "radon>=6.0.1",        # Code metrics (CC, MI, Halstead)
-    "pygount>=1.6.1",      # Accurate line counting
-    "psutil>=5.9.0",       # System metrics
-    "onnx>=1.15.0",        # ONNX model format
-    "onnxruntime>=1.16.0", # ONNX inference (CPU)
-    "onnxscript>=0.1.0",   # Required for PyTorch to ONNX conversion
-    "transformers>=4.30.0", # For tokenizer in ONNX
-    "scikit-learn>=1.3.0", # For cosine similarity in benchmarks
+    "radon>=6.0.1",
+    "pygount>=1.6.1",
+    "psutil>=5.9.0",
+    "onnx>=1.15.0",
+    "onnxruntime>=1.16.0",
+    "onnxscript>=0.1.0",
+    "transformers>=4.30.0",
+    "scikit-learn>=1.3.0",
     "mcp>=1.0.0",
     "beeai-framework>=0.1.72",
 ]

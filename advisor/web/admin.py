@@ -35,7 +35,8 @@ _REPO_ROOT = Path(__file__).parent.parent.parent
 _CONFIG = _REPO_ROOT / "config" / "advisor.yaml"
 _DATA_DIR = _REPO_ROOT / "data"
 _REPOS_DIR = _DATA_DIR / "repos"
-_INDEX_DB = _DATA_DIR / "index_state.db"
+_INDEX_DB = _DATA_DIR / "index_state.db"     # written by incremental_indexer
+_ADMIN_STATE_DB = _DATA_DIR / "admin_state.db"  # written here + ingest_collections.py
 
 # ---------------------------------------------------------------------------
 # Job tracking
@@ -86,7 +87,8 @@ def _new_job(job_type: str, description: str) -> Job:
     return job
 
 
-def _run_job(job: Job, cmd: List[str], cwd: Optional[Path] = None) -> None:
+def _run_job(job: Job, cmd: List[str], cwd: Optional[Path] = None,
+             collection_name: Optional[str] = None) -> None:
     """Run a subprocess, stream output to the job, mark done/failed."""
     try:
         proc = subprocess.Popen(
@@ -100,6 +102,9 @@ def _run_job(job: Job, cmd: List[str], cwd: Optional[Path] = None) -> None:
             job.finish(error=f"Process exited with code {proc.returncode}")
         else:
             job.finish()
+            # Record successful reindex in admin_state.db
+            if collection_name and job.type == "reindex":
+                record_ingest_time(collection_name, source="admin")
     except Exception as exc:
         job.log(f"ERROR: {exc}")
         job.finish(error=str(exc))
@@ -163,21 +168,104 @@ def _vector_counts() -> Dict[str, int]:
     return counts
 
 
-def _last_indexed() -> Dict[str, Optional[float]]:
-    """Return {collection_name: unix_timestamp} of last index run from index_state.db."""
-    result: Dict[str, Optional[float]] = {}
-    if not _INDEX_DB.exists():
-        return result
+def _ensure_admin_state_db() -> None:
+    """Create admin_state.db and its table if not present."""
+    _DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(_ADMIN_STATE_DB) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ingest_log (
+                collection_name TEXT PRIMARY KEY,
+                last_ingested   REAL NOT NULL,
+                files_processed INTEGER,
+                chunks_created  INTEGER,
+                source          TEXT
+            )
+        """)
+
+
+def record_ingest_time(
+    collection_name: str,
+    files: int = 0,
+    chunks: int = 0,
+    source: str = "admin",
+) -> None:
+    """Write an ingestion completion record to admin_state.db."""
     try:
-        with sqlite3.connect(_INDEX_DB) as conn:
-            rows = conn.execute(
-                "SELECT collection_name, MAX(last_indexed) FROM file_tracker "
-                "GROUP BY collection_name"
-            ).fetchall()
-        for name, ts in rows:
-            result[name] = ts
+        _ensure_admin_state_db()
+        with sqlite3.connect(_ADMIN_STATE_DB) as conn:
+            conn.execute("""
+                INSERT INTO ingest_log (collection_name, last_ingested, files_processed, chunks_created, source)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(collection_name) DO UPDATE SET
+                    last_ingested=excluded.last_ingested,
+                    files_processed=excluded.files_processed,
+                    chunks_created=excluded.chunks_created,
+                    source=excluded.source
+            """, (collection_name, time.time(), files, chunks, source))
     except Exception as exc:
-        logger.debug(f"admin: index_state.db read failed — {exc}")
+        logger.debug(f"admin: record_ingest_time failed — {exc}")
+
+
+def _last_indexed() -> Dict[str, Optional[float]]:
+    """
+    Return {collection_name: unix_timestamp} using the best available source:
+      1. admin_state.db  — written by ingest_collections.py and admin reindex jobs
+      2. index_state.db  — written by incremental_indexer
+      3. pg_stat_user_tables.last_autoanalyze — PostgreSQL auto-stats proxy
+    Returns the most recent timestamp from whichever source has data.
+    """
+    result: Dict[str, Optional[float]] = {}
+
+    # Source 1: admin_state.db
+    if _ADMIN_STATE_DB.exists():
+        try:
+            with sqlite3.connect(_ADMIN_STATE_DB) as conn:
+                for name, ts in conn.execute(
+                    "SELECT collection_name, last_ingested FROM ingest_log"
+                ).fetchall():
+                    result[name] = ts
+        except Exception as exc:
+            logger.debug(f"admin: admin_state.db read failed — {exc}")
+
+    # Source 2: index_state.db (incremental indexer)
+    if _INDEX_DB.exists():
+        try:
+            with sqlite3.connect(_INDEX_DB) as conn:
+                for name, ts in conn.execute(
+                    "SELECT collection_name, MAX(last_indexed) FROM file_tracker "
+                    "GROUP BY collection_name"
+                ).fetchall():
+                    if ts and ts > (result.get(name) or 0):
+                        result[name] = ts
+        except Exception as exc:
+            logger.debug(f"admin: index_state.db read failed — {exc}")
+
+    # Source 3: pg_stat_user_tables — use last_autoanalyze as a proxy for
+    # when rows were last bulk-inserted (PostgreSQL auto-analyzes after inserts)
+    try:
+        conn = _pg_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT relname,
+                   GREATEST(last_analyze, last_autoanalyze) AS last_activity
+            FROM pg_stat_user_tables
+            WHERE schemaname = 'public'
+              AND GREATEST(last_analyze, last_autoanalyze) IS NOT NULL
+        """)
+        import calendar
+        for relname, last_activity in cur.fetchall():
+            # Reverse-map table name to collection name
+            col_name = next(
+                (k for k, v in _TABLE_NAME_MAP.items() if v == relname), relname
+            )
+            ts = calendar.timegm(last_activity.timetuple()) if last_activity else None
+            if ts and ts > (result.get(col_name) or 0):
+                result[col_name] = ts
+        cur.close()
+        conn.close()
+    except Exception as exc:
+        logger.debug(f"admin: pg_stat_user_tables read failed — {exc}")
+
     return result
 
 
@@ -299,7 +387,7 @@ async def reindex_collection(name: str, force: bool = False) -> Dict[str, Any]:
         cmd = [sys.executable, "-m", "advisor.incremental_indexer", "--collection", name]
 
     job = _new_job("reindex", desc)
-    threading.Thread(target=_run_job, args=(job, cmd), daemon=True).start()
+    threading.Thread(target=_run_job, args=(job, cmd), kwargs={"collection_name": name}, daemon=True).start()
     return {"job_id": job.id, "description": desc}
 
 

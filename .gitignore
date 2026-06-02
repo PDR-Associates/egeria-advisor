@@ -206,3 +206,7 @@ temp/
 *.tmp
 config/mcp_servers.json
 /docs/history/
+
+# Downloaded / generated model files — too large for git (87 MB each)
+# Regenerate with the ONNX export script or re-download from HuggingFace
+models/

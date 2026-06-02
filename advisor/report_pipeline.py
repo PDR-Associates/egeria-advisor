@@ -148,10 +148,12 @@ class QuestionSpecIndex:
     _DEFAULT_THRESHOLD = 0.35
     _DEFAULT_TOP_K = 5
 
-    # Paths relative to the egeria-advisor project root
+    # Paths relative to the egeria-advisor project root.
+    # Add new per-perspective or per-domain JSON files here; no other code change needed.
     _JSON_SOURCES = [
         "config/report_specs/report_specs_annotated.json",
         "config/report_specs/plain_spec_question_specs_batch1.json",
+        "config/report_specs/developer_question_specs.json",
     ]
 
     def __init__(self, project_root: Optional[str] = None) -> None:
@@ -170,7 +172,12 @@ class QuestionSpecIndex:
             )
 
     def _load_json_sources(self) -> Dict[str, Any]:
-        """Load and merge spec entries from all JSON source files."""
+        """Load and merge spec entries from all JSON source files.
+
+        When the same spec name appears in multiple files (e.g. TypeDef in batch1
+        and in developer_question_specs.json), the question_spec lists are concatenated
+        so all perspectives are represented in the index.
+        """
         import json as _json
         merged: Dict[str, Any] = {}
         for rel_path in self._JSON_SOURCES:
@@ -182,14 +189,69 @@ class QuestionSpecIndex:
                 with open(full_path) as f:
                     data = _json.load(f)
                 for spec_name, entry in data.items():
-                    if spec_name not in merged and entry.get("question_spec"):
+                    new_qs = entry.get("question_spec")
+                    if not new_qs:
+                        continue
+                    if spec_name not in merged:
                         merged[spec_name] = entry
+                    else:
+                        # Append new perspective blocks; avoid exact duplicates
+                        existing = merged[spec_name].setdefault("question_spec", [])
+                        existing_persp = {
+                            frozenset(i.get("perspectives", []))
+                            for i in existing
+                        }
+                        for item in (new_qs if isinstance(new_qs, list) else [new_qs]):
+                            key = frozenset(item.get("perspectives", []))
+                            if key not in existing_persp:
+                                existing.append(item)
+                                existing_persp.add(key)
             except Exception as exc:
                 logger.warning(f"QuestionSpecIndex: failed to load {full_path}: {exc}")
         return merged
 
+    def _load_registry_sources(self) -> List[tuple]:
+        """Read question_spec entries from the pyegeria runtime registry.
+
+        Returns a flat list of (spec_name, perspectives, question) triples —
+        the same shape used by _build.  Specs already indexed from JSON are
+        skipped here; the registry supplements, not replaces, the file-based data.
+        Called after load_egeria_report_specs() has merged Egeria data in.
+        """
+        entries: List[tuple] = []
+        try:
+            from pyegeria.view.base_report_formats import get_report_registry
+            registry = get_report_registry()
+        except Exception as exc:
+            logger.debug(f"QuestionSpecIndex: pyegeria registry unavailable — {exc}")
+            return entries
+
+        for label, fs in registry.items():
+            qspec = getattr(fs, "question_spec", None)
+            if not qspec:
+                continue
+            for item in qspec:
+                perspectives = list(getattr(item, "perspectives", []) or [])
+                questions = list(getattr(item, "questions", []) or [])
+                for q in questions:
+                    if q:
+                        entries.append((label, perspectives, q))
+        logger.debug(f"QuestionSpecIndex: registry sources yielded {len(entries)} entries")
+        return entries
+
+    def invalidate(self) -> None:
+        """Clear the built index so the next search triggers a full rebuild.
+
+        Call this after load_egeria_report_specs() has merged new data into
+        the pyegeria registry so the rebuild picks up the fresh question_specs.
+        """
+        with self._lock:
+            self._embeddings = None
+            self._entries = []
+            self._model = None
+
     def _build(self) -> None:
-        """Build the index from JSON source files. Called once under lock."""
+        """Build the index from JSON files + pyegeria registry. Called once under lock."""
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:
@@ -205,6 +267,8 @@ class QuestionSpecIndex:
 
         texts: List[str] = []
         entries: List[tuple] = []
+
+        # Source 1: JSON files
         for spec_name, entry in spec_data.items():
             for item in entry.get("question_spec", []):
                 perspectives = item.get("perspectives", []) or []
@@ -213,6 +277,15 @@ class QuestionSpecIndex:
                     if q:
                         entries.append((spec_name, perspectives, q))
                         texts.append(q)
+
+        # Source 2: pyegeria runtime registry (includes Egeria-sourced specs after
+        # load_egeria_report_specs has run).  Deduplicate by (spec, question) pair.
+        seen = {(spec, q) for spec, _, q in entries}
+        for spec_name, perspectives, q in self._load_registry_sources():
+            if (spec_name, q) not in seen:
+                entries.append((spec_name, perspectives, q))
+                texts.append(q)
+                seen.add((spec_name, q))
 
         if not texts:
             logger.warning("QuestionSpecIndex: question_spec entries found but no questions — index is empty.")
@@ -224,7 +297,7 @@ class QuestionSpecIndex:
         self._embeddings = np.array(embeddings, dtype=np.float32)
         logger.info(
             f"QuestionSpecIndex: built index with {len(texts)} questions "
-            f"from {len(spec_data)} specs across {len(self._JSON_SOURCES)} source files."
+            f"from {len(spec_data)} JSON specs + pyegeria registry."
         )
 
     def _ensure_built(self) -> None:
@@ -299,7 +372,67 @@ class ReportPipeline:
 
     def __init__(self, config_path: str = "config/mcp_servers.json"):
         self._config_path = config_path
-        self._agent = None  # lazy
+        self._agent = None          # lazy MCP agent
+        self._egeria_specs_tried = False  # attempt once per process lifetime
+        # Read report tuning params from advisor.yaml (with safe fallbacks)
+        try:
+            import yaml as _yaml
+            _cfg_path = Path(__file__).parent.parent / "config" / "advisor.yaml"
+            with open(_cfg_path) as _f:
+                _cfg = _yaml.safe_load(_f)
+            _rep = _cfg.get("reports", {})
+            self._default_page_size: int = int(_rep.get("page_size", 100))
+            self._starts_with_on_filter: bool = bool(_rep.get("starts_with_on_filter", True))
+        except Exception:
+            self._default_page_size = 100
+            self._starts_with_on_filter = True
+
+    def _read_pyegeria_connection(self) -> Dict[str, str]:
+        """Extract Egeria connection params from the pyegeria MCP server config section."""
+        try:
+            with open(self._config_path) as f:
+                cfg = json.load(f)
+            env = cfg.get("mcpServers", {}).get("pyegeria", {}).get("env", {})
+            return {
+                "view_server": env.get("EGERIA_VIEW_SERVER", ""),
+                "platform_url": env.get("EGERIA_VIEW_SERVER_URL", ""),
+                "user_id": env.get("EGERIA_USER", ""),
+                "user_pwd": env.get("EGERIA_PASSWORD", ""),
+            }
+        except Exception:
+            return {}
+
+    def _try_refresh_egeria_specs(self) -> None:
+        """Attempt to load question specs from Egeria into the pyegeria registry.
+
+        Uses a direct EgeriaTech client (not MCP) so this works even when
+        the MCP agent hasn't been started yet.  Silently skips if Egeria is
+        unreachable or pyegeria is not installed.  Invalidates _question_index so
+        the next search rebuilds from the merged registry.
+        """
+        if self._egeria_specs_tried:
+            return
+        self._egeria_specs_tried = True  # don't retry on failure
+        conn = self._read_pyegeria_connection()
+        if not all(conn.values()):
+            logger.debug("ReportPipeline: incomplete Egeria connection config — skipping spec refresh")
+            return
+        try:
+            from pyegeria.egeria_tech_client import EgeriaTech
+            from pyegeria.view.base_report_formats import load_egeria_report_specs
+            client = EgeriaTech(
+                view_server=conn["view_server"],
+                platform_url=conn["platform_url"],
+                user_id=conn["user_id"],
+                user_pwd=conn["user_pwd"],
+            )
+            client.create_egeria_bearer_token(conn["user_id"], conn["user_pwd"])
+            refreshed = load_egeria_report_specs(client)
+            if refreshed:
+                _question_index.invalidate()
+                logger.info("ReportPipeline: merged Egeria question specs into index")
+        except Exception as exc:
+            logger.debug(f"ReportPipeline: Egeria spec refresh skipped — {exc}")
 
     def _ensure_agent(self):
         """Connect to MCP servers if not already done. Raises ConnectionError if unreachable."""
@@ -418,18 +551,26 @@ class ReportPipeline:
         report_name: str,
         search_string: str = "*",
         output_type: str = "DICT",
+        page_size: Optional[int] = None,
     ) -> Optional[str]:
         """
         Execute a named report and return the output string.
 
+        page_size: limits graph nodes Egeria traverses. None → use self._default_page_size.
         Returns None on failure.
         """
+        effective_page_size = page_size if page_size is not None else self._default_page_size
+        is_wildcard = not search_string or search_string.strip() in ("*", "")
         try:
-            args = {
+            args: Dict[str, Any] = {
                 "report_name": report_name,
                 "search_string": search_string,
                 "output_type": output_type,
+                "page_size": effective_page_size,
             }
+            # Prefix search is more efficient than full regex when a specific term is given
+            if not is_wildcard and self._starts_with_on_filter:
+                args["starts_with"] = True
             raw = self._call_tool("run_report", args)
             if raw is None:
                 return None
@@ -697,12 +838,18 @@ class ReportPipeline:
 
         return raw, search_string
 
-    def process(self, query: str, perspective: Optional[str] = None) -> Dict[str, Any]:
+    def process(
+        self, query: str, perspective: Optional[str] = None,
+        page_size: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """
         Full report pipeline: discover spec → run report → return response dict.
 
         Falls back to a helpful message if no spec is found or Egeria is unreachable.
         """
+        # Refresh question specs from Egeria on first call (no-op if unreachable or cached).
+        self._try_refresh_egeria_specs()
+
         # Direct dispatch: "run report <name>" bypasses find_specs / disambiguation.
         m = self._RUN_REPORT_RE.match(query.strip())
         if m:
@@ -710,7 +857,7 @@ class ReportPipeline:
             # Normalise camelCase / variant spellings to the exact catalog name
             report_name = self._resolve_report_name(report_name)
             logger.info(f"Direct report dispatch: {report_name!r} search={search_string!r}")
-            return self._execute_report(query, report_name, search_string=search_string)
+            return self._execute_report(query, report_name, search_string=search_string, page_size=page_size)
 
         try:
             specs = self.find_specs(query, perspective=perspective)
@@ -748,11 +895,12 @@ class ReportPipeline:
             logger.warning("Spec has no usable name field")
             return _no_report_found(query)
 
-        return self._execute_report(query, report_name, num_specs_found=len(ranked))
+        return self._execute_report(query, report_name, num_specs_found=len(ranked), page_size=page_size)
 
     def _execute_report(
         self, query: str, report_name: str, num_specs_found: int = 1,
         search_string: str = "*",
+        page_size: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Shared execution path: run a named report and format the result."""
         fmt = self._detect_output_format(query)
@@ -760,7 +908,7 @@ class ReportPipeline:
 
         logger.info(
             f"Running report: {report_name} (output_type={mcp_output_type}, "
-            f"display_fmt={fmt}, search_string={search_string!r})"
+            f"display_fmt={fmt}, search_string={search_string!r}, page_size={page_size or self._default_page_size})"
         )
         mcp_connected = False
         connection_err: Optional[str] = None
@@ -768,7 +916,10 @@ class ReportPipeline:
         try:
             self._ensure_agent()
             mcp_connected = True
-            raw_output = self.run_report(report_name, search_string=search_string, output_type=mcp_output_type)
+            raw_output = self.run_report(
+                report_name, search_string=search_string,
+                output_type=mcp_output_type, page_size=page_size,
+            )
         except ConnectionError as exc:
             connection_err = str(exc)
 

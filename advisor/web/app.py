@@ -73,6 +73,7 @@ class QueryRequest(BaseModel):
     intent_override: Optional[str] = None  # "explanation" | "code_search" | "report" | "command" | "debugging"
     search_string: Optional[str] = None    # filter string for report queries (default "*")
     perspective: Optional[str] = None      # user role: "developer" | "data_engineer" | "data_steward" | "governance_officer"
+    page_size: Optional[int] = None        # max graph nodes per report query (None → advisor.yaml default)
 
 
 class FeedbackRequest(BaseModel):
@@ -95,6 +96,8 @@ _INTENT_META: Dict[str, Dict[str, str]] = {
     "debugging":    {"label": "Troubleshoot","color": "#eab308"},
     "quantitative": {"label": "Reference",   "color": "#14b8a6"},
     "clarification":{"label": "Clarify",     "color": "#f59e0b"},
+    "plan":         {"label": "Plan",        "color": "#8b5cf6"},
+    "plan_executed":{"label": "Executed",    "color": "#22c55e"},
     "general":      {"label": "Explain",     "color": "#3b82f6"},
 }
 
@@ -197,6 +200,7 @@ async def query_endpoint(req: QueryRequest) -> Dict[str, Any]:
                 track_metrics=True,
                 query_type_override=req.intent_override or None,
                 perspective=req.perspective or None,
+                page_size=req.page_size or None,
             ),
         )
     except Exception as exc:
@@ -247,6 +251,27 @@ async def system_status() -> Dict[str, Any]:
         logger.warning(f"Status check failed: {exc}")
 
     return {"mcp_servers": mcp_status, "rag": "ok"}
+
+
+@app.get("/api/plans")
+async def list_plans() -> Dict[str, Any]:
+    """Return inbox and outbox plan document lists."""
+    from advisor.governance_docs import get_doc_manager
+    dm = get_doc_manager()
+    return {"inbox": dm.list_inbox(), "outbox": dm.list_outbox()}
+
+
+@app.get("/api/plans/{doc_id}")
+async def get_plan(doc_id: str) -> Dict[str, Any]:
+    """Return the content of a plan document by doc_id."""
+    from fastapi import HTTPException
+    from advisor.governance_docs import get_doc_manager
+    dm = get_doc_manager()
+    content = dm.load(doc_id)
+    if content is None:
+        raise HTTPException(status_code=404, detail=f"Plan {doc_id!r} not found")
+    folder = "inbox" if (dm.inbox_path() / f"{doc_id}.md").exists() else "outbox"
+    return {"doc_id": doc_id, "content": content, "folder": folder}
 
 
 @app.post("/api/feedback")

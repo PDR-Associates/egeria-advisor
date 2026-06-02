@@ -1,9 +1,34 @@
 """BeeAI @tool functions shared across Egeria Advisor agents."""
 from __future__ import annotations
+import csv
 import re
+from functools import lru_cache
 from pathlib import Path
 
 from beeai_framework.tools import tool
+
+
+@lru_cache(maxsize=1)
+def _load_perspective_families() -> dict[str, list[str]]:
+    """Load perspective→template-family mappings from config/perspective_template_families.csv.
+
+    Returns a dict keyed by lowercase advisor perspective key (e.g. 'developer', 'any')
+    with values being lists of normalised family names that are relevant at *any* level.
+    Comment lines (starting with #) are skipped.
+    """
+    csv_path = Path(__file__).parent.parent.parent / "config" / "perspective_template_families.csv"
+    result: dict[str, list[str]] = {}
+    try:
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                perspective = row.get("perspective", "").strip()
+                family = row.get("family", "").strip()
+                if not perspective or not family or perspective.startswith("#"):
+                    continue
+                result.setdefault(perspective.lower(), []).append(family.lower())
+    except Exception:
+        pass
+    return result
 
 
 @tool(description=(
@@ -91,6 +116,7 @@ def _templates_root() -> Path | None:
       2. {pyegeria_root}/templates                       (lower-case fallback)
       3. {EGERIA_ROOT_PATH|PYEGERIA_ROOT_PATH}/Templates/Dr-Egeria-Templates
       4. {EGERIA_ROOT_PATH|PYEGERIA_ROOT_PATH}/templates
+      5. {project_root}/examples/templates               (project-local copy, basic/advanced layout)
     """
     import os
 
@@ -118,6 +144,12 @@ def _templates_root() -> Path | None:
         if found:
             return found
 
+    # Project-local copy: {project_root}/examples/templates (basic/ + advanced/ layout).
+    project_root = Path(__file__).parent.parent.parent
+    local = project_root / "examples" / "templates"
+    if local.is_dir():
+        return local
+
     return None
 
 
@@ -126,11 +158,14 @@ def _normalise(s: str) -> str:
     return re.sub(r"[\s_\-]+", "", s).lower()
 
 
-def _find_dre_template_raw(query: str, level: str = "basic") -> str:
+def _find_dre_template_raw(query: str, level: str = "basic", perspective: str | None = None) -> str:
     """
     Search the Dr.Egeria template files for commands matching *query*.
 
     Templates live at {EGERIA_ROOT_PATH}/templates/{level}/{family}/{command}.md.
+    When *perspective* is provided the CSV mapping in config/perspective_template_families.csv
+    boosts families that are relevant to that role (+1 score), ensuring perspective-appropriate
+    templates surface first.  Falls back gracefully if the CSV is missing.
     Returns up to 3 matching template bodies concatenated, or a "not found" message.
     """
     root = _templates_root()
@@ -143,26 +178,45 @@ def _find_dre_template_raw(query: str, level: str = "basic") -> str:
 
     level_dir = root / level
     if not level_dir.is_dir():
-        # Fall back to basic if the requested level doesn't exist
         level_dir = root / "basic"
     if not level_dir.is_dir():
         return f"No templates found at {root}."
 
     query_norm = _normalise(query)
 
-    # Score every template file: exact substring in stem > family match > partial
+    # Build the set of perspective-relevant family names (normalised) for boosting.
+    priority_families: set[str] = set()
+    if perspective:
+        mappings = _load_perspective_families()
+        for key in (perspective.lower(), "any"):
+            for fam in mappings.get(key, []):
+                priority_families.add(_normalise(fam))
+
+    # Score every template file.
+    # Tier 4: exact substring match between full normalised query and stem (or vice-versa).
+    # Tier 3: ALL meaningful query words (len > 3) appear in the stem.
+    # Tier 2: SOME meaningful query words appear in the stem (count = score within tier).
+    # Tier 1: meaningful query words appear in the family name only.
+    # Perspective-relevant families get an extra +1 so they surface first within a tier.
+    words = [_normalise(w) for w in query.split() if len(w) > 3]
     scored: list[tuple[int, Path]] = []
     for md_file in sorted(level_dir.rglob("*.md")):
         stem_norm = _normalise(md_file.stem)
         family_norm = _normalise(md_file.parent.name)
         score = 0
         if query_norm in stem_norm or stem_norm in query_norm:
-            score = 3
-        elif any(_normalise(w) in stem_norm for w in query.split() if len(w) > 3):
-            score = 2
-        elif any(_normalise(w) in family_norm for w in query.split() if len(w) > 3):
-            score = 1
+            score = 40  # tier 4: exact
+        elif words:
+            stem_hits = sum(1 for w in words if w in stem_norm)
+            if stem_hits == len(words):
+                score = 30  # tier 3: all words match stem
+            elif stem_hits > 0:
+                score = 20 + stem_hits  # tier 2: partial stem match; more hits = higher
+            elif any(w in family_norm for w in words):
+                score = 10  # tier 1: family match only
         if score > 0:
+            if priority_families and family_norm in priority_families:
+                score += 1
             scored.append((score, md_file))
 
     if not scored:
@@ -190,11 +244,13 @@ def _find_dre_template_raw(query: str, level: str = "basic") -> str:
 
 
 @tool(description=(
-    "Find and return Dr.Egeria markdown command templates matching the user's topic. "
-    "Templates cover Create, Update, Link, and Set operations for Egeria metadata objects "
-    "(glossaries, terms, collections, governance definitions, projects, people, etc.). "
+    "Find and return Dr.Egeria markdown command samples/examples/templates matching the user's topic. "
+    "Use this when the user asks for a Dr.Egeria example, sample, or command — even if they say "
+    "'show me how' or 'give me an example' in a Dr.Egeria context. "
+    "Templates cover Create, Update, Link, Set, and View operations for Egeria metadata objects "
+    "(glossaries, terms, collections, governance definitions, projects, people, reports, etc.). "
     "level should be 'basic' (most users) or 'advanced' (full attribute set). "
-    "Returns the raw markdown template(s) the user can copy into a Dr.Egeria notebook."
+    "Returns the raw markdown the user can copy into a Dr.Egeria notebook or file."
 ))
 def find_dre_template(query: str, level: str = "basic") -> str:
     return _find_dre_template_raw(query, level=level)

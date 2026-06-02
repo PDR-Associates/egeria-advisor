@@ -143,6 +143,22 @@ agents:
     temperature: 0.4
     max_iterations: 5
 
+reports:
+  # Default page_size for MCP run_report calls.  0 = pyegeria default (500).
+  # Reduce to limit how many graph nodes Egeria traverses per query.
+  page_size: 100
+  # When the user supplies a specific search string (not * or blank), pass
+  # starts_with=True so Egeria does a prefix search instead of a full regex scan.
+  starts_with_on_filter: true
+
+governance_plans:
+  # Where plan documents are stored.  Asked on first use if not set.
+  # Supports ~ expansion.  Separate inbox (awaiting review/execution) and
+  # outbox (executed, with outcome sections appended).
+  inbox:  ~/egeria-plans/inbox/
+  outbox: ~/egeria-plans/outbox/
+  archived: ~/egeria-plans/archived/
+
 cli:
   default_agent: auto
   interactive_mode: true

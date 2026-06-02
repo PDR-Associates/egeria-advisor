@@ -4,6 +4,7 @@ Complete RAG system integrating retrieval, query processing, and LLM generation.
 This module provides the main interface for the RAG-based code advisor.
 """
 
+import re
 from typing import Dict, Any, Optional, List
 from loguru import logger
 import threading
@@ -57,6 +58,7 @@ class RAGSystem:
         dry_run: bool = False,
         query_type_override: Optional[str] = None,
         perspective: Optional[str] = None,
+        page_size: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Process a user query and generate a response.
@@ -77,6 +79,7 @@ class RAGSystem:
             user_query, include_context, dry_run=dry_run,
             query_type_override=query_type_override,
             perspective=perspective,
+            page_size=page_size,
         )
         
         # Always record metrics in local database (for dashboard)
@@ -226,6 +229,7 @@ class RAGSystem:
         dry_run: bool = False,
         query_type_override: Optional[str] = None,
         perspective: Optional[str] = None,
+        page_size: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Internal query processing."""
         # Process query to understand intent
@@ -338,6 +342,35 @@ class RAGSystem:
                 "context_length": 0
             }
 
+        # Handle plan execution: "execute the plan {doc_id}" or "execute plan {doc_id}".
+        _exec_match = re.search(
+            r'\bexecute(?:\s+the)?\s+plan\s+(\w+)',
+            user_query,
+            re.IGNORECASE,
+        )
+        if _exec_match:
+            _doc_id = _exec_match.group(1)
+            _dry_run = "dry" in user_query.lower()
+            logger.info(
+                f"Handling plan execution: doc_id={_doc_id!r}, dry_run={_dry_run}"
+            )
+            try:
+                from advisor.agents.governance_plan_agent import get_governance_plan_agent
+                return get_governance_plan_agent().execute(
+                    _doc_id, perspective=perspective, dry_run=_dry_run
+                )
+            except Exception as exc:
+                logger.warning(f"GovernancePlanAgent.execute failed ({exc}), continuing")
+
+        # Handle plan queries: generate a full Governance Plan Document.
+        if query_analysis['query_type'] == 'plan':
+            logger.info("Handling plan query via GovernancePlanAgent")
+            try:
+                from advisor.agents.governance_plan_agent import get_governance_plan_agent
+                return get_governance_plan_agent().handle(user_query, perspective=perspective)
+            except Exception as exc:
+                logger.warning(f"GovernancePlanAgent failed ({exc}), falling back to RAG")
+
         # Handle report queries via MCP pyegeria server.
         # When the user explicitly overrides intent to a non-report type, skip the
         # semantic pre-check so the override is honoured unconditionally.
@@ -352,7 +385,7 @@ class RAGSystem:
             logger.info("Handling report query via MCP report pipeline")
             try:
                 from advisor.report_pipeline import get_report_pipeline
-                return get_report_pipeline().process(user_query, perspective=perspective)
+                return get_report_pipeline().process(user_query, perspective=perspective, page_size=page_size)
             except Exception as e:
                 logger.warning(f"Report pipeline failed ({e}), falling back to RAG")
                 # Fall through to RAG below
@@ -361,13 +394,16 @@ class RAGSystem:
         # If the query asks for a sample/template, return the Dr.Egeria markdown template.
         # Otherwise execute the command via DrEgeriaActionAgent.
         if query_analysis['query_type'] == 'command':
-            _template_signals = ("template", "sample", "example", "show me", "give me")
+            _template_signals = (
+                "template", "sample", "example", "show me", "give me",
+                "how to", "how do i", "demonstrate", "illustrate",
+            )
             wants_template = any(sig in user_query.lower() for sig in _template_signals)
             if wants_template:
                 logger.info("Handling Dr.Egeria template request via DrEgeriaTemplateAgent")
                 try:
                     from advisor.agents.dre_template_agent import get_dre_template_agent
-                    return get_dre_template_agent().handle(user_query)
+                    return get_dre_template_agent().handle(user_query, perspective=perspective)
                 except Exception as e:
                     logger.warning(f"DrEgeriaTemplateAgent failed ({e}), falling back to DrEgeriaActionAgent")
             logger.info("Handling command query via DrEgeriaActionAgent")

@@ -41,8 +41,8 @@ class DrEgeriaTemplateAgent(BaseAdvisorAgent):
         from advisor.agents.tools import find_dre_template
         return [find_dre_template]
 
-    def handle(self, query: str) -> dict:
-        prompt = f"Find and return the Dr.Egeria command template for:\n\n{query}"
+    def handle(self, query: str, perspective: str | None = None) -> dict:
+        prompt = f"Find and return the Dr.Egeria command sample/example for:\n\n{query}"
         try:
             response = self._run_agent(prompt)
             if "```" in response or "##" in response or "### " in response:
@@ -53,15 +53,14 @@ class DrEgeriaTemplateAgent(BaseAdvisorAgent):
 
         # Fallback: call the tool directly
         logger.info("DrEgeriaTemplateAgent: falling back to direct template lookup")
-        return _make_result(query, self._fallback(query))
+        return _make_result(query, self._fallback(query, perspective=perspective))
 
-    def _fallback(self, query: str) -> str:
+    def _fallback(self, query: str, perspective: str | None = None) -> str:
         from advisor.agents.tools import _find_dre_template_raw
         from advisor.llm_client import get_ollama_client
 
-        # Determine level from query
         level = "advanced" if any(w in query.lower() for w in ("advanced", "full", "expert")) else "basic"
-        template_content = _find_dre_template_raw(query, level=level)
+        template_content = _find_dre_template_raw(query, level=level, perspective=perspective)
 
         if "not found" in template_content.lower() or "no dr.egeria template" in template_content.lower():
             return template_content

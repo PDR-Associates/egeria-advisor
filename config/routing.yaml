@@ -19,6 +19,63 @@ clarification:
 # Priority levels: critical (1), high (2), medium (3), low (4), fallback (5)
 query_patterns:
   critical:
+    plan:
+      # Multi-step governance/data-management planning requests.
+      # Must beat command patterns — "set up a glossary with terms and stewards" is
+      # a plan, not a single command.  Single-object requests ("create a glossary")
+      # stay on the command path.
+      - "set up a"
+      - "set up the"
+      - "establish a"
+      - "establish the"
+      - "build out"
+      - "put together a"
+      - "help me set up"
+      - "help me create a complete"
+      - "help me establish"
+      - "i want to set up"
+      - "i want to create a complete"
+      - "i want to establish"
+      - "i need to set up"
+      - "i need to establish"
+      - "plan to create"
+      - "plan for creating"
+      - "plan for setting up"
+      - "propose a plan"
+      - "draft a plan"
+      - "create a plan"
+      - "create a complete"
+      - "walk me through"
+      - "guide me through"
+      - "help me plan"
+    command:
+      # Dr.Egeria example/sample requests — beat python example patterns so "give me a
+      # Dr.Egeria example" doesn't route to ExamplesAgent (Python code).
+      # These contain "example"/"sample"/"show me" which triggers DrEgeriaTemplateAgent
+      # inside the command branch.
+      - "dr egeria example"
+      - "dr egeria sample"
+      - "dr egeria for"
+      - "dr. egeria example"
+      - "dr. egeria sample"
+      - "dr. egeria for"
+      - "show me dr egeria"
+      - "give me a dr egeria"
+      - "give me dr egeria"
+      - "using dr egeria"
+      - "with dr egeria"
+      - " in dr egeria"
+      - "how to in dr egeria"
+      - "dr egeria how"
+    explanation:
+      # Dr.Egeria usage / "what is" questions → DocAgent with pyegeria_drE collection
+      - "how do i use dr egeria"
+      - "how to use dr egeria"
+      - "what is dr egeria"
+      - "explain dr egeria"
+      - "how does dr egeria"
+      - "how do i use dr. egeria"
+      - "what is dr. egeria"
     example:
       # Python/code example requests — must beat command and report patterns
       - "python example"

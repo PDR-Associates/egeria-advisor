@@ -396,6 +396,15 @@ Common Dr.Egeria command names include:
     Create Campaign, Create Project, Create Personal Project, Create Study Project,
     Create Task, Link Project Hierarchy, Link Project Dependency
 
+  IMPORTANT — SubProjects in Dr.Egeria:
+    A "subproject" is a Project that is a child of another Project (or Campaign).
+    The correct pattern is:
+      1. Create Campaign (or Create Project) for the parent
+      2. Create Project for EACH subproject (e.g. Discovery, Analysis, Review)
+      3. Link Project Hierarchy for EACH subproject — set Child Project = subproject,
+         Parent Project = the campaign/parent project name
+    Do NOT use Create Task for subprojects. Tasks are separate leaf work items.
+
   Actor Manager family:
     Create Person, Create Team, Create Organization,
     Create Person Role, Create Team Role, Create Governance Role,

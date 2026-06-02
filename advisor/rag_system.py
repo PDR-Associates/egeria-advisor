@@ -268,10 +268,20 @@ class RAGSystem:
                 "what api", "api for", "methods for", "what functions",
                 "what can i do with", "what class", "which class",
             ))
+            # Dr.Egeria anti-signal: never divert to ExamplesAgent when the user is
+            # explicitly asking for a Dr.Egeria template/command.
+            dre_signals = any(sig in query_lower for sig in (
+                "dr egeria", "dr. egeria", "dr_egeria", "dre",
+            ))
             tech_roles = {"developer", "data_engineer"}
             steward_roles = {"data_steward", "governance_officer"}
 
-            if perspective in tech_roles and (code_signals or example_signals):
+            # Respect the pattern classifier if it already identified a command:
+            # "give me a dr. egeria example" is a command, not a Python example.
+            pattern_is_command = query_analysis.get("query_type") == "command"
+
+            if perspective in tech_roles and (code_signals or example_signals) \
+                    and not dre_signals and not pattern_is_command:
                 logger.info(
                     f"Role '{perspective}' + code/example signal → routing to ExamplesAgent"
                 )
@@ -281,7 +291,8 @@ class RAGSystem:
                 except Exception as exc:
                     logger.warning(f"ExamplesAgent failed ({exc}), continuing normal routing")
 
-            elif perspective in steward_roles and example_signals and not code_signals:
+            elif perspective in steward_roles and example_signals \
+                    and not code_signals and not dre_signals and not pattern_is_command:
                 # Ambiguous: could be Dr.Egeria command or a conceptual/code example.
                 logger.info(
                     f"Role '{perspective}' + ambiguous example signal → returning clarification"

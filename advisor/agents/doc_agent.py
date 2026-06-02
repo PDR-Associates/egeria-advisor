@@ -36,25 +36,9 @@ class DocAgent(BaseAdvisorAgent):
         return [search_egeria_content, get_egeria_symbol]
 
     def handle(self, query: str, mode: str = "explanation") -> dict:
-        collections_hint = (
-            "'egeria_concepts,egeria_general,egeria_types,pyegeria'"
-            if mode != "debugging"
-            else "'egeria_general,pyegeria,egeria_concepts'"
-        )
-        prompt = (
-            f"Question: {query}\n\n"
-            f"Start by searching {collections_hint} to find documentation. "
-            "Answer based only on what you find."
-        )
-        try:
-            response = self._run_agent(prompt)
-            logger.info("DocAgent: BeeAI returned response")
-            return _make_result(query, response, mode)
-        except Exception as exc:
-            logger.warning(f"DocAgent BeeAI run failed: {exc}")
-
-        # Fallback: direct RAG retrieval
-        logger.info("DocAgent: falling back to direct retrieval")
+        # Direct retrieval + single LLM call — BeeAI ReAct loop skipped because
+        # each Ollama round-trip costs 30-90s with a local 8B model.
+        logger.info(f"DocAgent: direct retrieval, mode={mode}")
         cols = _DEBUG_COLLECTIONS if mode == "debugging" else _DOC_COLLECTIONS
         return _make_result(query, self._fallback(query, cols), mode)
 

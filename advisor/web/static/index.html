@@ -136,6 +136,7 @@
         <button class="intent-btn" data-intent="code_search" onclick="setIntent(this)" title="Show pyegeria API usage / How do I…">Show&nbsp;me</button>
         <button class="intent-btn" data-intent="report" onclick="setIntent(this)" title="Run a live Egeria report">Report</button>
         <button class="intent-btn" data-intent="command" onclick="setIntent(this)" title="Execute a Dr.Egeria command">Act</button>
+        <button class="intent-btn" data-intent="plan" onclick="setIntent(this)" title="Generate a multi-step governance plan document">Plan</button>
         <button class="intent-btn" data-intent="debugging" onclick="setIntent(this)" title="Diagnose a problem">Troubleshoot</button>
       </div>
 
@@ -401,7 +402,7 @@ async function loadPlans() {
         (folder === 'inbox' ? 'text-violet-300 hover:bg-violet-900/40' : 'text-emerald-400 hover:bg-emerald-900/30');
       btn.title = plan.doc_id;
       btn.textContent = plan.title && plan.title !== '(untitled)' ? plan.title : plan.doc_id;
-      btn.onclick = () => restorePlan(plan.doc_id, folder, plan.title);
+      btn.onclick = () => openPlanEditor(plan.doc_id);
       row.appendChild(btn);
       if (folder === 'inbox') {
         const execBtn = document.createElement('button');
@@ -423,33 +424,8 @@ async function loadPlans() {
 }
 
 async function restorePlan(doc_id, folder, title) {
-  let data;
-  try {
-    const r = await fetch(`/api/plans/${encodeURIComponent(doc_id)}`);
-    if (!r.ok) { appendMessage('assistant', `Could not load plan \`${doc_id}\`.`); return; }
-    data = await r.json();
-  } catch (e) { appendMessage('assistant', `Error loading plan: ${e.message}`); return; }
-  const isInbox = (data.folder || folder) === 'inbox';
-  const label = title && title !== '(untitled)' ? title : doc_id;
-  appendMessage('you', `Restore plan: ${label}`);
-  const wrap = appendMessage('assistant', data.content, { isPlan: isInbox, isExecuted: !isInbox });
-  if (isInbox) {
-    const planBanner = document.createElement('div');
-    planBanner.className = 'mt-2 px-3 py-2 rounded bg-violet-950/60 border border-violet-700/50 text-xs flex items-center gap-3';
-    const planInfo = document.createElement('span');
-    planInfo.className = 'text-slate-300 flex-1';
-    planInfo.innerHTML = `<span class="text-violet-400 font-semibold">Inbox plan</span> — <code class="text-violet-300">${doc_id}.md</code>. Review and adjust, then click Execute when ready.`;
-    planBanner.appendChild(planInfo);
-    const execBtn = document.createElement('button');
-    execBtn.className = 'px-3 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold shrink-0 transition-colors';
-    execBtn.textContent = 'Execute';
-    execBtn.onclick = () => {
-      appendMessage('you', `execute the plan ${doc_id}`);
-      submitQuery(`execute the plan ${doc_id}`, { intent_override: 'command' });
-    };
-    planBanner.appendChild(execBtn);
-    wrap.appendChild(planBanner);
-  }
+  // Open the plan editor directly — no inline chat rendering needed
+  openPlanEditor(doc_id);
 }
 
 // ── Perspective picker ─────────────────────────────────────────────────────────
@@ -556,17 +532,14 @@ async function submitQuery(query, extra = {}) {
     planInfo.innerHTML =
       `<span class="text-violet-400 font-semibold">Plan saved</span> — ` +
       `<code class="text-violet-300">${result.doc_id}.md</code> is in your inbox. ` +
-      `Review and adjust, then click Execute when ready.`;
+      `Open the editor to review, fill in details, validate, and execute.`;
     planBanner.appendChild(planInfo);
 
-    const execBtn = document.createElement('button');
-    execBtn.className = 'px-3 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold shrink-0 transition-colors';
-    execBtn.textContent = 'Execute';
-    execBtn.onclick = () => {
-      appendMessage('you', `execute the plan ${result.doc_id}`);
-      submitQuery(`execute the plan ${result.doc_id}`, { intent_override: 'command' });
-    };
-    planBanner.appendChild(execBtn);
+    const editBtn = document.createElement('button');
+    editBtn.className = 'px-3 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold shrink-0 transition-colors';
+    editBtn.textContent = 'Open Editor';
+    editBtn.onclick = () => openPlanEditor(result.doc_id);
+    planBanner.appendChild(editBtn);
 
     wrap.appendChild(planBanner);
   }
@@ -750,5 +723,78 @@ function setThinking(on) {
   document.getElementById('send-btn').classList.toggle('opacity-50', on);
 }
 </script>
+
+<!-- ── Plan Editor Overlay ─────────────────────────────────────────────────── -->
+<div id="plan-editor-overlay" class="hidden fixed inset-0 z-50 bg-slate-950 flex flex-col">
+
+  <!-- Toolbar -->
+  <div class="flex items-center gap-2 px-4 py-2.5 bg-slate-800 border-b border-slate-700 shrink-0">
+    <span class="text-violet-400 font-bold text-sm shrink-0">Plan Editor</span>
+    <span class="text-slate-500 text-sm">—</span>
+    <span id="ped-title" class="text-slate-100 text-sm font-semibold flex-1 truncate"></span>
+    <button id="ped-mode-btn"
+      class="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-400 text-xs font-semibold transition-colors"
+      title="Switch between Basic (fewer fields) and Advanced (all template fields)">
+      Basic
+    </button>
+    <div class="w-px h-4 bg-slate-700 mx-1"></div>
+    <button id="ped-save-btn"
+      class="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 text-xs font-semibold transition-colors disabled:opacity-40">
+      Save
+    </button>
+    <button id="ped-validate-btn"
+      class="px-3 py-1 rounded bg-blue-800 hover:bg-blue-700 text-white text-xs font-semibold transition-colors disabled:opacity-40">
+      ✅ Validate
+    </button>
+    <button id="ped-execute-btn"
+      class="px-3 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition-colors disabled:opacity-40">
+      ▶ Execute
+    </button>
+    <button onclick="closePlanEditor()"
+      class="ml-2 px-2 py-1 rounded hover:bg-slate-700 text-slate-400 hover:text-slate-100 text-sm transition-colors">
+      ✕
+    </button>
+  </div>
+
+  <!-- Status bar -->
+  <div id="ped-status-bar" class="px-4 py-1 text-xs text-slate-500 bg-slate-900 border-b border-slate-800 shrink-0"></div>
+
+  <!-- Main scrollable content -->
+  <div class="flex-1 overflow-y-auto px-6 py-5 flex flex-col gap-5">
+
+    <!-- Narrative section -->
+    <div>
+      <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Plan Narrative</div>
+      <textarea id="ped-narrative"
+        class="w-full bg-slate-800 text-slate-200 text-sm rounded-lg p-3 border border-slate-700 resize-none font-mono leading-relaxed focus:outline-none focus:border-violet-500"
+        rows="8"
+        placeholder="Goal, requirements, and approach..."></textarea>
+      <div class="text-xs text-slate-600 mt-1">Free-form markdown — edit the goal, requirements, and approach sections here.</div>
+    </div>
+
+    <!-- Command cards -->
+    <div>
+      <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Command Sequence</div>
+      <div id="ped-commands" class="flex flex-col gap-3"></div>
+    </div>
+
+    <!-- Outcome (read-only, executed plans) -->
+    <div id="ped-outcome" class="hidden">
+      <div class="text-xs font-semibold text-emerald-400 uppercase tracking-wider mb-2">Outcome</div>
+      <div class="ped-outcome-body prose prose-invert text-sm text-slate-300 max-w-none bg-slate-800 rounded-lg p-4 border border-emerald-900/40"></div>
+    </div>
+
+  </div>
+
+  <!-- Validation result panel (slides up from bottom) -->
+  <div id="ped-validate-result"
+    class="hidden shrink-0 px-5 py-4 bg-slate-800 border-t border-slate-700 max-h-64 overflow-y-auto text-sm">
+    <button onclick="document.getElementById('ped-validate-result').classList.add('hidden')"
+      class="float-right text-slate-500 hover:text-slate-200 text-xs mb-1">✕ close</button>
+  </div>
+
+</div>
+
+<script src="/static/plan_editor.js"></script>
 </body>
 </html>

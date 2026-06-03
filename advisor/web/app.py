@@ -279,6 +279,105 @@ async def get_plan(doc_id: str) -> Dict[str, Any]:
     return {"doc_id": doc_id, "content": content, "folder": folder}
 
 
+@app.put("/api/plans/{doc_id}")
+async def save_plan(doc_id: str, body: Dict[str, Any]) -> Dict[str, str]:
+    """Save updated plan content to inbox (with automatic version backup)."""
+    from fastapi import HTTPException
+    from advisor.governance_docs import get_doc_manager
+    content = body.get("content", "")
+    if not content:
+        raise HTTPException(status_code=400, detail="content required")
+    dm = get_doc_manager()
+    ok = dm.update(doc_id, content)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Plan {doc_id!r} not found in inbox")
+    return {"status": "ok"}
+
+
+@app.post("/api/plans/{doc_id}/validate")
+async def validate_plan(doc_id: str) -> Dict[str, Any]:
+    """Run Dr.Egeria validate directive on the plan's command section."""
+    from fastapi import HTTPException
+    from advisor.governance_docs import get_doc_manager
+    from advisor.agents.governance_plan_agent import GovernancePlanAgent
+    from advisor.agents.dr_egeria_agent import DrEgeriaActionAgent
+    dm = get_doc_manager()
+    content = dm.load(doc_id)
+    if content is None:
+        raise HTTPException(status_code=404, detail=f"Plan {doc_id!r} not found")
+    cmd_section = GovernancePlanAgent._extract_command_section(content)
+    if not cmd_section.strip():
+        return {"status": "ok", "result": "No commands to validate."}
+    action_agent = DrEgeriaActionAgent()
+    try:
+        result = action_agent.execute(cmd_section, directive="validate", dry_run=False)
+        return {"status": "ok", "result": result}
+    except ConnectionError as exc:
+        return {"status": "error", "result": f"MCP server not reachable: {exc}"}
+    except Exception as exc:
+        return {"status": "error", "result": f"Validation failed: {exc}"}
+
+
+@app.get("/api/templates/{command_name}/fields")
+async def get_template_fields(command_name: str, level: str = "basic") -> Dict[str, Any]:
+    """Return template field metadata for a Dr.Egeria command at the given template level."""
+    from urllib.parse import unquote
+    from advisor.agents.tools import _templates_root, _normalise
+    from advisor.agents.dr_egeria_agent import parse_template
+
+    action = unquote(command_name)
+    root   = _templates_root()
+    if root is None:
+        return {"fields": [], "level": level}
+
+    level_dir = root / level
+    if not level_dir.is_dir():
+        level_dir = root / "basic"
+
+    query_norm = _normalise(action)
+    words      = [_normalise(w) for w in action.split() if len(w) > 3]
+
+    best_score = 0
+    best_file  = None
+    for md_file in sorted(level_dir.rglob("*.md")):
+        stem_norm = _normalise(md_file.stem)
+        score = 0
+        if query_norm == stem_norm:           score = 50
+        elif query_norm in stem_norm:         score = 40
+        elif stem_norm in query_norm:         score = 35
+        elif words:
+            hits = sum(1 for w in words if w in stem_norm)
+            if hits == len(words):            score = 30
+            elif hits > 0:                    score = 20 + hits
+        if score > best_score:
+            best_score = score
+            best_file  = md_file
+
+    if best_file is None or best_score == 0:
+        return {"fields": [], "level": level}
+
+    try:
+        template = parse_template(str(best_file))
+    except Exception:
+        return {"fields": [], "level": level}
+
+    return {
+        "level": level,
+        "fields": [
+            {
+                "name":               a["name"],
+                "required":           a["required"],
+                "type":               a["type"],
+                "description":        a.get("description", ""),
+                "valid_values":       a.get("valid_values", []),
+                "default_value":      a.get("default_value", ""),
+                "alternative_labels": a.get("alternative_labels", []),
+            }
+            for a in template["attributes"]
+        ],
+    }
+
+
 @app.post("/api/feedback")
 async def record_feedback(req: FeedbackRequest) -> Dict[str, str]:
     """Record 👍/👎 feedback."""

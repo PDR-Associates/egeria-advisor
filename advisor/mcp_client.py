@@ -355,17 +355,35 @@ class MCPClient:
         request_json = json.dumps(request) + "\n"
         self.process.stdin.write(request_json)
         self.process.stdin.flush()
-        
-        # Read response
-        response_line = self.process.stdout.readline()
-        if not response_line:
-            raise MCPConnectionError("No response from MCP server")
-        
-        response = json.loads(response_line)
-        
+
+        # Read response — the MCP server may emit non-JSON lines to stdout
+        # (startup messages, warnings, debug output) before the JSON-RPC response.
+        # Accumulate lines until we have parseable JSON, skipping non-JSON preamble.
+        accumulated = ""
+        max_bytes = 4 * 1024 * 1024  # 4 MB safety cap
+        while True:
+            line = self.process.stdout.readline()
+            if not line:
+                raise MCPConnectionError("No response from MCP server")
+            accumulated += line
+            if len(accumulated) > max_bytes:
+                raise MCPConnectionError("MCP server response exceeded size limit")
+            try:
+                response = json.loads(accumulated)
+                break
+            except json.JSONDecodeError:
+                # If the accumulated text doesn't start with '{' it's a preamble
+                # line — discard and start fresh with the next line.
+                if not accumulated.lstrip().startswith("{"):
+                    logger.debug(
+                        f"Skipping non-JSON stdout from MCP server: {accumulated[:120]!r}"
+                    )
+                    accumulated = ""
+                # Otherwise keep accumulating (multi-line JSON response).
+
         if "error" in response:
             return response
-        
+
         return response.get("result", {})
 
 

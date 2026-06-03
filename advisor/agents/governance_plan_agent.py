@@ -112,11 +112,13 @@ class GovernancePlanAgent:
         raw_commands: List[Dict] = []
         for spec in commands_spec:
             action = spec.get("action", "")
+            display_name = spec.get("display_name", "")
             description = spec.get("description", "")
             template_parsed = self._load_template(action)
             raw_commands.append(
                 {
                     "action": action,
+                    "display_name": display_name,
                     "description": description,
                     "spec": spec,
                     "template_parsed": template_parsed,
@@ -129,18 +131,82 @@ class GovernancePlanAgent:
         # ------------------------------------------------------------------ #
         # Step 4: Parameter extraction                                         #
         # ------------------------------------------------------------------ #
+
+        # Build cross-reference table: first Display Name per action family.
+        # Used to seed reference attributes (e.g. Glossary Name for terms).
+        _first_created: Dict[str, str] = {}
+        for cmd in ordered:
+            action = cmd["action"]
+            dn = cmd.get("display_name") or cmd.get("description", "")
+            family_key = action.split()[-1].lower()  # "Glossary", "Term" → last word
+            if dn and family_key not in _first_created:
+                _first_created[family_key] = dn
+            # Also key by full action for exact matching
+            if dn and action not in _first_created:
+                _first_created[action] = dn
+
+        _CROSS_REF_MAP: Dict[str, List[str]] = {
+            # attr name → list of _first_created keys to try (in priority order)
+            "Glossary Name": ["Create Glossary", "glossary"],
+            "Project Name":  ["Create Campaign", "Create Project", "campaign", "project"],
+            "Parent Project": ["Create Campaign", "campaign"],
+        }
+
         filled: List[Dict] = []
         for cmd in ordered:
             params: Dict[str, Any] = {}
-            if cmd["template_parsed"]:
+            template = cmd["template_parsed"]
+
+            if template:
                 try:
-                    combined = f"{query}\n{cmd['description']}"
-                    params = action_agent.extract_params(combined, cmd["template_parsed"])
+                    combined = f"{query}\n{cmd.get('display_name', '')}\n{cmd['description']}"
+                    params = action_agent.extract_params(combined, template)
                 except Exception as exc:
                     logger.warning(
                         f"GovernancePlanAgent: param extraction failed for "
                         f"{cmd['action']!r}: {exc}"
                     )
+
+                # Seed the primary required Simple attribute (Display Name / Term Name /
+                # etc.) from the decompose output if extract_params didn't fill it.
+                seed_name = cmd.get("display_name") or cmd.get("description", "")
+                if seed_name:
+                    for attr in template["attributes"]:
+                        if attr["required"] and attr["type"] in ("Simple", "simple", ""):
+                            canon = attr["name"]
+                            if not params.get(canon) and not params.get(canon.lower()):
+                                params[canon] = seed_name
+                            break
+
+                # Seed optional Description from rationale if not already extracted.
+                rationale = cmd.get("spec", {}).get("rationale", "")
+                if rationale:
+                    desc_attr = next(
+                        (a for a in template["attributes"]
+                         if a["name"].lower() == "description" and not a["required"]),
+                        None,
+                    )
+                    if desc_attr:
+                        canon = desc_attr["name"]
+                        if not params.get(canon) and not params.get(canon.lower()):
+                            params[canon] = rationale
+
+                # Seed cross-reference attributes (e.g. Glossary Name on a term
+                # command) from the first matching object created earlier in the plan.
+                # These attrs are often optional but should be pre-filled when the
+                # parent object is being created in the same plan.
+                for attr in template["attributes"]:
+                    candidates = _CROSS_REF_MAP.get(attr["name"], [])
+                    if not candidates:
+                        continue
+                    canon = attr["name"]
+                    if params.get(canon) or params.get(canon.lower()):
+                        continue  # already filled
+                    for key in candidates:
+                        if key in _first_created:
+                            params[canon] = _first_created[key]
+                            break
+
             filled.append({**cmd, "params": params})
 
         # ------------------------------------------------------------------ #
@@ -442,17 +508,30 @@ Respond with ONLY a valid JSON object in this exact format (no extra text):
   "title": "Short descriptive title (5-8 words)",
   "purpose": "One sentence summarising the goal",
   "commands": [
-    {{"action": "Create Glossary", "description": "Specific name or details", "rationale": "Why this step is needed"}},
-    {{"action": "Create Glossary Term", "description": "Term name and details", "rationale": "What this adds"}},
+    {{
+      "action": "Create Glossary",
+      "display_name": "Exact name to use — e.g. Finance Domain Glossary",
+      "description": "One sentence describing the purpose of this specific object",
+      "rationale": "Why this step is needed in the plan"
+    }},
+    {{
+      "action": "Create Glossary Term",
+      "display_name": "Revenue Recognition",
+      "description": "The process by which revenue is recorded",
+      "rationale": "Core finance term needed in the glossary"
+    }},
     ...
   ]
 }}
 
-Include all objects that must be created or linked. Use real Dr.Egeria command names above.
+Rules:
+- "display_name" must be the exact name to put in the Dr.Egeria command (e.g. the glossary name, term name, project name, person name). Use names from the user's description where given; invent a sensible placeholder otherwise.
+- "description" is a one-sentence explanation of the object's purpose (used as the Description attribute).
+- Include all objects that must be created or linked. Use real Dr.Egeria command names above.
 JSON:"""
 
         try:
-            raw = llm.generate(prompt, temperature=0.2, max_tokens=1000)
+            raw = llm.generate(prompt, temperature=0.2, max_tokens=3000)
             m = re.search(r"\{.*\}", raw, re.DOTALL)
             if m:
                 return json.loads(m.group())
@@ -662,7 +741,9 @@ GOAL:"""
                     lines.append("")
         else:
             # No template available — minimal placeholder block
-            display_name = cmd.get("description", "<!-- TODO: fill in -->") or "<!-- TODO: fill in -->"
+            display_name = (
+                cmd.get("display_name") or cmd.get("description") or "<!-- TODO: fill in -->"
+            )
             lines.append(f"### Display Name")
             lines.append(display_name)
             lines.append("")

@@ -24,6 +24,20 @@ query_patterns:
       # Must beat command patterns — "set up a glossary with terms and stewards" is
       # a plan, not a single command.  Single-object requests ("create a glossary")
       # stay on the command path.
+      #
+      # Imperative "Plan X" forms — most natural way to ask for a plan
+      - "plan a "
+      - "plan an "
+      - "plan the "
+      - "plan out "
+      # Multi-step structural signals — sub-projects, hierarchies, multiple objects
+      - "sub-project"
+      - "subproject"
+      - "with sub-projects"
+      - "with sub projects"
+      - "there should be sub"
+      - "there should be projects"
+      # Existing set-up / establish patterns
       - "set up a"
       - "set up the"
       - "establish a"

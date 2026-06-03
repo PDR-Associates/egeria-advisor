@@ -53,6 +53,6 @@ class BaseAdvisorAgent(ABC):
             def _in_thread():
                 return asyncio.run(_inner())
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                return ex.submit(_in_thread).result(timeout=120)
+                return ex.submit(_in_thread).result(timeout=60)
         except RuntimeError:
             return asyncio.run(_inner())

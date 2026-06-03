@@ -37,6 +37,9 @@ class FeedbackEntry:
     # Phase 1 enhancements
     star_rating: Optional[int] = None  # 1-5 star rating
     category: Optional[str] = None  # accuracy, completeness, clarity, relevance
+    # Phase 2 enhancements
+    perspective: Optional[str] = None   # active role: developer, data_steward, etc.
+    routing_agent: Optional[str] = None # agent that handled: doc_agent, examples_agent, rag_fallback, etc.
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -89,7 +92,9 @@ class FeedbackCollector:
         session_id: Optional[str] = None,
         user_comment: Optional[str] = None,
         star_rating: Optional[int] = None,
-        category: Optional[str] = None
+        category: Optional[str] = None,
+        perspective: Optional[str] = None,
+        routing_agent: Optional[str] = None,
     ) -> bool:
         """
         Record user feedback.
@@ -134,7 +139,9 @@ class FeedbackCollector:
                 session_id=session_id,
                 user_comment=user_comment,
                 star_rating=star_rating,
-                category=category
+                category=category,
+                perspective=perspective,
+                routing_agent=routing_agent,
             )
             
             # Perform sentiment analysis on comments if available
@@ -196,7 +203,10 @@ class FeedbackCollector:
             "star_ratings": [],
             "avg_star_rating": 0.0,
             "by_category": {},
-            "category_star_ratings": {}
+            "category_star_ratings": {},
+            # Phase 2 enhancements
+            "by_perspective": {},
+            "by_routing_agent": {},
         }
         
         try:
@@ -254,6 +264,22 @@ class FeedbackCollector:
                             "searched": entry["collections_searched"],
                             "suggested": entry["suggested_collection"]
                         })
+
+                    # Phase 2: by_perspective
+                    persp = entry.get("perspective") or "none"
+                    if persp not in stats["by_perspective"]:
+                        stats["by_perspective"][persp] = {"total": 0, "positive": 0, "negative": 0}
+                    stats["by_perspective"][persp]["total"] += 1
+                    stats["by_perspective"][persp][rating] = \
+                        stats["by_perspective"][persp].get(rating, 0) + 1
+
+                    # Phase 2: by_routing_agent
+                    agent = entry.get("routing_agent") or "unknown"
+                    if agent not in stats["by_routing_agent"]:
+                        stats["by_routing_agent"][agent] = {"total": 0, "positive": 0, "negative": 0}
+                    stats["by_routing_agent"][agent]["total"] += 1
+                    stats["by_routing_agent"][agent][rating] = \
+                        stats["by_routing_agent"][agent].get(rating, 0) + 1
             
             # Calculate satisfaction rate
             if stats["total"] > 0:
@@ -324,7 +350,79 @@ class FeedbackCollector:
                     })
         
         return improvements
-    
+
+    def get_gap_analysis(self) -> Dict[str, Any]:
+        """
+        Identify queries that are underserved — negative feedback combined with
+        RAG fallback routing, or perspectives with consistently low satisfaction.
+
+        Returns a dict with:
+          - rag_fallback_negatives: queries that fell to RAG and got thumbs-down
+          - low_satisfaction_perspectives: perspectives below 50% satisfaction (≥5 samples)
+          - low_satisfaction_agents: routing agents below 50% satisfaction (≥5 samples)
+          - unhandled_intents: query types with high negative rate (≥5 samples)
+        """
+        gap: Dict[str, Any] = {
+            "rag_fallback_negatives": [],
+            "low_satisfaction_perspectives": [],
+            "low_satisfaction_agents": [],
+            "unhandled_intents": [],
+        }
+        if not self.feedback_file.exists():
+            return gap
+
+        rag_agents = {"rag_fallback", "general", "unknown"}
+        try:
+            with open(self.feedback_file, "r") as f:
+                for line in f:
+                    entry = json.loads(line)
+                    if entry.get("rating") == "negative":
+                        agent = entry.get("routing_agent") or "unknown"
+                        if agent in rag_agents:
+                            gap["rag_fallback_negatives"].append({
+                                "query": entry["query"][:120],
+                                "query_type": entry.get("query_type"),
+                                "perspective": entry.get("perspective"),
+                                "timestamp": entry.get("timestamp"),
+                            })
+        except Exception as exc:
+            logger.error(f"get_gap_analysis: {exc}")
+            return gap
+
+        stats = self.get_feedback_stats()
+
+        for persp, data in stats.get("by_perspective", {}).items():
+            if data["total"] >= 5:
+                sat = data.get("positive", 0) / data["total"]
+                if sat < 0.5:
+                    gap["low_satisfaction_perspectives"].append({
+                        "perspective": persp,
+                        "satisfaction_rate": round(sat, 2),
+                        "total": data["total"],
+                    })
+
+        for agent, data in stats.get("by_routing_agent", {}).items():
+            if data["total"] >= 5:
+                sat = data.get("positive", 0) / data["total"]
+                if sat < 0.5:
+                    gap["low_satisfaction_agents"].append({
+                        "routing_agent": agent,
+                        "satisfaction_rate": round(sat, 2),
+                        "total": data["total"],
+                    })
+
+        for qt, data in stats.get("by_query_type", {}).items():
+            if data["total"] >= 5:
+                neg_rate = data.get("negative", 0) / data["total"]
+                if neg_rate > 0.5:
+                    gap["unhandled_intents"].append({
+                        "query_type": qt,
+                        "negative_rate": round(neg_rate, 2),
+                        "total": data["total"],
+                    })
+
+        return gap
+
     def log_feedback_to_mlflow(self, entry: FeedbackEntry, sentiment_result=None):
         """
         Log feedback entry to MLflow for tracking and analysis.
@@ -388,7 +486,13 @@ class FeedbackCollector:
         
         if entry.category:
             params["feedback_category"] = entry.category
-        
+
+        if entry.perspective:
+            params["feedback_perspective"] = entry.perspective
+
+        if entry.routing_agent:
+            params["feedback_routing_agent"] = entry.routing_agent
+
         if entry.session_id:
             params["feedback_session_id"] = entry.session_id
         

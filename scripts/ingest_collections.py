@@ -216,6 +216,15 @@ def ingest_collection(
         )
     
     logger.info(f"✓ Ingested {total_files} files, {total_chunks} chunks into {collection.name}")
+
+    # Record completion time so the admin page can show "last indexed"
+    if total_chunks > 0 and not dry_run:
+        try:
+            from advisor.web.admin import record_ingest_time
+            record_ingest_time(collection.name, files=total_files, chunks=total_chunks, source="ingest_script")
+        except Exception:
+            pass
+
     return total_files, total_chunks
 
 

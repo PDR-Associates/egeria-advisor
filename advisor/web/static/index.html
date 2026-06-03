@@ -40,6 +40,35 @@
     /* Sidebar pane scrolling */
     .sidebar-pane { overflow-y:auto; min-height:0; }
 
+    /* Sidebar resize handles */
+    .resize-handle {
+      height: 5px;
+      cursor: ns-resize;
+      background: transparent;
+      border-top: 1px solid #334155;
+      flex-shrink: 0;
+      transition: background .15s, border-color .15s;
+      position: relative;
+    }
+    .resize-handle::after {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      width: 24px;
+      height: 2px;
+      border-radius: 1px;
+      background: #475569;
+      opacity: 0;
+      transition: opacity .15s;
+    }
+    .resize-handle:hover, .resize-handle.dragging {
+      background: #7c3aed22;
+      border-top-color: #7c3aed88;
+    }
+    .resize-handle:hover::after, .resize-handle.dragging::after { opacity: 1; }
+
     /* Scrollbars */
     ::-webkit-scrollbar { width:5px; }
     ::-webkit-scrollbar-track { background:#0f172a; }
@@ -78,7 +107,7 @@
   <aside class="w-72 shrink-0 flex flex-col bg-slate-800 border-r border-slate-700 overflow-hidden">
 
     <!-- Top pane: Available Reports -->
-    <div class="flex flex-col flex-1 sidebar-pane border-b border-slate-700 min-h-0">
+    <div id="sidebar-reports" class="flex flex-col flex-1 sidebar-pane min-h-0">
       <div class="px-3 pt-3 pb-1 shrink-0 flex items-center justify-between">
         <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Available Reports</span>
         <span id="report-count" class="text-xs text-slate-600"></span>
@@ -86,8 +115,10 @@
       <div id="report-catalog" class="px-2 pb-2 flex flex-col gap-0.5 text-sm"></div>
     </div>
 
+    <div id="resize-reports-plans" class="resize-handle"></div>
+
     <!-- Middle pane: Plans (Inbox / Outbox) -->
-    <div class="flex flex-col sidebar-pane border-b border-slate-700" style="max-height:38%">
+    <div id="sidebar-plans" class="flex flex-col sidebar-pane shrink-0">
       <div class="px-3 pt-2 pb-1 shrink-0 flex items-center justify-between">
         <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Plans</span>
         <button onclick="loadPlans()" class="text-xs text-slate-600 hover:text-slate-400 transition-colors" title="Refresh plan list">↺</button>
@@ -95,8 +126,10 @@
       <div id="plan-list" class="px-2 pb-2 flex flex-col gap-0.5 text-xs overflow-y-auto"></div>
     </div>
 
+    <div id="resize-plans-recent" class="resize-handle"></div>
+
     <!-- Bottom pane: Recent Queries -->
-    <div class="flex flex-col sidebar-pane" style="max-height:22%">
+    <div id="sidebar-recent" class="flex flex-col sidebar-pane shrink-0">
       <div class="px-3 pt-2 pb-1 shrink-0 flex items-center justify-between">
         <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Recent Queries</span>
         <button onclick="clearHistory()" class="text-xs text-slate-600 hover:text-slate-400 transition-colors">clear</button>
@@ -123,14 +156,10 @@
 
     <!-- Input area -->
     <div class="px-4 py-3 border-t border-slate-700 bg-slate-800 shrink-0">
-      <!-- Perspective selector -->
-      <div class="flex gap-1 mb-1 flex-wrap">
+      <!-- Perspective selector (populated dynamically from /api/perspectives) -->
+      <div class="flex gap-1 mb-1 flex-wrap" id="perspective-bar">
         <span class="text-xs text-slate-500 self-center mr-1">As:</span>
         <button class="persp-btn active" data-perspective="" onclick="setPerspective(this)" title="No role filter — general answer">Anyone</button>
-        <button class="persp-btn" data-perspective="developer" onclick="setPerspective(this)" title="Code examples, APIs, integration patterns">Developer</button>
-        <button class="persp-btn" data-perspective="data_engineer" onclick="setPerspective(this)" title="Pipelines, connectors, ingestion patterns">Data&nbsp;Engineer</button>
-        <button class="persp-btn" data-perspective="data_steward" onclick="setPerspective(this)" title="Glossary, ownership, data quality">Data&nbsp;Steward</button>
-        <button class="persp-btn" data-perspective="governance_officer" onclick="setPerspective(this)" title="Policies, compliance, governance zones">Governance</button>
       </div>
       <!-- Intent override -->
       <div class="flex gap-1 mb-1.5 flex-wrap">
@@ -140,6 +169,7 @@
         <button class="intent-btn" data-intent="code_search" onclick="setIntent(this)" title="Show pyegeria API usage / How do I…">Show&nbsp;me</button>
         <button class="intent-btn" data-intent="report" onclick="setIntent(this)" title="Run a live Egeria report">Report</button>
         <button class="intent-btn" data-intent="command" onclick="setIntent(this)" title="Execute a Dr.Egeria command">Act</button>
+        <button class="intent-btn" data-intent="plan" onclick="setIntent(this)" title="Generate a multi-step governance plan document">Plan</button>
         <button class="intent-btn" data-intent="debugging" onclick="setIntent(this)" title="Diagnose a problem">Troubleshoot</button>
       </div>
 
@@ -222,7 +252,9 @@ document.addEventListener('DOMContentLoaded', () => {
   loadStatus();
   loadReports();
   loadPlans();
+  loadPerspectives();
   renderRecent();
+  initSidebarResize();
   appendMessage('assistant',
     'Welcome to **Egeria Advisor**.\n\n' +
     'Ask me about Egeria concepts, how to use pyegeria or Dr.Egeria, run a report to see live metadata, or ask me to create/update something.'
@@ -347,6 +379,34 @@ function pushRecent(q) {
   renderRecent();
 }
 
+// ── Perspective bar ────────────────────────────────────────────────────────────
+async function loadPerspectives() {
+  let data;
+  try {
+    const r = await fetch('/api/perspectives');
+    data = await r.json();
+  } catch { return; }
+
+  const perspectives = data.perspectives || [];
+  if (!perspectives.length) return;
+
+  const bar = document.getElementById('perspective-bar');
+  // Remove all buttons except the first "Anyone" button
+  [...bar.querySelectorAll('button:not(:first-of-type)')].forEach(b => b.remove());
+
+  perspectives.forEach(p => {
+    const btn = document.createElement('button');
+    btn.className = 'persp-btn';
+    btn.dataset.perspective = p.advisor_key;
+    btn.title = p.tooltip || p.description || p.display_name;
+    btn.onclick = () => setPerspective(btn);
+    // Shorten long display names to keep the bar compact
+    const label = p.display_name.replace('Data ', 'Data ').replace('Governance Officer', 'Governance');
+    btn.textContent = label;
+    bar.appendChild(btn);
+  });
+}
+
 // ── Plans sidebar ──────────────────────────────────────────────────────────────
 async function loadPlans() {
   let data;
@@ -376,7 +436,7 @@ async function loadPlans() {
         (folder === 'inbox' ? 'text-violet-300 hover:bg-violet-900/40' : 'text-emerald-400 hover:bg-emerald-900/30');
       btn.title = plan.doc_id;
       btn.textContent = plan.title && plan.title !== '(untitled)' ? plan.title : plan.doc_id;
-      btn.onclick = () => restorePlan(plan.doc_id, folder, plan.title);
+      btn.onclick = () => openPlanEditor(plan.doc_id);
       row.appendChild(btn);
       if (folder === 'inbox') {
         const execBtn = document.createElement('button');
@@ -398,33 +458,8 @@ async function loadPlans() {
 }
 
 async function restorePlan(doc_id, folder, title) {
-  let data;
-  try {
-    const r = await fetch(`/api/plans/${encodeURIComponent(doc_id)}`);
-    if (!r.ok) { appendMessage('assistant', `Could not load plan \`${doc_id}\`.`); return; }
-    data = await r.json();
-  } catch (e) { appendMessage('assistant', `Error loading plan: ${e.message}`); return; }
-  const isInbox = (data.folder || folder) === 'inbox';
-  const label = title && title !== '(untitled)' ? title : doc_id;
-  appendMessage('you', `Restore plan: ${label}`);
-  const wrap = appendMessage('assistant', data.content, { isPlan: isInbox, isExecuted: !isInbox });
-  if (isInbox) {
-    const planBanner = document.createElement('div');
-    planBanner.className = 'mt-2 px-3 py-2 rounded bg-violet-950/60 border border-violet-700/50 text-xs flex items-center gap-3';
-    const planInfo = document.createElement('span');
-    planInfo.className = 'text-slate-300 flex-1';
-    planInfo.innerHTML = `<span class="text-violet-400 font-semibold">Inbox plan</span> — <code class="text-violet-300">${doc_id}.md</code>. Review and adjust, then click Execute when ready.`;
-    planBanner.appendChild(planInfo);
-    const execBtn = document.createElement('button');
-    execBtn.className = 'px-3 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold shrink-0 transition-colors';
-    execBtn.textContent = 'Execute';
-    execBtn.onclick = () => {
-      appendMessage('you', `execute the plan ${doc_id}`);
-      submitQuery(`execute the plan ${doc_id}`, { intent_override: 'command' });
-    };
-    planBanner.appendChild(execBtn);
-    wrap.appendChild(planBanner);
-  }
+  // Open the plan editor directly — no inline chat rendering needed
+  openPlanEditor(doc_id);
 }
 
 // ── Perspective picker ─────────────────────────────────────────────────────────
@@ -531,17 +566,14 @@ async function submitQuery(query, extra = {}) {
     planInfo.innerHTML =
       `<span class="text-violet-400 font-semibold">Plan saved</span> — ` +
       `<code class="text-violet-300">${result.doc_id}.md</code> is in your inbox. ` +
-      `Review and adjust, then click Execute when ready.`;
+      `Open the editor to review, fill in details, validate, and execute.`;
     planBanner.appendChild(planInfo);
 
-    const execBtn = document.createElement('button');
-    execBtn.className = 'px-3 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold shrink-0 transition-colors';
-    execBtn.textContent = 'Execute';
-    execBtn.onclick = () => {
-      appendMessage('you', `execute the plan ${result.doc_id}`);
-      submitQuery(`execute the plan ${result.doc_id}`, { intent_override: 'command' });
-    };
-    planBanner.appendChild(execBtn);
+    const editBtn = document.createElement('button');
+    editBtn.className = 'px-3 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold shrink-0 transition-colors';
+    editBtn.textContent = 'Open Editor';
+    editBtn.onclick = () => openPlanEditor(result.doc_id);
+    planBanner.appendChild(editBtn);
 
     wrap.appendChild(planBanner);
   }
@@ -583,6 +615,8 @@ async function submitQuery(query, extra = {}) {
   btnUp.dataset.q = query;
   btnUp.dataset.qt = qtype;
   btnUp.dataset.vote = '1';
+  btnUp.dataset.perspective = selectedPerspective || '';
+  btnUp.dataset.routingAgent = qtype || '';
   btnUp.addEventListener('click', feedbackClick);
   const btnDown = document.createElement('button');
   btnDown.className = 'text-xs text-slate-500 hover:text-red-400 transition-colors';
@@ -590,6 +624,8 @@ async function submitQuery(query, extra = {}) {
   btnDown.dataset.q = query;
   btnDown.dataset.qt = qtype;
   btnDown.dataset.vote = '-1';
+  btnDown.dataset.perspective = selectedPerspective || '';
+  btnDown.dataset.routingAgent = qtype || '';
   btnDown.addEventListener('click', feedbackClick);
   fb.appendChild(btnUp);
   fb.appendChild(btnDown);
@@ -696,10 +732,12 @@ async function feedbackClick(e) {
   const vote = parseInt(btn.dataset.vote, 10);
   const query = btn.dataset.q;
   const queryType = btn.dataset.qt;
+  const perspective = btn.dataset.perspective || null;
+  const routingAgent = btn.dataset.routingAgent || null;
   await fetch('/api/feedback', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, query_type: queryType, vote }),
+    body: JSON.stringify({ query, query_type: queryType, vote, perspective, routing_agent: routingAgent }),
   }).catch(() => {});
   const fb = btn.parentElement;
   fb.innerHTML = vote > 0
@@ -718,6 +756,146 @@ function setThinking(on) {
   document.getElementById('send-btn').disabled = on;
   document.getElementById('send-btn').classList.toggle('opacity-50', on);
 }
+
+// ── Sidebar resize ─────────────────────────────────────────────────────────────
+function initSidebarResize() {
+  const panePlans  = document.getElementById('sidebar-plans');
+  const paneRecent = document.getElementById('sidebar-recent');
+  const sidebar    = panePlans.closest('aside');
+
+  const MIN_H = 48; // minimum pane height in px
+
+  function sidebarH() { return sidebar.clientHeight; }
+
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+  // Load or initialise heights
+  let planH   = parseInt(localStorage.getItem('ea_sidebar_plan_h'))   || 0;
+  let recentH = parseInt(localStorage.getItem('ea_sidebar_recent_h')) || 0;
+
+  function applyHeights() {
+    const total = sidebarH();
+    if (!planH)   planH   = Math.round(total * 0.30);
+    if (!recentH) recentH = Math.round(total * 0.18);
+    panePlans.style.height  = planH   + 'px';
+    paneRecent.style.height = recentH + 'px';
+  }
+
+  function saveHeights() {
+    localStorage.setItem('ea_sidebar_plan_h',   planH);
+    localStorage.setItem('ea_sidebar_recent_h', recentH);
+  }
+
+  applyHeights();
+
+  function startDrag(e, handle) {
+    e.preventDefault();
+    handle.classList.add('dragging');
+    const startY       = e.clientY;
+    const startPlanH   = planH;
+    const startRecentH = recentH;
+
+    function onMove(ev) {
+      const dy = ev.clientY - startY;
+      if (handle.id === 'resize-reports-plans') {
+        // Handle is above Plans pane: dragging UP means Plans grows (dy is negative → negate).
+        planH = clamp(startPlanH - dy, MIN_H, sidebarH() - recentH - MIN_H - 10);
+      } else {
+        // Moving this handle redistributes between Plans and Recent.
+        const poolH = startPlanH + startRecentH;
+        planH   = clamp(startPlanH + dy,       MIN_H, poolH - MIN_H);
+        recentH = poolH - planH;
+      }
+      applyHeights();
+    }
+
+    function onUp() {
+      handle.classList.remove('dragging');
+      saveHeights();
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
+    }
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
+  }
+
+  document.getElementById('resize-reports-plans').addEventListener('mousedown', e => startDrag(e, document.getElementById('resize-reports-plans')));
+  document.getElementById('resize-plans-recent').addEventListener('mousedown',  e => startDrag(e, document.getElementById('resize-plans-recent')));
+}
 </script>
+
+<!-- ── Plan Editor Overlay ─────────────────────────────────────────────────── -->
+<div id="plan-editor-overlay" class="hidden fixed inset-0 z-50 bg-slate-950 flex flex-col">
+
+  <!-- Toolbar -->
+  <div class="flex items-center gap-2 px-4 py-2.5 bg-slate-800 border-b border-slate-700 shrink-0">
+    <span class="text-violet-400 font-bold text-sm shrink-0">Plan Editor</span>
+    <span class="text-slate-500 text-sm">—</span>
+    <span id="ped-title" class="text-slate-100 text-sm font-semibold flex-1 truncate"></span>
+    <button id="ped-mode-btn"
+      class="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-400 text-xs font-semibold transition-colors"
+      title="Switch between Basic (fewer fields) and Advanced (all template fields)">
+      Basic
+    </button>
+    <div class="w-px h-4 bg-slate-700 mx-1"></div>
+    <button id="ped-save-btn"
+      class="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 text-xs font-semibold transition-colors disabled:opacity-40">
+      Save
+    </button>
+    <button id="ped-validate-btn"
+      class="px-3 py-1 rounded bg-blue-800 hover:bg-blue-700 text-white text-xs font-semibold transition-colors disabled:opacity-40">
+      ✅ Validate
+    </button>
+    <button id="ped-execute-btn"
+      class="px-3 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition-colors disabled:opacity-40">
+      ▶ Execute
+    </button>
+    <button onclick="closePlanEditor()"
+      class="ml-2 px-2 py-1 rounded hover:bg-slate-700 text-slate-400 hover:text-slate-100 text-sm transition-colors">
+      ✕
+    </button>
+  </div>
+
+  <!-- Status bar -->
+  <div id="ped-status-bar" class="px-4 py-1 text-xs text-slate-500 bg-slate-900 border-b border-slate-800 shrink-0"></div>
+
+  <!-- Main scrollable content -->
+  <div class="flex-1 overflow-y-auto px-6 py-5 flex flex-col gap-5">
+
+    <!-- Narrative section -->
+    <div>
+      <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Plan Narrative</div>
+      <textarea id="ped-narrative"
+        class="w-full bg-slate-800 text-slate-200 text-sm rounded-lg p-3 border border-slate-700 resize-none font-mono leading-relaxed focus:outline-none focus:border-violet-500"
+        rows="8"
+        placeholder="Goal, requirements, and approach..."></textarea>
+      <div class="text-xs text-slate-600 mt-1">Free-form markdown — edit the goal, requirements, and approach sections here.</div>
+    </div>
+
+    <!-- Command cards -->
+    <div>
+      <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Command Sequence</div>
+      <div id="ped-commands" class="flex flex-col gap-3"></div>
+    </div>
+
+    <!-- Outcome (read-only, executed plans) -->
+    <div id="ped-outcome" class="hidden">
+      <div class="text-xs font-semibold text-emerald-400 uppercase tracking-wider mb-2">Outcome</div>
+      <div class="ped-outcome-body prose prose-invert text-sm text-slate-300 max-w-none bg-slate-800 rounded-lg p-4 border border-emerald-900/40"></div>
+    </div>
+
+  </div>
+
+  <!-- Validation result panel (slides up from bottom) -->
+  <div id="ped-validate-result"
+    class="hidden shrink-0 px-5 py-4 bg-slate-800 border-t border-slate-700 max-h-64 overflow-y-auto text-sm">
+    <button onclick="document.getElementById('ped-validate-result').classList.add('hidden')"
+      class="float-right text-slate-500 hover:text-slate-200 text-xs mb-1">✕ close</button>
+  </div>
+
+</div>
+
+<script src="/static/plan_editor.js"></script>
 </body>
 </html>

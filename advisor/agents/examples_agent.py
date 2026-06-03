@@ -212,34 +212,15 @@ class ExamplesAgent(BaseAdvisorAgent):
             logger.info("ExamplesAgent: method-discovery mode")
             return self._handle_api_reference(query)
 
-        prompt = f"Generate a runnable pyegeria code example for:\n\n{query}"
-        try:
-            response = self._run_agent(prompt)
-            if "```python" in response:
-                logger.info("ExamplesAgent: BeeAI returned a code block")
-                return _make_result(query, response, "example")
-        except Exception as exc:
-            logger.warning(f"ExamplesAgent BeeAI run failed: {exc}")
-
-        # Fallback: direct retrieval + LLM synthesis
-        logger.info("ExamplesAgent: falling back to direct retrieval")
+        # Direct retrieval + single LLM call — BeeAI ReAct loop skipped because
+        # each Ollama round-trip costs 30-90s and the multi-turn loop adds no value
+        # over the structured retrieval below with a local 8B model.
+        logger.info("ExamplesAgent: direct retrieval path")
         return _make_result(query, self._fallback(query), "example")
 
     def _handle_api_reference(self, query: str) -> dict:
         """Return a structured method-reference listing rather than a code example."""
-        self._api_ref_mode = True
-        prompt = f"List the pyegeria classes and methods available for:\n\n{query}"
-        try:
-            response = self._run_agent(prompt)
-            if "##" in response or "| Method |" in response or "```" in response:
-                logger.info("ExamplesAgent: BeeAI returned API reference content")
-                return _make_result(query, response, "code_search")
-        except Exception as exc:
-            logger.warning(f"ExamplesAgent API-ref BeeAI run failed: {exc}")
-        finally:
-            self._api_ref_mode = False
-
-        logger.info("ExamplesAgent: falling back to direct API reference retrieval")
+        logger.info("ExamplesAgent: direct API reference retrieval")
         return _make_result(query, self._fallback_api_reference(query), "code_search")
 
     def _fallback_api_reference(self, query: str) -> str:

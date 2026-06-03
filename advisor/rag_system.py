@@ -236,11 +236,22 @@ class RAGSystem:
         query_analysis = self.query_processor.process(user_query)
         logger.info(f"Query type: {query_analysis['query_type']}")
 
-        # Explicit user intent overrides automatic classification.
+        # Explicit user intent overrides automatic classification —
+        # EXCEPT when the pattern classifier already identified a multi-step
+        # plan request.  A plan description like "set up X with Y and Z" must
+        # route to the plan generator even if the user had "Show me" selected
+        # from a previous query.
         if query_type_override:
-            logger.info(f"Intent override from UI: '{query_type_override}'")
-            query_analysis = dict(query_analysis)
-            query_analysis['query_type'] = query_type_override
+            if query_analysis['query_type'] == 'plan' and \
+                    query_type_override not in ('plan', 'command'):
+                logger.info(
+                    f"Pattern classifier identified 'plan'; "
+                    f"ignoring intent override '{query_type_override}'"
+                )
+            else:
+                logger.info(f"Intent override from UI: '{query_type_override}'")
+                query_analysis = dict(query_analysis)
+                query_analysis['query_type'] = query_type_override
         # When pattern matching returns 'general', use the LLM classifier to
         # narrow the intent before committing to RAG retrieval.
         elif query_analysis['query_type'] == 'general':
@@ -268,10 +279,20 @@ class RAGSystem:
                 "what api", "api for", "methods for", "what functions",
                 "what can i do with", "what class", "which class",
             ))
+            # Dr.Egeria anti-signal: never divert to ExamplesAgent when the user is
+            # explicitly asking for a Dr.Egeria template/command.
+            dre_signals = any(sig in query_lower for sig in (
+                "dr egeria", "dr. egeria", "dr_egeria", "dre",
+            ))
             tech_roles = {"developer", "data_engineer"}
             steward_roles = {"data_steward", "governance_officer"}
 
-            if perspective in tech_roles and (code_signals or example_signals):
+            # Respect the pattern classifier if it already identified a command:
+            # "give me a dr. egeria example" is a command, not a Python example.
+            pattern_is_command = query_analysis.get("query_type") == "command"
+
+            if perspective in tech_roles and (code_signals or example_signals) \
+                    and not dre_signals and not pattern_is_command:
                 logger.info(
                     f"Role '{perspective}' + code/example signal → routing to ExamplesAgent"
                 )
@@ -281,7 +302,8 @@ class RAGSystem:
                 except Exception as exc:
                     logger.warning(f"ExamplesAgent failed ({exc}), continuing normal routing")
 
-            elif perspective in steward_roles and example_signals and not code_signals:
+            elif perspective in steward_roles and example_signals \
+                    and not code_signals and not dre_signals and not pattern_is_command:
                 # Ambiguous: could be Dr.Egeria command or a conceptual/code example.
                 logger.info(
                     f"Role '{perspective}' + ambiguous example signal → returning clarification"

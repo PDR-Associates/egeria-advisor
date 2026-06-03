@@ -94,6 +94,14 @@
     </div>
   </section>
 
+  <!-- ── Feedback Analysis ────────────────────────────────────────────── -->
+  <section id="feedback-section">
+    <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">Feedback Analysis</h2>
+    <div id="feedback-body" class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div class="bg-slate-800 rounded-lg border border-slate-700 p-4 text-center text-slate-500 text-xs lg:col-span-3">Loading…</div>
+    </div>
+  </section>
+
   <!-- ── Maintenance + Jobs (2-col) ─────────────────────────────────────── -->
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
 
@@ -203,6 +211,7 @@ async function refresh() {
   renderRepos(data.repos || []);
   await refreshJobs();
   loadPlanStats();
+  loadFeedbackAnalysis();
 }
 
 // ── System health ──────────────────────────────────────────────────────────
@@ -450,6 +459,152 @@ async function loadPlanStats() {
     </div>`;
 
   el.innerHTML = summary + breakdowns + recentCard;
+}
+
+// ── Feedback Analysis ─────────────────────────────────────────────────────
+async function loadFeedbackAnalysis() {
+  const el = document.getElementById('feedback-body');
+  if (!el) return;
+  let data;
+  try {
+    const r = await fetch('/api/feedback/analysis');
+    if (!r.ok) throw new Error(r.statusText);
+    data = await r.json();
+  } catch (e) {
+    el.innerHTML = `<div class="bg-slate-800 rounded-lg border border-slate-700 p-4 text-xs text-slate-500 lg:col-span-3">Unable to load feedback data.</div>`;
+    return;
+  }
+
+  const stats = data.stats || {};
+  const gaps  = data.gaps  || {};
+  const total = stats.total || 0;
+  const pos   = stats.positive || 0;
+  const neg   = stats.negative || 0;
+  const sat   = total ? Math.round(pos / total * 100) : 0;
+  const satColor = sat >= 60 ? 'text-emerald-400' : sat >= 40 ? 'text-amber-400' : 'text-red-400';
+
+  // ── Summary card ────────────────────────────────────────────────────────
+  const summaryCard = `
+    <div class="bg-slate-800 rounded-lg border border-slate-700 p-4">
+      <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Overall Satisfaction</div>
+      <div class="flex items-end gap-3 mb-4">
+        <span class="text-4xl font-bold ${satColor}">${sat}%</span>
+        <span class="text-xs text-slate-500 pb-1">${pos} 👍 / ${neg} 👎 / ${total} total</span>
+      </div>
+      <div class="grid grid-cols-3 gap-2 text-center">
+        <div class="bg-slate-900 rounded p-2">
+          <div class="text-xs text-slate-500">Positive</div>
+          <div class="text-base font-semibold text-emerald-400">${pos}</div>
+        </div>
+        <div class="bg-slate-900 rounded p-2">
+          <div class="text-xs text-slate-500">Negative</div>
+          <div class="text-base font-semibold text-red-400">${neg}</div>
+        </div>
+        <div class="bg-slate-900 rounded p-2">
+          <div class="text-xs text-slate-500">Neutral</div>
+          <div class="text-base font-semibold text-slate-400">${stats.neutral || 0}</div>
+        </div>
+      </div>
+    </div>`;
+
+  // ── By routing agent card ───────────────────────────────────────────────
+  const byAgent = stats.by_routing_agent || {};
+  const agentRows = Object.entries(byAgent)
+    .sort((a, b) => b[1].total - a[1].total)
+    .map(([agent, d]) => {
+      const agentSat = d.total ? Math.round((d.positive || 0) / d.total * 100) : 0;
+      const color = agentSat >= 60 ? 'text-emerald-400' : agentSat >= 40 ? 'text-amber-400' : 'text-red-400';
+      return `<tr class="border-t border-slate-700/50">
+        <td class="py-1.5 pr-3 text-xs text-slate-300 font-mono">${agent}</td>
+        <td class="py-1.5 pr-2 text-xs text-slate-500 text-right">${d.total}</td>
+        <td class="py-1.5 text-xs ${color} text-right font-semibold">${agentSat}%</td>
+      </tr>`;
+    }).join('');
+
+  const agentCard = `
+    <div class="bg-slate-800 rounded-lg border border-slate-700 p-4">
+      <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">By Routing Agent</div>
+      ${agentRows ? `<table class="w-full">
+        <thead><tr>
+          <th class="text-left text-xs text-slate-500 pb-1">Agent</th>
+          <th class="text-right text-xs text-slate-500 pb-1">Queries</th>
+          <th class="text-right text-xs text-slate-500 pb-1">Sat.</th>
+        </tr></thead>
+        <tbody>${agentRows}</tbody>
+      </table>` : '<div class="text-xs text-slate-500">No data yet</div>'}
+    </div>`;
+
+  // ── By query type card ──────────────────────────────────────────────────
+  const byQtype = stats.by_query_type || {};
+  const qtypeRows = Object.entries(byQtype)
+    .sort((a, b) => b[1].total - a[1].total)
+    .map(([qt, d]) => {
+      const qtSat = d.total ? Math.round((d.positive || 0) / d.total * 100) : 0;
+      const color = qtSat >= 60 ? 'text-emerald-400' : qtSat >= 40 ? 'text-amber-400' : 'text-red-400';
+      return `<tr class="border-t border-slate-700/50">
+        <td class="py-1.5 pr-3 text-xs text-slate-300">${qt}</td>
+        <td class="py-1.5 pr-2 text-xs text-slate-500 text-right">${d.total}</td>
+        <td class="py-1.5 text-xs ${color} text-right font-semibold">${qtSat}%</td>
+      </tr>`;
+    }).join('');
+
+  const qtypeCard = `
+    <div class="bg-slate-800 rounded-lg border border-slate-700 p-4">
+      <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">By Query Type</div>
+      ${qtypeRows ? `<table class="w-full">
+        <thead><tr>
+          <th class="text-left text-xs text-slate-500 pb-1">Type</th>
+          <th class="text-right text-xs text-slate-500 pb-1">Queries</th>
+          <th class="text-right text-xs text-slate-500 pb-1">Sat.</th>
+        </tr></thead>
+        <tbody>${qtypeRows}</tbody>
+      </table>` : '<div class="text-xs text-slate-500">No data yet</div>'}
+    </div>`;
+
+  // ── Gap analysis: recent negative feedback ──────────────────────────────
+  const negFeedback = (gaps.rag_fallback_negatives || []).concat(
+    // include negatives from all agents for full picture
+  );
+  // Rebuild negatives list from raw stats is not available; use rag_fallback_negatives
+  // plus any queries flagged in unhandled_intents / low_satisfaction_agents
+  const gapItems = [
+    ...(gaps.rag_fallback_negatives || []).map(g => ({ ...g, tag: 'rag fallback' })),
+  ];
+  const lowAgents = (gaps.low_satisfaction_agents || []).map(g =>
+    `<li class="text-xs text-red-300">${g.routing_agent} — ${Math.round(g.satisfaction_rate * 100)}% sat (${g.total} queries)</li>`
+  ).join('');
+  const lowPersp = (gaps.low_satisfaction_perspectives || []).map(g =>
+    `<li class="text-xs text-red-300">${g.perspective} — ${Math.round(g.satisfaction_rate * 100)}% sat (${g.total} queries)</li>`
+  ).join('');
+
+  const gapCard = `
+    <div class="bg-slate-800 rounded-lg border border-slate-700 p-4 lg:col-span-3">
+      <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Gap Analysis</div>
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+        <div>
+          <div class="text-xs text-slate-500 font-medium mb-1">Low-satisfaction agents (≥5 queries)</div>
+          ${lowAgents ? `<ul class="space-y-0.5">${lowAgents}</ul>` : '<div class="text-xs text-slate-600">None</div>'}
+        </div>
+
+        <div>
+          <div class="text-xs text-slate-500 font-medium mb-1">Low-satisfaction perspectives (≥5 queries)</div>
+          ${lowPersp ? `<ul class="space-y-0.5">${lowPersp}</ul>` : '<div class="text-xs text-slate-600">None (or insufficient data)</div>'}
+        </div>
+
+        <div>
+          <div class="text-xs text-slate-500 font-medium mb-1">RAG-fallback negative queries</div>
+          ${gapItems.length
+            ? `<div class="space-y-1 max-h-40 overflow-y-auto">` +
+              gapItems.map(g =>
+                `<div class="text-xs text-slate-400 truncate" title="${g.query}">${g.query}</div>`
+              ).join('') + `</div>`
+            : '<div class="text-xs text-slate-600">None</div>'}
+        </div>
+      </div>
+    </div>`;
+
+  el.innerHTML = summaryCard + agentCard + qtypeCard + gapCard;
 }
 
 // ── Job modal ──────────────────────────────────────────────────────────────

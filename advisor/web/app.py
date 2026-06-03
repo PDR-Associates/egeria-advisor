@@ -214,6 +214,7 @@ async def query_endpoint(req: QueryRequest) -> Dict[str, Any]:
             "query": req.query,
             "response": f"Sorry, an error occurred: {exc}",
             "query_type": "general",
+            "routing_agent": "error",
             "sources": [],
             "num_sources": 0,
             "retrieval_time": 0.0,

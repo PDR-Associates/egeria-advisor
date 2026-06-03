@@ -531,6 +531,7 @@ async function submitQuery(query, extra = {}) {
   }
 
   const qtype = result.query_type || 'general';
+  const routingAgentFromResult = result.routing_agent || qtype;
   const intent = result.intent || {};
   const isClarify = qtype === 'clarification';
   const candidates = result.candidates || [];
@@ -616,7 +617,7 @@ async function submitQuery(query, extra = {}) {
   btnUp.dataset.qt = qtype;
   btnUp.dataset.vote = '1';
   btnUp.dataset.perspective = selectedPerspective || '';
-  btnUp.dataset.routingAgent = qtype || '';
+  btnUp.dataset.routingAgent = routingAgentFromResult;
   btnUp.addEventListener('click', feedbackClick);
   const btnDown = document.createElement('button');
   btnDown.className = 'text-xs text-slate-500 hover:text-red-400 transition-colors';
@@ -625,7 +626,7 @@ async function submitQuery(query, extra = {}) {
   btnDown.dataset.qt = qtype;
   btnDown.dataset.vote = '-1';
   btnDown.dataset.perspective = selectedPerspective || '';
-  btnDown.dataset.routingAgent = qtype || '';
+  btnDown.dataset.routingAgent = routingAgentFromResult;
   btnDown.addEventListener('click', feedbackClick);
   fb.appendChild(btnUp);
   fb.appendChild(btnDown);

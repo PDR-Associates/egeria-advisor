@@ -59,6 +59,7 @@ class RAGSystem:
         query_type_override: Optional[str] = None,
         perspective: Optional[str] = None,
         page_size: Optional[int] = None,
+        draft_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Process a user query and generate a response.
@@ -80,6 +81,7 @@ class RAGSystem:
             query_type_override=query_type_override,
             perspective=perspective,
             page_size=page_size,
+            draft_id=draft_id,
         )
         
         # Always record metrics in local database (for dashboard)
@@ -231,8 +233,71 @@ class RAGSystem:
         query_type_override: Optional[str] = None,
         perspective: Optional[str] = None,
         page_size: Optional[int] = None,
+        draft_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Internal query processing."""
+
+        # ------------------------------------------------------------------ #
+        # Draft navigation: route to PlanElicitor when a draft is active       #
+        # ------------------------------------------------------------------ #
+        if draft_id:
+            from advisor.agents.governance_plan_agent import get_governance_plan_agent
+            agent = get_governance_plan_agent()
+            q = user_query.strip().lower()
+
+            # Navigation commands: back / save-exit / cancel / restart / discard
+            if re.match(r'^(go\s+)?back\b', q):
+                return agent.back(draft_id)
+            if re.match(r'^(save\s+(&|and)\s+exit|save\s+exit)\b', q):
+                return agent.save_and_exit(draft_id)
+            if re.match(r'^(cancel|start\s+over|abandon)\b', q):
+                return agent.cancel(draft_id)
+            if re.match(r'^(restart|redo\s+q&a|redo\s+questions)\b', q):
+                return agent.restart_qa(draft_id)
+            if re.match(r'^discard\b', q):
+                return agent.discard(draft_id)
+            # Template save command inside a draft: "save as template <name>"
+            _tmpl_m = re.match(r'^save\s+(?:as\s+)?template\s+(.+)', q)
+            if _tmpl_m:
+                return agent.save_as_template(draft_id, _tmpl_m.group(1).strip())
+
+            # Default: forward user response to active Q&A phase
+            return agent.continue_draft(draft_id, user_query)
+
+        # ------------------------------------------------------------------ #
+        # Top-level navigation patterns (no active draft — resume by ID)      #
+        # ------------------------------------------------------------------ #
+        _resume_m = re.search(
+            r'\bresume\s+(?:draft\s+)?(\w+)',
+            user_query,
+            re.IGNORECASE,
+        )
+        if _resume_m:
+            _did = _resume_m.group(1)
+            from advisor.agents.governance_plan_agent import get_governance_plan_agent
+            result = get_governance_plan_agent().resume(_did)
+            result.setdefault("routing_agent", "governance_plan_agent")
+            return result
+
+        # Template selection: "use template <name>" or "start from template <name>"
+        _use_tmpl_m = re.search(
+            r'\b(?:use|start\s+from|load)\s+template\s+(.+)',
+            user_query,
+            re.IGNORECASE,
+        )
+        if _use_tmpl_m:
+            _tname = _use_tmpl_m.group(1).strip()
+            logger.info(f"Template start requested: {_tname!r}")
+            try:
+                from advisor.agents.plan_elicitor import get_plan_elicitor
+                result = get_plan_elicitor().start(
+                    user_query, perspective=perspective, template_name=_tname
+                )
+                result.setdefault("routing_agent", "governance_plan_agent")
+                return result
+            except Exception as exc:
+                logger.warning(f"Template start failed ({exc}), continuing normal routing")
+
         # Process query to understand intent
         query_analysis = self.query_processor.process(user_query)
         logger.info(f"Query type: {query_analysis['query_type']}")

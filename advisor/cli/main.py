@@ -350,7 +350,7 @@ def start_interactive(options: dict):
 
 @click.command("web")
 @click.option("--host", default="127.0.0.1", show_default=True, help="Bind host")
-@click.option("--port", default=8080, show_default=True, help="Bind port")
+@click.option("--port", default=8880, show_default=True, help="Bind port")
 @click.option("--reload", is_flag=True, help="Auto-reload on code changes (dev mode)")
 def web_command(host: str, port: int, reload: bool):
     """Launch the browser-based web UI."""

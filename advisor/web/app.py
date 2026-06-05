@@ -77,6 +77,7 @@ class QueryRequest(BaseModel):
     search_string: Optional[str] = None    # filter string for report queries (default "*")
     perspective: Optional[str] = None      # user role: "developer" | "data_engineer" | "data_steward" | "governance_officer"
     page_size: Optional[int] = None        # max graph nodes per report query (None → advisor.yaml default)
+    draft_id: Optional[str] = None         # active planning session draft ID
 
 
 class FeedbackRequest(BaseModel):
@@ -101,8 +102,9 @@ _INTENT_META: Dict[str, Dict[str, str]] = {
     "debugging":    {"label": "Troubleshoot","color": "#eab308"},
     "quantitative": {"label": "Reference",   "color": "#14b8a6"},
     "clarification":{"label": "Clarify",     "color": "#f59e0b"},
-    "plan":         {"label": "Plan",        "color": "#8b5cf6"},
-    "plan_executed":{"label": "Executed",    "color": "#22c55e"},
+    "plan":              {"label": "Plan",        "color": "#8b5cf6"},
+    "plan_clarification":{"label": "Planning",    "color": "#a78bfa"},
+    "plan_executed":     {"label": "Executed",    "color": "#22c55e"},
     "general":      {"label": "Explain",     "color": "#3b82f6"},
 }
 
@@ -206,6 +208,7 @@ async def query_endpoint(req: QueryRequest) -> Dict[str, Any]:
                 query_type_override=req.intent_override or None,
                 perspective=req.perspective or None,
                 page_size=req.page_size or None,
+                draft_id=req.draft_id or None,
             ),
         )
     except Exception as exc:
@@ -261,10 +264,23 @@ async def system_status() -> Dict[str, Any]:
 
 @app.get("/api/plans")
 async def list_plans() -> Dict[str, Any]:
-    """Return inbox and outbox plan document lists."""
+    """Return inbox and outbox plan document lists, annotated with active draft IDs."""
     from advisor.governance_docs import get_doc_manager
+    from advisor.governance_draft import get_draft_manager
     dm = get_doc_manager()
-    return {"inbox": dm.list_inbox(), "outbox": dm.list_outbox()}
+    inbox = dm.list_inbox()
+    outbox = dm.list_outbox()
+
+    # Build doc_id → draft_id map for plans that have an active refine/generate draft
+    doc_to_draft: Dict[str, str] = {}
+    for d in get_draft_manager().list_drafts():
+        if d.get("doc_id") and d.get("phase") in ("generate", "refine", "template_offer"):
+            doc_to_draft[d["doc_id"]] = d["draft_id"]
+
+    for entry in inbox:
+        entry["draft_id"] = doc_to_draft.get(entry.get("doc_id"))
+
+    return {"inbox": inbox, "outbox": outbox}
 
 
 @app.get("/api/plans/{doc_id}")
@@ -317,6 +333,65 @@ async def validate_plan(doc_id: str) -> Dict[str, Any]:
         return {"status": "error", "result": f"MCP server not reachable: {exc}"}
     except Exception as exc:
         return {"status": "error", "result": f"Validation failed: {exc}"}
+
+
+@app.get("/api/drafts")
+async def list_drafts() -> Dict[str, Any]:
+    """Return active planning session drafts."""
+    from advisor.governance_draft import get_draft_manager
+    return {"drafts": get_draft_manager().list_drafts()}
+
+
+@app.get("/api/drafts/{draft_id}")
+async def get_draft(draft_id: str) -> Dict[str, Any]:
+    """Return a single draft spec by ID (for the Plan Canvas)."""
+    from fastapi import HTTPException
+    from advisor.governance_draft import get_draft_manager
+    spec = get_draft_manager().load(draft_id)
+    if spec is None:
+        raise HTTPException(status_code=404, detail=f"Draft {draft_id!r} not found")
+    return spec
+
+
+@app.patch("/api/drafts/{draft_id}/commands")
+async def patch_draft_commands(draft_id: str, body: Dict[str, Any]) -> Dict[str, str]:
+    """Update commands and answers in a draft (called by Plan Canvas on reorder/add/remove/edit)."""
+    from fastapi import HTTPException
+    from advisor.governance_draft import get_draft_manager
+    dm = get_draft_manager()
+    spec = dm.load(draft_id)
+    if spec is None:
+        raise HTTPException(status_code=404, detail=f"Draft {draft_id!r} not found")
+    if "commands" in body:
+        spec["commands_identified"] = body["commands"]
+    if "answers" in body:
+        spec["answers"] = body["answers"]
+    dm.save(spec)
+    return {"status": "ok"}
+
+
+@app.delete("/api/drafts/{draft_id}")
+async def delete_draft(draft_id: str) -> Dict[str, str]:
+    """Discard a planning session draft."""
+    from advisor.governance_draft import get_draft_manager
+    deleted = get_draft_manager().delete(draft_id)
+    return {"status": "ok" if deleted else "not_found"}
+
+
+@app.get("/api/plan-templates")
+async def list_plan_templates() -> Dict[str, Any]:
+    """Return available plan templates."""
+    from advisor.plan_templates import get_template_manager
+    return {"templates": get_template_manager().list_templates()}
+
+
+@app.delete("/api/plan-templates/{name}")
+async def delete_plan_template(name: str) -> Dict[str, str]:
+    """Delete a plan template by name."""
+    from urllib.parse import unquote
+    from advisor.plan_templates import get_template_manager
+    deleted = get_template_manager().delete(unquote(name))
+    return {"status": "ok" if deleted else "not_found"}
 
 
 @app.get("/api/templates/{command_name}/fields")

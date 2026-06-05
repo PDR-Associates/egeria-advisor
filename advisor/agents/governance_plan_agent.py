@@ -77,17 +77,98 @@ class GovernancePlanAgent:
     pointing to the saved inbox document.
     """
 
-    def handle(self, query: str, perspective: str | None = None) -> Dict[str, Any]:
+    def handle(self, query: str, perspective: str | None = None, mode: str = "basic") -> Dict[str, Any]:
+        """Start a new conversational planning session via PlanElicitor."""
+        logger.info(f"GovernancePlanAgent.handle: delegating to PlanElicitor, query={query[:80]!r}")
+        try:
+            from advisor.agents.plan_elicitor import get_plan_elicitor
+            result = get_plan_elicitor().start(query, perspective=perspective, mode=mode)
+            result.setdefault("routing_agent", "governance_plan_agent")
+            return result
+        except Exception as exc:
+            logger.error(f"GovernancePlanAgent.handle: PlanElicitor failed: {exc}")
+            return _error_result(query, f"Planning session could not be started: {exc}")
+
+    def continue_draft(self, draft_id: str, user_response: str) -> Dict[str, Any]:
+        """Route a user response to the active planning Q&A session."""
+        from advisor.agents.plan_elicitor import get_plan_elicitor
+        result = get_plan_elicitor().process(draft_id, user_response)
+        result.setdefault("routing_agent", "governance_plan_agent")
+        return result
+
+    def back(self, draft_id: str) -> Dict[str, Any]:
+        from advisor.agents.plan_elicitor import get_plan_elicitor
+        result = get_plan_elicitor().back(draft_id)
+        result.setdefault("routing_agent", "governance_plan_agent")
+        return result
+
+    def cancel(self, draft_id: str) -> Dict[str, Any]:
+        from advisor.agents.plan_elicitor import get_plan_elicitor
+        result = get_plan_elicitor().cancel(draft_id)
+        result.setdefault("routing_agent", "governance_plan_agent")
+        return result
+
+    def save_and_exit(self, draft_id: str) -> Dict[str, Any]:
+        from advisor.agents.plan_elicitor import get_plan_elicitor
+        result = get_plan_elicitor().save_and_exit(draft_id)
+        result.setdefault("routing_agent", "governance_plan_agent")
+        return result
+
+    def resume(self, draft_id: str) -> Dict[str, Any]:
+        from advisor.agents.plan_elicitor import get_plan_elicitor
+        result = get_plan_elicitor().resume(draft_id)
+        result.setdefault("routing_agent", "governance_plan_agent")
+        return result
+
+    def restart_qa(self, draft_id: str) -> Dict[str, Any]:
+        from advisor.agents.plan_elicitor import get_plan_elicitor
+        result = get_plan_elicitor().restart_qa(draft_id)
+        result.setdefault("routing_agent", "governance_plan_agent")
+        return result
+
+    def discard(self, draft_id: str) -> Dict[str, Any]:
+        from advisor.agents.plan_elicitor import get_plan_elicitor
+        result = get_plan_elicitor().discard(draft_id)
+        result.setdefault("routing_agent", "governance_plan_agent")
+        return result
+
+    def save_as_template(self, draft_id: str, template_name: str) -> Dict[str, Any]:
+        from advisor.governance_draft import get_draft_manager
+        from advisor.governance_docs import get_doc_manager
+        from advisor.plan_templates import get_template_manager
+        dm = get_draft_manager()
+        spec = dm.load(draft_id)
+        if spec is None:
+            return _error_result(draft_id, f"Draft `{draft_id}` not found.")
+        doc_id = spec.get("doc_id")
+        if not doc_id:
+            return _error_result(draft_id, "Plan has not been generated yet — complete the Q&A first.")
+        content = get_doc_manager().load(doc_id)
+        if not content:
+            return _error_result(draft_id, f"Plan document `{doc_id}` not found.")
+        stem = get_template_manager().save(template_name, content)
+        return {
+            "query": f"save as template {template_name}",
+            "response": f"Plan saved as template **{template_name}** (`{stem}.md`).",
+            "query_type": "plan",
+            "routing_agent": "governance_plan_agent",
+            "draft_id": None,
+            "sources": [], "num_sources": 0,
+            "retrieval_time": 0.0, "generation_time": 0.0,
+            "avg_relevance_score": 0.0, "context_length": 0,
+        }
+
+    def _handle_legacy_generate(self, query: str, perspective: str | None = None) -> Dict[str, Any]:
+        """Original single-shot document generation (kept for direct calls)."""
         from advisor.llm_client import get_ollama_client
         from advisor.governance_docs import get_doc_manager
-        from advisor.agents.tools import _find_dre_template_raw
-        from advisor.agents.dr_egeria_agent import DrEgeriaActionAgent, parse_template
+        from advisor.agents.dr_egeria_agent import DrEgeriaActionAgent
 
         llm = get_ollama_client()
         action_agent = DrEgeriaActionAgent()
 
         logger.info(
-            f"GovernancePlanAgent: query={query[:80]!r}, perspective={perspective!r}"
+            f"GovernancePlanAgent._handle_legacy_generate: query={query[:80]!r}, perspective={perspective!r}"
         )
 
         # ------------------------------------------------------------------ #
@@ -437,15 +518,28 @@ class GovernancePlanAgent:
         query: str,
         perspective: str | None,
         llm,
+        existing_commands: Optional[List[Dict]] = None,
     ) -> Dict[str, Any]:
         """
         Ask the LLM to extract the plan title, purpose, and ordered command list.
 
-        Returns a dict: {title, purpose, commands: [{action, description, rationale}]}
+        existing_commands: commands already in the plan (for addition requests).
+        Returns a dict: {title, purpose, commands: [{action, display_name, description, rationale, params}]}
         """
         perspective_hint = (
             f"The user's role is: {perspective}.\n" if perspective else ""
         )
+
+        existing_hint = ""
+        if existing_commands:
+            lines = ["Commands already in the plan (do NOT repeat these):"]
+            for c in existing_commands:
+                lines.append(f"  - {c['action']}: {c.get('display_name', '')}")
+            lines.append(
+                "\nGenerate ONLY the new commands needed for the addition. "
+                "Use the existing commands' display_names as parent/container names where relevant."
+            )
+            existing_hint = "\n".join(lines) + "\n\n"
 
         prompt = f"""You are a data governance planning assistant for the Egeria metadata platform.
 
@@ -460,16 +554,20 @@ Common Dr.Egeria command names include:
 
   Projects family:
     Create Campaign, Create Project, Create Personal Project, Create Study Project,
-    Create Task, Link Project Hierarchy, Link Project Dependency
+    Create Task, Link Project Dependency
 
   IMPORTANT — SubProjects in Dr.Egeria:
-    A "subproject" is a Project that is a child of another Project (or Campaign).
-    The correct pattern is:
-      1. Create Campaign (or Create Project) for the parent
-      2. Create Project for EACH subproject (e.g. Discovery, Analysis, Review)
-      3. Link Project Hierarchy for EACH subproject — set Child Project = subproject,
-         Parent Project = the campaign/parent project name
-    Do NOT use Create Task for subprojects. Tasks are separate leaf work items.
+    A sub-project is created using "Create Project" with parent relationship fields set ON
+    the same command — there is NO separate "Link Project Hierarchy" step.
+    The correct pattern for EACH sub-project is a single "Create Project" command with:
+      display_name  = the sub-project name
+      params.Parent ID = the parent project or campaign display_name
+      params.Parent Relationship Type Name = ProjectHierarchy
+    Example: user says "add sub-projects Discovery and Analysis under Finance Project"
+      → Create Project: display_name="Discovery", params={{"Parent ID": "Finance Project", "Parent Relationship Type Name": "ProjectHierarchy"}}
+      → Create Project: display_name="Analysis",  params={{"Parent ID": "Finance Project", "Parent Relationship Type Name": "ProjectHierarchy"}}
+    Do NOT emit "Link Project Hierarchy" — it is not needed.
+    Do NOT use Create Task for sub-projects. Tasks are separate leaf work items.
 
   Actor Manager family:
     Create Person, Create Team, Create Organization,
@@ -499,9 +597,9 @@ IMPORTANT — person role appointments:
   When a person is named as a role holder (e.g. "Tom Tally as Project Leader"):
   1. Use "Create Person Role" to define the role (e.g. "Project Leader")
   2. Use "Link Person Role Appointment" to assign the named person to that role
-  Do NOT use "Create Glossary" or other unrelated commands for people or roles.
+  Do NOT create a separate Person record unless the user asked for one.
 
-{perspective_hint}User description: "{query}"
+{existing_hint}{perspective_hint}User description: "{query}"
 
 Respond with ONLY a valid JSON object in this exact format (no extra text):
 {{
@@ -510,24 +608,30 @@ Respond with ONLY a valid JSON object in this exact format (no extra text):
   "commands": [
     {{
       "action": "Create Glossary",
-      "display_name": "Exact name to use — e.g. Finance Domain Glossary",
+      "display_name": "Finance Domain Glossary",
       "description": "One sentence describing the purpose of this specific object",
-      "rationale": "Why this step is needed in the plan"
+      "rationale": "Why this step is needed in the plan",
+      "params": {{}}
     }},
     {{
-      "action": "Create Glossary Term",
-      "display_name": "Revenue Recognition",
-      "description": "The process by which revenue is recorded",
-      "rationale": "Core finance term needed in the glossary"
+      "action": "Create Project",
+      "display_name": "Discovery",
+      "description": "Initial discovery sub-project",
+      "rationale": "Sub-project of the main campaign",
+      "params": {{"Parent ID": "Finance Project", "Parent Relationship Type Name": "ProjectHierarchy"}}
     }},
     ...
   ]
 }}
 
 Rules:
-- "display_name" must be the exact name to put in the Dr.Egeria command (e.g. the glossary name, term name, project name, person name). Use names from the user's description where given; invent a sensible placeholder otherwise.
-- "description" is a one-sentence explanation of the object's purpose (used as the Description attribute).
-- Include all objects that must be created or linked. Use real Dr.Egeria command names above.
+- "display_name" is the exact name for this object. Use names from the user's description; invent a sensible placeholder only if truly unnamed.
+- "params" carries pre-known field values (e.g. Parent ID for sub-projects). Use {{}} when empty.
+- ONLY include objects the user explicitly mentioned, or technically required containers.
+- Do NOT invent Governance Zones, categories, or any infrastructure not described by the user.
+- Do NOT emit "Link Project Hierarchy" — sub-projects use "Create Project" with Parent ID instead.
+- If the user names a person as a role holder, create the role + link the appointment. No separate Person record.
+- Keep the command list minimal: only what the user asked for.
 JSON:"""
 
         try:

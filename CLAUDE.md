@@ -116,7 +116,7 @@ MLflow tracking runs in a background daemon thread after `query()` returns — i
 
 ### Web UI (`advisor/web/`)
 
-Single-page app served by FastAPI at `http://localhost:8000` (default port).
+Single-page app served by FastAPI at `http://localhost:8880` (default port).
 
 ```bash
 # Start the web UI

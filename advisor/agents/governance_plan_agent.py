@@ -633,6 +633,8 @@ Rules:
 - ONLY include objects the user explicitly mentioned, or technically required containers.
 - Do NOT invent Governance Zones, categories, or any infrastructure not described by the user.
 - Do NOT emit "Link Project Hierarchy" — sub-projects use "Create Project" with Parent ID instead.
+- Parent ID ONLY applies to sub-projects: a project nested explicitly inside another project or campaign. A top-level project (the main subject of the request) must NEVER have a Parent ID. Do NOT set Parent ID to the project's own name.
+- Do NOT put person or role information (leader, owner, steward, person names) in Create Project params. Person roles are handled exclusively by "Create Person Role" + "Link Person Role Appointment".
 - If the user names a person as a role holder, create the role + link the appointment. No separate Person record.
 - Keep the command list minimal: only what the user asked for.
 JSON:"""

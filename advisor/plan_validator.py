@@ -5,8 +5,11 @@ Applied after LLM-based intent decomposition to catch and correct structural
 errors before showing the confirm_commands step to the user.
 
 Rules applied (in order):
+  0. Deduplicate                  — remove commands with identical action+display_name
   1. Remove superseded commands   — e.g. "Link Project Hierarchy" is replaced by
                                     "Create Project" with Parent ID set
+  1b. Clear self-referential parents — a top-level project must not have itself
+                                    as its own Parent ID
   2. Ensure required containers   — e.g. Create Glossary must exist before any
                                     Create Glossary Term
   3. Ensure role before appointment — Create Person Role must precede
@@ -45,7 +48,13 @@ def validate_commands(
 
     warnings: List[str] = []
 
+    commands, w = _deduplicate(commands)
+    warnings.extend(w)
+
     commands, answers, w = _remove_superseded(commands, answers)
+    warnings.extend(w)
+
+    commands, w = _clear_self_referential_parents(commands)
     warnings.extend(w)
 
     commands, answers, w = _ensure_containers(commands, answers)
@@ -61,6 +70,101 @@ def validate_commands(
         f"{len(warnings)} warnings: {warnings}"
     )
     return commands, answers, warnings
+
+
+# ── Rule 0: Deduplicate ───────────────────────────────────────────────────────
+
+def _deduplicate(commands: List[Dict]) -> Tuple[List[Dict], List[str]]:
+    """
+    Remove commands with identical (action, display_name) pairs, keeping the
+    first occurrence. Also strips role/person fields that don't belong on
+    Create Project (e.g. 'Project Leader' param hallucinated by the LLM).
+    """
+    seen: set = set()
+    result: List[Dict] = []
+    warnings: List[str] = []
+
+    _NOT_PROJECT_FIELDS = {"project leader", "leader", "owner", "steward", "person"}
+
+    for cmd in commands:
+        key = (cmd["action"], (cmd.get("display_name") or "").strip().lower())
+        if key in seen:
+            warnings.append(
+                f"Removed duplicate '{cmd['action']}: {cmd.get('display_name', '')}'"
+            )
+            continue
+        seen.add(key)
+
+        # Strip fields that don't belong on Create Project
+        if cmd["action"] == "Create Project":
+            dirty = {
+                k for k in (cmd.get("pre_filled") or {})
+                if k.lower() in _NOT_PROJECT_FIELDS
+            }
+            if dirty:
+                for k in dirty:
+                    del cmd["pre_filled"][k]
+                warnings.append(
+                    f"Removed non-project fields from 'Create Project': {dirty}"
+                )
+
+        result.append(cmd)
+
+    return result, warnings
+
+
+# ── Rule 1b: Clear self-referential Parent IDs ────────────────────────────────
+
+def _clear_self_referential_parents(
+    commands: List[Dict],
+) -> Tuple[List[Dict], List[str]]:
+    """
+    A Create Project command must not list itself as its own Parent ID.
+    This happens when the LLM applies the sub-project pattern to a top-level
+    project and uses the project's own name as the parent.
+    Also clears Parent ID when there is no other Create Project or Create Campaign
+    in the plan to act as a parent.
+    """
+    warnings: List[str] = []
+    # Collect names of all other container-capable commands
+    containers = set()
+    for cmd in commands:
+        if cmd["action"] in ("Create Campaign", "Create Project"):
+            dn = (cmd.get("display_name") or "").strip().lower()
+            if dn:
+                containers.add(dn)
+
+    for cmd in commands:
+        if cmd["action"] != "Create Project":
+            continue
+        parent_id = (cmd.get("pre_filled") or {}).get("Parent ID", "")
+        if not parent_id:
+            continue
+        dn = (cmd.get("display_name") or "").strip().lower()
+        parent_low = parent_id.strip().lower()
+
+        # Self-referential
+        if parent_low == dn:
+            del cmd["pre_filled"]["Parent ID"]
+            cmd["pre_filled"].pop("Parent Relationship Type Name", None)
+            name = cmd.get("display_name", "")
+            warnings.append(
+                f"Removed self-referential Parent ID from 'Create Project: {name}'"
+            )
+            continue
+
+        # Parent name not found in any other command — orphaned reference
+        other_containers = containers - {dn}
+        if parent_low not in other_containers:
+            del cmd["pre_filled"]["Parent ID"]
+            cmd["pre_filled"].pop("Parent Relationship Type Name", None)
+            name = cmd.get("display_name", "")
+            warnings.append(
+                f"Removed unresolvable Parent ID '{parent_id}' from "
+                f"'Create Project: {name}' — no matching parent in plan"
+            )
+
+    return commands, warnings
 
 
 # ── Rule 1: Remove superseded commands ───────────────────────────────────────

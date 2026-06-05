@@ -351,8 +351,52 @@ class PlanElicitor:
             dm.save(spec)
             return self._build_elicit_required_response(spec)
 
+        # --- Duplicate / correction detection --------------------------
+        # Must come before the re-decompose fallback to avoid treating
+        # "steps 1 and 2 are duplicated" as a request to add something.
+        dedup_signals = ("duplicate", "duplicated", "same step", "repeated", "appears twice")
+        if any(w in low for w in dedup_signals):
+            from advisor.plan_validator import validate_commands
+            fixed, spec["answers"], val_warnings = validate_commands(
+                spec["commands_identified"], spec["answers"]
+            )
+            if len(fixed) < len(spec["commands_identified"]):
+                dm.push_history(spec)
+                spec["commands_identified"] = fixed
+                dm.save(spec)
+                return self._build_confirm_commands_response(
+                    spec,
+                    note="Removed duplicates. Does this look right now?",
+                )
+            else:
+                return self._build_confirm_commands_response(
+                    spec,
+                    note=(
+                        "I checked for duplicates but didn't find any identical steps. "
+                        "Could you point out which step number(s) are the problem? "
+                        "For example: *\"remove step 2\"*"
+                    ),
+                )
+
+        correction_signals = (
+            "that's wrong", "that is wrong", "incorrect", "not right",
+            "shouldn't have", "should not have", "didn't ask", "i didn't ask",
+            "that's not", "wrong step",
+        )
+        if any(w in low for w in correction_signals):
+            return self._build_confirm_commands_response(
+                spec,
+                note=(
+                    "Which step is wrong? You can:\n"
+                    "- Say **\"remove step N\"** to delete a specific step\n"
+                    "- Say **\"remove the [command name]\"** to remove by name\n"
+                    "- Describe what should change instead"
+                ),
+            )
+
         # --- Removal request -------------------------------------------
-        removal_words = ("remove", "don't need", "drop", "skip", "delete", "take out", "without")
+        removal_words = ("remove", "don't need", "drop", "delete", "take out", "without",
+                         "remove step")
         if any(w in low for w in removal_words):
             updated = self._remove_commands(spec["commands_identified"], user_response)
             if len(updated) < len(spec["commands_identified"]):
@@ -449,12 +493,24 @@ class PlanElicitor:
 
     def _remove_commands(self, commands: List[Dict], request: str) -> List[Dict]:
         """Heuristically drop commands mentioned in a removal request."""
+        import re as _re
         low = request.lower()
+
+        # "remove step N" or "remove steps N and M" — by 1-based index
+        indices_to_remove: set = set()
+        for m in _re.finditer(r'\bstep[s]?\s+(\d+)', low):
+            idx = int(m.group(1)) - 1  # convert to 0-based
+            if 0 <= idx < len(commands):
+                indices_to_remove.add(idx)
+        if indices_to_remove:
+            result = [c for i, c in enumerate(commands) if i not in indices_to_remove]
+            return result if result else commands
+
+        # Keyword match on action name or display name
         result = []
         for cmd in commands:
             action_low = cmd["action"].lower()
             name_low = (cmd.get("display_name") or "").lower()
-            # Keep unless the request clearly refers to this command
             keep = True
             for word in action_low.split() + name_low.split():
                 if len(word) > 3 and word in low:

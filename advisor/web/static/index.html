@@ -527,7 +527,7 @@ async function loadPlans() {
         execBtn.onclick = e => {
           e.stopPropagation();
           appendMessage('you', `execute the plan ${plan.doc_id}`);
-          submitQuery(`execute the plan ${plan.doc_id}`, { intent_override: 'command' });
+          submitQuery(`execute the plan ${plan.doc_id}`, {});
         };
         row.appendChild(execBtn);
       }
@@ -1065,7 +1065,7 @@ function initCanvasButtons() {
     const docId = document.getElementById('pcanvas-title')?.dataset?.docId;
     if (!docId) return;
     appendMessage('you', `execute the plan ${docId}`);
-    submitQuery(`execute the plan ${docId}`, { intent_override: 'command' });
+    submitQuery(`execute the plan ${docId}`, {});
   });
 }
 

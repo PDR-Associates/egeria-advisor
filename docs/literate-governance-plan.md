@@ -392,7 +392,7 @@ After execution: maps command families to relevant `report_specs`, runs verifica
 
 ## 10. Phased Implementation Plan
 
-### Phase 1 — Canvas + conversational plan generation  *(in progress)*
+### Phase 1 — Canvas + conversational plan generation  *(complete)*
 
 **Deliverable:** User can describe a task, see a live Plan Canvas alongside the chat, refine conversationally or by direct editing (including add/reorder/remove commands and per-card narrative), and generate a full Plan Document.
 
@@ -406,22 +406,22 @@ After execution: maps command families to relevant `report_specs`, runs verifica
 - [x] Web UI: Active Drafts sidebar section with resume/discard
 - [x] Web UI: `_activeDraftId` persisted to `sessionStorage`; `discuss_changes` button in editor
 - [x] API: `/api/drafts`, `/api/plan-templates` endpoints; `draft_id` in plan listing
-- [ ] **Plan Canvas** — persistent side panel (Option A, draggable divider); drag-reorder; add/remove commands; per-card narrative text area
-- [ ] **IntentModel** — replace direct LLM→commands with LLM→IntentModel→commands (deterministic derivation grounded in Dr.Egeria templates)
-- [ ] **Action catalog** (`config/dr_egeria_actions.yaml`) — structured definitions with aliases, dependency rules, supersedes; replaces prompt-embedded rules
-- [ ] **Post-processing validation** — deterministic rule pass (catches Link Project Hierarchy, missing containers, ordering violations)
-- [ ] **Per-command narrative generation** — LLM generates rationale/instruction text for each command; shown in canvas and included in Plan Document
-- [ ] Layout: split-view with draggable divider when draft active
-- [ ] Header: last-edited timestamp and creator in Plan Document and editor
+- [x] **Plan Canvas** — persistent side panel (Option A, draggable divider); drag-reorder; add/remove commands; per-card narrative text area; Basic/Advanced field toggle; scrollable expanded fields
+- [x] **Action catalog** (`config/dr_egeria_actions.yaml` + `advisor/action_catalog.py`) — 42 actions with aliases, ordering priority, supersedes, requires, narrative templates
+- [x] **Post-processing validation** (`advisor/plan_validator.py`) — Link Project Hierarchy conversion, missing container insertion, role ordering, topological sort
+- [x] **Per-command narrative** — LLM generates narrative per command; falls back to catalog template; user-editable in canvas; written to Plan Document comment blocks
+- [x] Layout: split-view with draggable ew-resize divider; canvas shown/hidden with draft lifecycle
+- [x] Header: last-edited timestamp and Created by (OS user) in Plan Document
+- [ ] **IntentModel** — replace direct LLM→commands with LLM→IntentModel→commands *(deferred to quality improvement pass)*
 
-### Phase 2 — Execution and outcome  *(not started)*
+### Phase 2 — Execution and outcome  *(complete)*
 
-- [ ] ExecutionOrchestrator — extract command section, submit to `dr_egeria_run_block`
-- [ ] `config/governance_report_map.yaml` — family → report_spec mapping
-- [ ] OutcomeReporter — report selection + execution + summary synthesis
-- [ ] Plan Document outcome section composer
-- [ ] DocumentManager — move to outbox on success
-- [ ] Web UI: Execute button, outcome display, outcome doc download
+- [x] ExecutionOrchestrator — `GovernancePlanAgent.execute()` extracts command section, submits to `dr_egeria_run_block` via `DrEgeriaActionAgent`
+- [x] `config/governance_report_map.yaml` — family → report_spec mapping (10 families + fallback)
+- [x] OutcomeReporter (`advisor/agents/outcome_reporter.py`) — report selection, execution, narrative synthesis
+- [x] Plan Document outcome section — composed and appended post-execution
+- [x] DocumentManager `move_to_outbox` — plan moved on success; outcome appended
+- [x] Web UI: Execute button in canvas (shown once doc_id is set); `plan_executed` response type; outcome banner + outbox refresh
 
 ### Phase 3 — Artifact Canvas generalisation  *(not started)*
 

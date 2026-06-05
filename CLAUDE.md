@@ -187,6 +187,29 @@ The `CollectionRouter` selects 1–N collections per query based on classified i
 | `DocAgent` | `doc_agent.py` | `explanation` / `best_practice` / `comparison` / `debugging` / `general` — conceptual answers from indexed docs |
 | `ConversationAgent` | `conversation_agent.py` | Multi-turn sessions (BeeAI framework) |
 | `CLICommandAgent` | `cli_command_agent.py` | hey_egeria CLI command lookup and generation |
+| `GovernancePlanAgent` | `governance_plan_agent.py` | `plan` queries — orchestrates full plan lifecycle: decompose → validate → generate → execute → outcome |
+| `OutcomeReporter` | `outcome_reporter.py` | Post-execution: selects and runs verification reports, synthesises outcome narrative, appends to plan document |
+
+### LGCI — Plan Document Lifecycle
+
+The **Literate Governance with Context Intelligence (LGCI)** feature allows users to describe a governance task in plain language and receive a complete, executable Plan Document.
+
+**Key files:**
+- `advisor/agents/governance_plan_agent.py` — orchestrator: `_decompose_intent` → validator → `_compose_document` → `execute()`
+- `advisor/agents/plan_elicitor.py` — multi-phase conversational Q&A (`confirm_commands` → `elicit_required` → `generate` → `refine` → `template_offer`)
+- `advisor/governance_draft.py` — `DraftManager`: persists in-progress sessions to `~/egeria-plans/drafts/`
+- `advisor/governance_docs.py` — `DocumentManager`: inbox/outbox lifecycle for completed plans
+- `advisor/plan_templates.py` — `PlanTemplateManager`: save/load reusable `{{placeholder}}` templates
+- `advisor/action_catalog.py` — `ActionCatalog`: loads `config/dr_egeria_actions.yaml` (42 actions with ordering, supersedes, narrative templates)
+- `advisor/plan_validator.py` — `validate_commands()`: four deterministic post-processing rules applied after every LLM decomposition
+- `advisor/web/static/plan_canvas.js` — Plan Canvas: persistent split-view panel with drag-reorder, add/remove, per-card narrative, field editing
+
+**Design rules:**
+13. **Sub-projects use `Create Project` with `Parent ID`** — never emit `Link Project Hierarchy`. The validator converts any `Link Project Hierarchy` commands to `Create Project` with `Parent ID` + `Parent Relationship Type Name = ProjectHierarchy`.
+14. **`validate_commands()` is called at the end of `_decompose_intent`** — applies four rules: remove superseded commands, insert missing containers, ensure role before appointment, topological sort. Always call it; never skip.
+15. **Draft routing in `_process_query`** fires when `draft_id` is set in the request — all messages are forwarded to `PlanElicitor.process()` regardless of intent. Navigation commands (`back`, `cancel`, `save and exit`) are matched by regex before forwarding.
+16. **`plan_clarification` vs `plan` query types** — `plan_clarification` is the active Q&A phase (canvas shows nav buttons); `plan` means a document was saved to inbox; `plan_executed` means execution complete and plan moved to outbox.
+17. **The action catalog** (`config/dr_egeria_actions.yaml`) is the authoritative source for ordering priorities, supersedes relationships, container dependencies, and narrative templates. Update it when Dr.Egeria templates change — do not embed these rules in LLM prompts.
 
 ### Data Pipeline (`advisor/data_prep/`)
 

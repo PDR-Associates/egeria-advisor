@@ -513,6 +513,32 @@ class GovernancePlanAgent:
     # Intent decomposition                                                     #
     # ---------------------------------------------------------------------- #
 
+    # ── Entity type → Dr.Egeria action mapping ──────────────────────────── #
+    _ENTITY_TO_ACTION: Dict[str, str] = {
+        "campaign":          "Create Campaign",
+        "project":           "Create Project",
+        "sub_project":       "Create Project",
+        "personal_project":  "Create Personal Project",
+        "study_project":     "Create Study Project",
+        "task":              "Create Task",
+        "glossary":          "Create Glossary",
+        "glossary_term":     "Create Glossary Term",
+        "glossary_category": "Create Glossary Category",
+        "team":              "Create Team",
+        "organization":      "Create Organization",
+        "collection":        "Create Collection",
+        "governance_zone":   "Create Governance Zone",
+        "governance_policy": "Create Governance Policy",
+        "governance_definition": "Create Governance Definition",
+        "data_dictionary":   "Create Data Dictionary",
+        "data_structure":    "Create Data Structure",
+        "data_field":        "Create Data Field",
+        "data_class":        "Create Data Class",
+        "digital_product":   "Create Digital Product",
+        "agreement":         "Create Agreement",
+        "external_reference": "Create External Reference",
+    }
+
     def _decompose_intent(
         self,
         query: str,
@@ -521,144 +547,270 @@ class GovernancePlanAgent:
         existing_commands: Optional[List[Dict]] = None,
     ) -> Dict[str, Any]:
         """
-        Ask the LLM to extract the plan title, purpose, and ordered command list.
+        Two-stage decomposition:
+          Stage 1 (LLM)  — extract entities and roles from natural language
+          Stage 2 (rules) — map entities → Dr.Egeria commands deterministically
+
+        This split keeps the LLM prompt simple enough for local 8B models while
+        ensuring command names and structure are correct by construction.
 
         existing_commands: commands already in the plan (for addition requests).
-        Returns a dict: {title, purpose, commands: [{action, display_name, description, rationale, params}]}
+        Returns a dict: {title, purpose, commands, validator_warnings}
         """
-        perspective_hint = (
-            f"The user's role is: {perspective}.\n" if perspective else ""
-        )
+        perspective_hint = f"User role: {perspective}.\n" if perspective else ""
 
         existing_hint = ""
         if existing_commands:
-            lines = ["Commands already in the plan (do NOT repeat these):"]
+            lines = ["Already in the plan — do NOT include these again:"]
             for c in existing_commands:
-                lines.append(f"  - {c['action']}: {c.get('display_name', '')}")
-            lines.append(
-                "\nGenerate ONLY the new commands needed for the addition. "
-                "Use the existing commands' display_names as parent/container names where relevant."
-            )
+                lines.append(f"  - {c.get('display_name', '?')} ({c['action']})")
+            lines.append("Add ONLY new objects the user is now requesting.")
             existing_hint = "\n".join(lines) + "\n\n"
 
-        prompt = f"""You are a data governance planning assistant for the Egeria metadata platform.
+        # ── Stage 1: entity extraction ──────────────────────────────────── #
+        # Try pattern-based extraction first (reliable for common phrasings),
+        # fall back to LLM for complex cases.
+        entities = self._extract_entities_patterns(query)
+        if not entities.get("objects"):
+            entities = self._extract_entities_llm(
+                query, perspective_hint, existing_hint, llm
+            )
+        if not entities.get("objects"):
+            entities = {"title": query[:50], "purpose": query, "objects": [], "roles": []}
 
-A user has described a data management task. Extract the specific Dr.Egeria commands needed.
+        # ── Stage 2: deterministic command mapping ──────────────────────── #
+        commands = self._entities_to_commands(entities, existing_commands or [])
 
-Common Dr.Egeria command names include:
+        # Apply post-processing validator
+        from advisor.plan_validator import validate_commands
+        commands, _, warnings = validate_commands(commands, {})
+        if warnings:
+            logger.info(f"GovernancePlanAgent: validator fixes: {warnings}")
 
-  Glossary family:
-    Create Glossary, Create Glossary Term, Create Glossary Category,
-    Link Term to Category, Link Term to Glossary, Link Term-Term Relationship,
-    Classify Glossary as Canonical, Classify Term as Question
+        return {
+            "title":              entities.get("title", query[:50]).strip(),
+            "purpose":            entities.get("purpose", query),
+            "commands":           commands,
+            "validator_warnings": warnings,
+        }
 
-  Projects family:
-    Create Campaign, Create Project, Create Personal Project, Create Study Project,
-    Create Task, Link Project Dependency
+    # Name stops at these words (sentence-level boundaries)
+    _NAME_STOP = r'(?=\s*(?:,|\.|\bwith\b|\bto\s+be\b|\bled\s+by\b|\bto\s+create\b|\band\b|\bincluding\b|\bwhere\b|\busing\b|$))'
 
-  IMPORTANT — SubProjects in Dr.Egeria:
-    A sub-project is created using "Create Project" with parent relationship fields set ON
-    the same command — there is NO separate "Link Project Hierarchy" step.
-    The correct pattern for EACH sub-project is a single "Create Project" command with:
-      display_name  = the sub-project name
-      params.Parent ID = the parent project or campaign display_name
-      params.Parent Relationship Type Name = ProjectHierarchy
-    Example: user says "add sub-projects Discovery and Analysis under Finance Project"
-      → Create Project: display_name="Discovery", params={{"Parent ID": "Finance Project", "Parent Relationship Type Name": "ProjectHierarchy"}}
-      → Create Project: display_name="Analysis",  params={{"Parent ID": "Finance Project", "Parent Relationship Type Name": "ProjectHierarchy"}}
-    Do NOT emit "Link Project Hierarchy" — it is not needed.
-    Do NOT use Create Task for sub-projects. Tasks are separate leaf work items.
+    # Pattern vocab: (regex, entity_type) — name captured in group 1
+    _ENTITY_PATTERNS = [
+        # "called <name>" / "named <name>"
+        (r'\b(?:project|campaign|glossary|collection)\s+(?:called|named)\s+"?(.+?)"?' + _NAME_STOP, None),
+        # "a campaign for <name>"
+        (r'\ba\s+campaign\s+for\s+"?(.+?)"?' + _NAME_STOP, "campaign"),
+        # "a project for / project called"
+        (r'\ba\s+project\s+(?:for|called)\s+"?(.+?)"?' + _NAME_STOP, "project"),
+        # "a glossary for / called"
+        (r'\ba\s+glossary\s+(?:for|called)\s+"?(.+?)"?' + _NAME_STOP, "glossary"),
+        # "set up a glossary" — name after "for" or "called"
+        (r'\bset\s+up\s+a\s+(?:glossary|project|campaign)\s+(?:for\s+the\s+|for\s+|called\s+)?"?(.+?)"?' + _NAME_STOP, None),
+    ]
+    # Role: "led by <person> as <role>" or "with <person> as <role>"
+    _ROLE_PATTERNS = [
+        r'\b(?:to\s+be\s+)?led\s+by\s+"?([A-Z][a-zA-Z\s\.]{1,30}?)"?\s+as\s+(?:the\s+)?([\w\s]{2,30})',
+        r'\b(?:to\s+be\s+)?led\s+by\s+"?([A-Z][a-zA-Z\s\.]{1,30}?)"?' + _NAME_STOP,
+        r'\bwith\s+"?([A-Z][a-zA-Z\s\.]{1,30}?)"?\s+as\s+(?:the\s+)?([\w\s]{2,30})',
+    ]
+    _SUBPROJECT_PATTERN = re.compile(
+        r'\bsub[-\s]?projects?\s+(?:for\s+)?["\']?(.+?)(?=["\']?\s*(?:$|\.|,\s*(?:led|with|and\s+[a-z])))',
+        re.IGNORECASE,
+    )
 
-  Actor Manager family:
-    Create Person, Create Team, Create Organization,
-    Create Person Role, Create Team Role, Create Governance Role,
-    Link Person Role Appointment, Link Team Role Appointment,
-    Link Team Membership, Link Team Leader, Link Team Structure
+    def _extract_entities_patterns(self, query: str) -> Dict:
+        """
+        Rule-based entity extraction for common phrasings.
+        Returns entities dict if confident; empty objects list if not matched.
+        """
+        q = query.strip()
+        objects = []
+        roles   = []
 
-  Governance Officer family:
-    Create Governance Zone, Create Governance Definition, Create Governance Policy,
-    Create Governance Role, Create Governance Driver, Create Business Imperative,
-    Link Governance Policies, Link Governance Drivers, Link Governed By
+        ql = q.lower()
 
-  Collections family:
-    Create Collection, Create Collection Folder, Add Member to Collection
+        def _infer_type_from_context() -> str:
+            if "campaign" in ql:   return "campaign"
+            if "glossary" in ql:   return "glossary"
+            if "collection" in ql: return "collection"
+            return "project"
 
-  Data Designer family:
-    Create Data Dictionary, Create Data Structure, Create Data Field,
-    Create Data Class, Link Data Field, Link Data Class Composition
-
-  Digital Product Manager family:
-    Create Digital Product, Create Agreement, Create Data Sharing Agreement
-
-  External Reference family:
-    Create External Reference, Link External Reference
-
-IMPORTANT — person role appointments:
-  When a person is named as a role holder (e.g. "Tom Tally as Project Leader"):
-  1. Use "Create Person Role" to define the role (e.g. "Project Leader")
-  2. Use "Link Person Role Appointment" to assign the named person to that role
-  Do NOT create a separate Person record unless the user asked for one.
-
-{existing_hint}{perspective_hint}User description: "{query}"
-
-Respond with ONLY a valid JSON object in this exact format (no extra text):
-{{
-  "title": "Short descriptive title (5-8 words)",
-  "purpose": "One sentence summarising the goal",
-  "commands": [
-    {{
-      "action": "Create Glossary",
-      "display_name": "Finance Domain Glossary",
-      "description": "One sentence describing the purpose of this specific object",
-      "rationale": "Why this step is needed in the plan",
-      "narrative": "1-2 sentence explanation for the plan document — what this creates and why, in plain language",
-      "params": {{}}
-    }},
-    {{
-      "action": "Create Project",
-      "display_name": "Discovery",
-      "description": "Initial discovery sub-project",
-      "rationale": "Sub-project of the main campaign",
-      "narrative": "Creates the Discovery sub-project under the main campaign.",
-      "params": {{"Parent ID": "Finance Project", "Parent Relationship Type Name": "ProjectHierarchy"}}
-    }},
-    ...
-  ]
-}}
-
-Rules:
-- "display_name" is the exact name for this object. Use names from the user's description; invent a sensible placeholder only if truly unnamed.
-- "narrative" is 1-2 plain-English sentences explaining what this step does and why, suitable for a reviewer who may not know Dr.Egeria.
-- "params" carries pre-known field values (e.g. Parent ID for sub-projects). Use {{}} when empty.
-- ONLY include objects the user explicitly mentioned, or technically required containers.
-- Do NOT invent Governance Zones, categories, or any infrastructure not described by the user.
-- Do NOT emit "Link Project Hierarchy" — sub-projects use "Create Project" with Parent ID instead.
-- Parent ID ONLY applies to sub-projects: a project nested explicitly inside another project or campaign. A top-level project (the main subject of the request) must NEVER have a Parent ID. Do NOT set Parent ID to the project's own name.
-- Do NOT put person or role information (leader, owner, steward, person names) in Create Project params. Person roles are handled exclusively by "Create Person Role" + "Link Person Role Appointment".
-- If the user names a person as a role holder, create the role + link the appointment. No separate Person record.
-- Keep the command list minimal: only what the user asked for.
-JSON:"""
-
-        try:
-            raw = llm.generate(prompt, temperature=0.2, max_tokens=3000)
-            m = re.search(r"\{.*\}", raw, re.DOTALL)
+        # Detect main entity type and name
+        main_type = ""
+        main_name = ""
+        for pattern, etype in self._ENTITY_PATTERNS:
+            m = re.search(pattern, q, re.IGNORECASE)
             if m:
-                result = json.loads(m.group())
-                # Post-process: apply deterministic validation rules
-                from advisor.plan_validator import validate_commands
-                cmds = result.get("commands", [])
-                fixed, _, warnings = validate_commands(cmds, {})
-                result["commands"] = fixed
-                result["validator_warnings"] = warnings
-                if warnings:
-                    logger.info(
-                        f"GovernancePlanAgent: validator applied {len(warnings)} fixes: {warnings}"
-                    )
-                return result
-        except Exception as exc:
-            logger.warning(f"GovernancePlanAgent: intent decomposition failed: {exc}")
+                main_name = m.group(1).strip().strip('"\'')
+                if etype:
+                    main_type = etype
+                else:
+                    # Infer from the matched text or surrounding context
+                    matched_lower = m.group(0).lower()
+                    if "campaign" in matched_lower:   main_type = "campaign"
+                    elif "glossary" in matched_lower: main_type = "glossary"
+                    else:                             main_type = _infer_type_from_context()
+                break
 
-        return {"title": query[:50].strip(), "purpose": query, "commands": []}
+        if not main_name:
+            return {"objects": [], "roles": []}
+
+        objects.append({"type": main_type or "project", "name": main_name})
+
+        # Sub-projects
+        sub_m = self._SUBPROJECT_PATTERN.search(q)
+        if sub_m:
+            sub_text = sub_m.group(1)
+            # Split on commas, "and", quotes
+            sub_names = re.split(r'",?\s+"|\s*,\s*|\s+and\s+', sub_text)
+            for sn in sub_names:
+                sn = sn.strip().strip('"\'').strip()
+                if sn and sn.lower() != main_name.lower():
+                    objects.append({"type": "sub_project", "name": sn, "parent": main_name})
+
+        # Role assignments
+        for pattern in self._ROLE_PATTERNS:
+            m = re.search(pattern, q, re.IGNORECASE)
+            if m:
+                person = m.group(1).strip().strip('"\'')
+                role   = (m.group(2).strip().title()
+                          if m.lastindex and m.lastindex >= 2 and m.group(2)
+                          else "Project Leader")
+                if person and 1 <= len(person.split()) <= 5:
+                    roles.append({"role": role, "person": person})
+                    break
+
+        title = f"{main_name} {main_type.title()} Setup" if main_name else query[:50]
+        return {
+            "title":   title,
+            "purpose": f"Set up a {main_type} called {main_name}",
+            "objects": objects,
+            "roles":   roles,
+        }
+
+    def _extract_entities_llm(
+        self, query: str, perspective_hint: str, existing_hint: str, llm
+    ) -> Dict:
+        """LLM-based entity extraction — fallback when pattern matching fails."""
+        prompt = f"""Extract ALL objects and role assignments from this request.
+Return ONLY valid JSON. Each distinct named object appears EXACTLY ONCE.
+
+Object types: campaign, project, sub_project (child of another), glossary,
+  glossary_term, glossary_category, team, collection, governance_zone
+
+For sub_project, include "parent" with the parent's name from the request.
+"name" must be copied EXACTLY from the request text — never use the type word as the name.
+
+{existing_hint}{perspective_hint}Request: "{query}"
+
+Return:
+{{
+  "title": "short title",
+  "purpose": "one sentence",
+  "objects": [{{"type": "...", "name": "exact name from request"}}],
+  "roles": [{{"role": "role title", "person": "person name"}}]
+}}
+JSON:"""
+        try:
+            raw = llm.generate(prompt, temperature=0.0, max_tokens=700)
+            raw = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.IGNORECASE)
+            raw = re.sub(r"\s*```$", "", raw.strip())
+            m   = re.search(r"\{.*\}", raw, re.DOTALL)
+            if not m:
+                raise ValueError("no JSON in LLM output")
+            return json.loads(_extract_balanced_json(m.group()))
+        except Exception as exc:
+            logger.warning(f"GovernancePlanAgent: LLM extraction failed: {exc}")
+            return {"objects": [], "roles": []}
+
+    def _entities_to_commands(
+        self, entities: Dict, existing_commands: List[Dict]
+    ) -> List[Dict]:
+        """
+        Deterministically map extracted entities and roles to Dr.Egeria commands.
+        """
+        from advisor.action_catalog import get_action_catalog
+        catalog = get_action_catalog()
+        commands: List[Dict] = []
+        existing_names = {c.get("display_name", "").lower() for c in existing_commands}
+
+        def _make_cmd(action: str, display_name: str, pre_filled: Optional[Dict] = None,
+                      narrative: str = "") -> Dict:
+            return {
+                "action":       action,
+                "display_name": display_name,
+                "description":  "",
+                "rationale":    "",
+                "narrative":    narrative or catalog.narrative_template(action),
+                "pre_filled":   pre_filled or {},
+                "placeholders": {},
+            }
+
+        # Identify the top-level container (campaign or first unparented project)
+        # so we can infer parent for unparented sub-items
+        top_level_name = ""
+        for obj in entities.get("objects", []):
+            otype = (obj.get("type") or "").lower()
+            if otype in ("campaign",):
+                top_level_name = (obj.get("name") or "").strip()
+                break
+        if not top_level_name:
+            # Also check existing commands for a campaign/top-level project
+            for ec in existing_commands:
+                if ec.get("action") in ("Create Campaign", "Create Project") \
+                        and not (ec.get("pre_filled") or {}).get("Parent ID"):
+                    top_level_name = ec.get("display_name", "")
+                    break
+
+        for obj in entities.get("objects", []):
+            entity_type = (obj.get("type") or "").lower().replace("-", "_").replace(" ", "_")
+            name = (obj.get("name") or "").strip()
+            if not name or name.lower() in existing_names:
+                continue
+
+            # A "project" with a parent field is implicitly a sub-project
+            parent = (obj.get("parent") or "").strip()
+            if parent and entity_type == "project":
+                entity_type = "sub_project"
+
+            # Unparented projects when a campaign exists → infer as sub-projects
+            if entity_type == "project" and not parent and top_level_name \
+                    and name != top_level_name:
+                parent = top_level_name
+                entity_type = "sub_project"
+
+            action = self._ENTITY_TO_ACTION.get(entity_type)
+            if not action:
+                action = catalog.find_by_alias(entity_type) or "Create Project"
+
+            pre_filled: Dict[str, str] = {"Display Name": name}
+            if parent and entity_type == "sub_project":
+                pre_filled["Parent ID"] = parent
+                pre_filled["Parent Relationship Type Name"] = "ProjectHierarchy"
+
+            commands.append(_make_cmd(action, name, pre_filled))
+
+        for role in entities.get("roles", []):
+            # Accept both "role" and "role_name" as field names
+            role_title  = (role.get("role") or role.get("role_name") or "").strip().title()
+            person_name = (role.get("person") or role.get("person_name") or "").strip()
+            if not role_title:
+                continue
+
+            commands.append(_make_cmd(
+                "Create Person Role", role_title,
+                {"Display Name": role_title},
+            ))
+            if person_name:
+                commands.append(_make_cmd(
+                    "Link Person Role Appointment", "",
+                    {"role_name": role_title, "person_name": person_name},
+                ))
+
+        return commands
 
     # ---------------------------------------------------------------------- #
     # Template loading                                                         #
@@ -952,6 +1104,39 @@ def _error_result(query: str, message: str) -> Dict[str, Any]:
         "avg_relevance_score": 0.0,
         "context_length": 0,
     }
+
+
+# ---------------------------------------------------------------------------
+# JSON extraction helper
+# ---------------------------------------------------------------------------
+
+def _extract_balanced_json(raw: str) -> str:
+    """
+    Find the outermost balanced {...} object in raw, even if the LLM appended
+    trailing text or commentary after the closing brace.
+    """
+    depth = 0
+    in_str = False
+    escape = False
+    for i, ch in enumerate(raw):
+        if escape:
+            escape = False
+            continue
+        if ch == '\\' and in_str:
+            escape = True
+            continue
+        if ch == '"' and not escape:
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return raw[:i + 1]
+    return raw  # fallback: return as-is
 
 
 # ---------------------------------------------------------------------------

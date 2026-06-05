@@ -69,10 +69,10 @@ class PlanElicitor:
         field status) and asks the user to confirm or extend before any field
         elicitation begins.
         """
-        from advisor.llm_client import get_ollama_client
+        from advisor.llm_client import get_planning_llm
         from advisor.agents.governance_plan_agent import GovernancePlanAgent
 
-        llm = get_ollama_client()
+        llm = get_planning_llm()
         agent = GovernancePlanAgent()
 
         # --- Decompose intent ------------------------------------------
@@ -361,7 +361,7 @@ class PlanElicitor:
           - "generate now" / "skip details"
             → advance directly to generate (plan with TODOs)
         """
-        from advisor.llm_client import get_ollama_client
+        from advisor.llm_client import get_planning_llm
         from advisor.agents.governance_plan_agent import GovernancePlanAgent
 
         dm = get_draft_manager()
@@ -454,7 +454,7 @@ class PlanElicitor:
 
         # --- Addition / refinement request ----------------------------
         # Re-decompose the addition with context of what's already in the plan
-        llm = get_ollama_client()
+        llm = get_planning_llm()
         agent = GovernancePlanAgent()
         try:
             new_decomp = agent._decompose_intent(
@@ -627,8 +627,8 @@ class PlanElicitor:
         commands_with_params = self._merge_answers_into_commands(spec)
 
         # Generate narrative
-        from advisor.llm_client import get_ollama_client
-        llm = get_ollama_client()
+        from advisor.llm_client import get_planning_llm
+        llm = get_planning_llm()
         goal, requirements, approach = agent._generate_narrative(
             spec["original_query"],
             spec["original_query"],
@@ -693,7 +693,7 @@ class PlanElicitor:
     def _handle_refine(self, spec: Dict, user_response: str) -> Dict[str, Any]:
         """Parse a natural-language change request and update the plan document."""
         from advisor.governance_docs import get_doc_manager
-        from advisor.llm_client import get_ollama_client
+        from advisor.llm_client import get_planning_llm
 
         dm = get_draft_manager()
         doc_id = spec.get("doc_id")
@@ -716,7 +716,7 @@ class PlanElicitor:
             return self._build_template_offer_response(spec)
 
         # Use LLM to apply the change
-        llm = get_ollama_client()
+        llm = get_planning_llm()
         updated_content = self._apply_change(current_content, user_response, llm)
 
         if updated_content and updated_content != current_content:
@@ -1211,8 +1211,8 @@ class PlanElicitor:
             f"Only include fields the user actually answered. If skipped or unclear, omit.\n"
             f"JSON:"
         )
-        from advisor.llm_client import get_ollama_client
-        llm = get_ollama_client()
+        from advisor.llm_client import get_planning_llm
+        llm = get_planning_llm()
         try:
             raw = llm.generate(prompt, temperature=0.0, max_tokens=600)
             m = re.search(r"\{.*\}", raw, re.DOTALL)

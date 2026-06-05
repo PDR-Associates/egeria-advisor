@@ -61,6 +61,7 @@ class LLMModelConfig(BaseModel):
     code: str = "codellama:13b"
     conversation: str = "llama3.1:8b"
     maintenance: str = "codellama:13b"
+    planning: str = "llama3.1:8b"   # overridden in advisor.yaml to qwen2.5-coder:32b
 
 
 class LLMParametersConfig(BaseModel):

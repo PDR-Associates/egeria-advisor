@@ -345,15 +345,45 @@ class OllamaClient:
             pass
 
 
-# Global client instance
+# Global client instances
 _ollama_client: Optional[OllamaClient] = None
+_planning_llm_model: Optional[str] = None
 
 
 def get_ollama_client() -> OllamaClient:
-    """Get or create the global Ollama client instance."""
+    """Get or create the global Ollama client instance (query model)."""
     global _ollama_client
-    
     if _ollama_client is None:
         _ollama_client = OllamaClient()
-    
     return _ollama_client
+
+
+def get_planning_llm() -> OllamaClient:
+    """
+    Return an OllamaClient pre-configured with the planning model.
+
+    The planning model (config: llm.models.planning) is used for narrative
+    generation, refinement, and change application in GovernancePlanAgent and
+    PlanElicitor.  Falls back to the default query model if not configured.
+    """
+    from advisor.config import get_full_config
+    cfg = get_full_config()
+    model = getattr(cfg.get("llm").models, "planning", None) or cfg.get("llm").models.query
+
+    client = get_ollama_client()
+    # Return a lightweight wrapper that overrides the default model
+    return _ModelOverrideClient(client, model)
+
+
+class _ModelOverrideClient:
+    """Thin wrapper that injects a specific model into every generate() call."""
+
+    def __init__(self, base: OllamaClient, model: str) -> None:
+        self._base  = base
+        self._model = model
+
+    def generate(self, prompt: str, model: Optional[str] = None, **kwargs) -> str:
+        return self._base.generate(prompt, model=model or self._model, **kwargs)
+
+    def __getattr__(self, name: str):
+        return getattr(self._base, name)

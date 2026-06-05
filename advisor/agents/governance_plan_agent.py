@@ -160,11 +160,11 @@ class GovernancePlanAgent:
 
     def _handle_legacy_generate(self, query: str, perspective: str | None = None) -> Dict[str, Any]:
         """Original single-shot document generation (kept for direct calls)."""
-        from advisor.llm_client import get_ollama_client
+        from advisor.llm_client import get_planning_llm
         from advisor.governance_docs import get_doc_manager
         from advisor.agents.dr_egeria_agent import DrEgeriaActionAgent
 
-        llm = get_ollama_client()
+        llm = get_planning_llm()
         action_agent = DrEgeriaActionAgent()
 
         logger.info(

@@ -306,7 +306,7 @@ uvicorn advisor.dashboard.api:app --host 0.0.0.0 --port 8000
 http://localhost:8501
 
 # API
-http://localhost:8000/docs
+http://localhost:8880/docs
 
 # Terminal
 python -m advisor.dashboard.terminal

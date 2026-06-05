@@ -17,6 +17,14 @@ Ensure these services are running before you start:
 | Egeria / pyegeria MCP server | `localhost:9443` | Report and action queries only |
 | MLflow | `localhost:5025` | Optional — experiment tracking |
 
+**Models used:** `llama3.1:8b` for fast Q&A/RAG, and `qwen2.5-coder:32b` for the
+Literate Governance planner (narrative generation and refinement). Pull both:
+
+```bash
+ollama pull llama3.1:8b
+ollama pull qwen2.5-coder:32b
+```
+
 ```bash
 # Check Ollama
 curl http://localhost:11434/api/tags
@@ -35,10 +43,11 @@ curl -k https://localhost:9443/open-metadata/platform-services/users/garygeeke/s
 ```bash
 cd /Users/dwolfson/localGit/egeria-v6/egeria-advisor
 source activate_venv.sh
-uvicorn advisor.web.app:app --reload
+python -m advisor.web.app
+# or: uvicorn advisor.web.app:app --reload --port 8880
 ```
 
-Open **http://localhost:8000** in your browser.
+Open **http://localhost:8880** in your browser.
 
 ### Accessing the Web UI from another machine
 
@@ -48,9 +57,9 @@ If you want to open the web UI from another computer on the same network, bind t
 For example, to allow access from any device on the local network:
 
 ```bash
-uvicorn advisor.web.app:app --reload --host 0.0.0.0 --port 8000
+uvicorn advisor.web.app:app --reload --host 0.0.0.0 --port 8880
 ```
-Then, from the remote machine, open a browser and navigate to `http://<host-ip>:8000`, replacing `<host-ip>` with the IP address of the machine running the server.
+Then, from the remote machine, open a browser and navigate to `http://<host-ip>:8880`, replacing `<host-ip>` with the IP address of the machine running the server.
 
 If the page still does not load, check:
 
@@ -205,7 +214,7 @@ See **[Query Routing Guide](QUERY_ROUTING_GUIDE.md)** for detailed routing behav
 
 ## Planning Multi-Step Governance Tasks
 
-For tasks that involve multiple related objects — a glossary *with* terms, categories, *and* steward roles — describe the full task in plain language and the advisor generates a complete **Plan Document**:
+For tasks that involve multiple related objects — a glossary *with* terms, categories, *and* steward roles — describe the full task in plain language and the advisor builds a complete **Plan Document**:
 
 ```
 "Set up a glossary for the Finance domain with standard terms,
@@ -213,11 +222,14 @@ For tasks that involve multiple related objects — a glossary *with* terms, cat
 ```
 
 The advisor will:
-1. Generate a structured markdown plan with pre-filled Dr.Egeria commands
-2. Show it inline — you can ask for changes before committing
-3. Execute it against Egeria when you click **Execute**
-4. Report the outcome and run verification reports automatically
+1. **Confirm the steps** it extracted before asking for any detail
+2. Open a live **Plan Canvas** beside the chat — reorder, edit, add, or remove steps
+   conversationally or by editing cards directly
+3. **Generate** a structured markdown plan with pre-filled Dr.Egeria commands
+4. **Execute** it against Egeria when you click **Execute**
+5. **Report** the outcome and run verification reports automatically
 
-Plans are saved to `~/egeria-plans/` and accessible from the **Plans** sidebar between sessions.
+Plans are saved to `~/egeria-plans/` and accessible from the **Plans** sidebar between
+sessions; in-progress sessions appear as **Drafts** you can resume any time.
 
 See **[Literate Governance Guide](LITERATE_GOVERNANCE_GUIDE.md)** for the full workflow, CLI tools, and troubleshooting.

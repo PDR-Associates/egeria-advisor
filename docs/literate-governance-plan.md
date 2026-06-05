@@ -328,10 +328,24 @@ Outline:
 
 Orchestrates the plan generation lifecycle:
 
-1. **Intent capture** — LLM builds IntentModel from user description (entity types, names, relationships, open slots); bounded by the Dr.Egeria template vocabulary
-2. **Command derivation** — deterministic rules map IntentModel → topologically ordered command list with pre-filled params and dependency references
-3. **Narrative generation** — LLM writes Goal, Requirements, Approach sections, and per-command rationale annotations
-4. **Document composition** — assembles full Plan Document markdown
+1. **Intent capture** — extracts entities and roles from the user description (see *Two-stage extraction* below); bounded by the Dr.Egeria template vocabulary
+2. **Command derivation** — `_entities_to_commands()` deterministically maps extracted entities → ordered command list with pre-filled params (Parent ID for sub-projects, role/person for appointments)
+3. **Validation** — `validate_commands()` (post-processing pass) corrects structural errors
+4. **Narrative generation** — LLM writes Goal, Requirements, Approach sections, and per-command rationale annotations
+5. **Document composition** — assembles full Plan Document markdown
+
+#### Two-stage extraction (`_decompose_intent`)
+
+The intent-capture step deliberately keeps the LLM away from command structure. Local 8B models hallucinate when asked to emit Dr.Egeria command JSON directly — they copy values out of the format examples (e.g. emitting a project literally named "Analysis") and repeat commands. The two-stage design solves this:
+
+- **Stage 1 — entity extraction.** First a **pattern-based** extractor (`_extract_entities_patterns`) handles common phrasings with regexes — *"called X"*, *"a campaign for X"*, *"led by X as Y"*, *"sub-projects for A and B"*. It needs no LLM and is instant and deterministic. Only when patterns don't match does it fall back to an **LLM extractor** (`_extract_entities_llm`) with a simple prompt that asks for entity names and roles — never command names.
+- **Stage 2 — deterministic command mapping.** `_entities_to_commands()` maps each extracted entity type to its Dr.Egeria action via the `_ENTITY_TO_ACTION` table, sets Parent ID on sub-projects by construction, and always expands a named role holder into `Create Person Role` + `Link Person Role Appointment`.
+
+The LLM's job is *understanding intent and extracting names*; it never decides command structure. New phrasings are added to the pattern library; new object types to the action catalog. This is where the system "learns" without fine-tuning.
+
+#### Model routing
+
+Planning code calls `get_planning_llm()` (not `get_ollama_client()`), which returns a client pinned to the `llm.models.planning` model — **`qwen2.5-coder:32b`** — for narrative generation, change application, answer parsing, and the LLM extraction fallback. The high-volume RAG Q&A path stays on the faster `llama3.1:8b`. See design decisions Q15–Q16.
 
 ### 9.2 PlanElicitor  `advisor/agents/plan_elicitor.py`
 
@@ -367,18 +381,41 @@ Manages the lifecycle of completed Plan Documents.
   archived/        — superseded or cancelled plans
   drafts/          — in-progress planning sessions (DraftManager)
   plan_templates/  — reusable plan templates (PlanTemplateManager)
+  sessions/        — full conversation transcripts (SessionLogger)
+  versions/        — automatic backups before each plan edit
 ```
 
-### 9.6 Plan Canvas  `advisor/web/static/plan_canvas.js` *(to be extracted)*
+### 9.6 ActionCatalog  `advisor/action_catalog.py` + `config/dr_egeria_actions.yaml`
 
-Currently embedded in `plan_editor.js` and `index.html`. To be extracted as a standalone component supporting:
-- Persistent side panel alongside chat (Option A, draggable divider)
-- Live sync with draft spec via `/api/drafts/{id}`
-- Drag-to-reorder and ↑↓ arrows
-- Add / remove commands
-- Inline field editing (expand card)
+The authoritative, structured definition of the Dr.Egeria actions the planner understands (42 actions today). Each entry carries: family, intent entity type, natural-language aliases, ordering priority, `requires`/`required_before` dependencies, `container_for`, `supersedes` rules, and a narrative template. Drives command derivation, the post-processing validator, and narrative pre-population. Extended as Dr.Egeria's template coverage grows — *not* embedded in LLM prompts.
+
+### 9.7 Plan validator  `advisor/plan_validator.py`
+
+`validate_commands()` applies deterministic post-processing rules after every decomposition (and after canvas additions), in order:
+
+- **Deduplicate** — drop identical action+display_name commands; strip person/role fields that don't belong on `Create Project`
+- **Remove superseded** — `Link Project Hierarchy` → `Create Project` with Parent ID
+- **Clear self-referential / orphaned Parent IDs** — a top-level project must not parent itself
+- **Ensure containers** — insert a missing `Create Glossary` before `Create Glossary Term`, etc.
+- **Role before appointment** — `Create Person Role` precedes `Link Person Role Appointment`
+- **Topological sort** — by catalog ordering priority
+
+Corrections are surfaced to the user in the `confirm_commands` note ("Auto-corrected: …").
+
+### 9.8 SessionLogger  `advisor/session_logger.py`
+
+Append-only JSONL transcript per planning session (`~/egeria-plans/sessions/{draft_id}.jsonl`). Captures every user turn, system response, phase, perspective, user identity, and a terminal summary with outcome and command families. Exposed via `GET /api/sessions` and `GET /api/sessions/{id}` for review and learning (Section 13).
+
+### 9.9 Plan Canvas  `advisor/web/static/plan_canvas.js` + `artifact_canvas.js`
+
+`ArtifactCanvas` is the generic split-view canvas base; `PlanCanvas` is a thin adapter over it. Supports:
+- Persistent side panel alongside chat (Option A, draggable `ew-resize` divider)
+- Live sync with draft spec via `/api/drafts/{id}` + `PATCH /api/drafts/{id}/commands`
+- Drag-to-reorder; add / remove commands
+- Inline field editing (expand card) with Basic/Advanced toggle and scrollable field list
 - Per-card narrative text (generated and user-editable)
 - Status indicators (complete / incomplete / placeholder)
+- Generate Plan and Execute toolbar buttons
 
 ### 9.7 ExecutionOrchestrator  *(Phase 2)*
 
@@ -453,6 +490,8 @@ After execution: maps command families to relevant `report_specs`, runs verifica
 | Q12 | IntentModel slot vocabulary source? | Dr.Egeria templates (currently ~12 command families). `egeria_types` collection as reference. Grows as templates grow. |
 | Q13 | Per-command narrative text? | Yes — generated by LLM and user-editable. Appears in canvas and in the Plan Document as command annotations. |
 | Q14 | Plan Templates? | Yes — already implemented. Save any plan as a template; start new plans from templates. Stored in `~/egeria-plans/plan_templates/`. |
+| Q15 | How is intent decomposed reliably on a local 8B model? | Two-stage extraction. The LLM never emits command structure — it only extracts entity names and roles (pattern-based first, LLM fallback). A deterministic mapping step turns entities into commands. This eliminated hallucinated names and duplicate commands. |
+| Q16 | Which LLM for planning? | `qwen2.5-coder:32b` via `get_planning_llm()` for narrative, refinement, and the LLM extraction fallback (quality matters). RAG Q&A stays on `llama3.1:8b` (latency matters). Configured in `llm.models.planning`. |
 
 ---
 

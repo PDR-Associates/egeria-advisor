@@ -611,6 +611,7 @@ Respond with ONLY a valid JSON object in this exact format (no extra text):
       "display_name": "Finance Domain Glossary",
       "description": "One sentence describing the purpose of this specific object",
       "rationale": "Why this step is needed in the plan",
+      "narrative": "1-2 sentence explanation for the plan document — what this creates and why, in plain language",
       "params": {{}}
     }},
     {{
@@ -618,6 +619,7 @@ Respond with ONLY a valid JSON object in this exact format (no extra text):
       "display_name": "Discovery",
       "description": "Initial discovery sub-project",
       "rationale": "Sub-project of the main campaign",
+      "narrative": "Creates the Discovery sub-project under the main campaign.",
       "params": {{"Parent ID": "Finance Project", "Parent Relationship Type Name": "ProjectHierarchy"}}
     }},
     ...
@@ -626,6 +628,7 @@ Respond with ONLY a valid JSON object in this exact format (no extra text):
 
 Rules:
 - "display_name" is the exact name for this object. Use names from the user's description; invent a sensible placeholder only if truly unnamed.
+- "narrative" is 1-2 plain-English sentences explaining what this step does and why, suitable for a reviewer who may not know Dr.Egeria.
 - "params" carries pre-known field values (e.g. Parent ID for sub-projects). Use {{}} when empty.
 - ONLY include objects the user explicitly mentioned, or technically required containers.
 - Do NOT invent Governance Zones, categories, or any infrastructure not described by the user.
@@ -638,7 +641,17 @@ JSON:"""
             raw = llm.generate(prompt, temperature=0.2, max_tokens=3000)
             m = re.search(r"\{.*\}", raw, re.DOTALL)
             if m:
-                return json.loads(m.group())
+                result = json.loads(m.group())
+                # Post-process: apply deterministic validation rules
+                from advisor.plan_validator import validate_commands
+                cmds = result.get("commands", [])
+                fixed, _, warnings = validate_commands(cmds, {})
+                result["commands"] = fixed
+                if warnings:
+                    logger.info(
+                        f"GovernancePlanAgent: validator applied {len(warnings)} fixes: {warnings}"
+                    )
+                return result
         except Exception as exc:
             logger.warning(f"GovernancePlanAgent: intent decomposition failed: {exc}")
 
@@ -802,16 +815,26 @@ GOAL:"""
     ) -> str:
         """Compose one annotated Dr.Egeria command block."""
         action = cmd["action"]
-        rationale = cmd["spec"].get("rationale", cmd.get("description", ""))
+        # Prefer user-edited narrative, then LLM rationale, then description
+        narrative = (
+            cmd.get("narrative")
+            or cmd.get("spec", {}).get("rationale")
+            or cmd.get("rationale")
+            or cmd.get("description", "")
+        )
         params: Dict[str, Any] = cmd.get("params", {})
         template: Optional[Dict] = cmd.get("template_parsed")
 
         lines: List[str] = []
 
-        # Rationale comment header
-        comment_body = f"{action}"
-        if rationale:
-            comment_body += f"\n     {rationale}"
+        # Narrative comment header
+        comment_body = action
+        if narrative:
+            # Wrap long narrative at ~80 chars, indented
+            wrapped = "\n     ".join(
+                narrative[i:i+80] for i in range(0, len(narrative), 80)
+            )
+            comment_body += f"\n     {wrapped}"
         lines.append(f"<!-- Step {step_num}: {comment_body} -->")
 
         lines.append(f"## {action}")
@@ -866,14 +889,18 @@ GOAL:"""
         requirements: List[str],
         approach: str,
         commands: List[Dict],
+        created_by: Optional[str] = None,
     ) -> str:
         """Assemble the complete GPD markdown."""
+        import os
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        creator = created_by or os.environ.get("USER") or os.environ.get("USERNAME") or "unknown"
 
         parts: List[str] = [
             f"# Data Management Plan: {title}",
-            f"**Created:** {now}   **Status:** Draft",
-            f"**Perspective:** {perspective}   **Purpose:** {purpose}",
+            f"**Created:** {now}   **Last edited:** {now}   **Status:** Draft",
+            f"**Created by:** {creator}   **Perspective:** {perspective}",
+            f"**Purpose:** {purpose}",
             "",
             "---",
             "",

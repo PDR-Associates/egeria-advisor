@@ -84,13 +84,20 @@ class PlanElicitor:
             decomp = agent._decompose_intent(query, perspective, llm)
             title = decomp.get("title", query[:50])
             purpose = decomp.get("purpose", query)
+            from advisor.action_catalog import get_action_catalog
+            catalog = get_action_catalog()
             commands = [
                 {
                     "action":       c.get("action", ""),
                     "display_name": c.get("display_name", ""),
                     "description":  c.get("description", ""),
                     "rationale":    c.get("rationale", ""),
-                    "pre_filled":   {},
+                    # narrative: prefer LLM-generated, fall back to catalog template
+                    "narrative":    (
+                        c.get("narrative", "")
+                        or catalog.narrative_template(c.get("action", ""))
+                    ),
+                    "pre_filled":   dict(c.get("params") or {}),
                     "placeholders": {},
                 }
                 for c in decomp.get("commands", [])
@@ -363,17 +370,22 @@ class PlanElicitor:
                 llm,
                 existing_commands=spec["commands_identified"],
             )
+            from advisor.action_catalog import get_action_catalog
+            catalog = get_action_catalog()
             new_commands = []
             for c in new_decomp.get("commands", []):
                 if not c.get("action"):
                     continue
-                # Seed pre_filled from the decomp's own params (e.g. Parent ID for sub-projects)
                 pre_filled = dict(c.get("params") or {})
                 new_commands.append({
                     "action":       c["action"],
                     "display_name": c.get("display_name", ""),
                     "description":  c.get("description", ""),
                     "rationale":    c.get("rationale", ""),
+                    "narrative":    (
+                        c.get("narrative", "")
+                        or catalog.narrative_template(c["action"])
+                    ),
                     "pre_filled":   pre_filled,
                     "placeholders": {},
                 })
@@ -1075,22 +1087,34 @@ class PlanElicitor:
     def _merge_answers_into_commands(self, spec: Dict) -> List[Dict]:
         """Build a commands list with params merged from spec answers (for compose_document)."""
         from advisor.agents.governance_plan_agent import GovernancePlanAgent, _command_order_key
-        agent = GovernancePlanAgent()
-        result = []
+        from advisor.action_catalog import get_action_catalog
+        agent   = GovernancePlanAgent()
+        catalog = get_action_catalog()
+        result  = []
         for cmd in spec["commands_identified"]:
-            action = cmd["action"]
-            params = dict(spec["answers"].get(action, {}))
+            action      = cmd["action"]
+            answers_key = cmd.get("_answers_key") or action
+            params      = dict(spec["answers"].get(answers_key) or spec["answers"].get(action) or {})
+            # Merge pre_filled params (e.g. Parent ID set during decomposition)
+            for k, v in (cmd.get("pre_filled") or {}).items():
+                params.setdefault(k, v)
             if cmd.get("display_name") and "Display Name" not in params:
                 params["Display Name"] = cmd["display_name"]
-            template = agent._load_template(action)
+            template  = agent._load_template(action)
+            narrative = (
+                cmd.get("narrative")
+                or cmd.get("rationale")
+                or catalog.narrative_template(action)
+            )
             result.append({
-                "action":         action,
-                "display_name":   cmd.get("display_name", ""),
-                "description":    cmd.get("description", ""),
-                "spec":           {"rationale": cmd.get("rationale", "")},
+                "action":          action,
+                "display_name":    cmd.get("display_name", ""),
+                "description":     cmd.get("description", ""),
+                "narrative":       narrative,
+                "spec":            {"rationale": cmd.get("rationale", "")},
                 "template_parsed": template,
-                "order":          _command_order_key(action),
-                "params":         params,
+                "order":           _command_order_key(action),
+                "params":          params,
             })
         return sorted(result, key=lambda x: x["order"])
 

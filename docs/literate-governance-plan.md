@@ -472,7 +472,126 @@ After execution: maps command families to relevant `report_specs`, runs verifica
 
 ---
 
-## 13. What's NOT in Scope (for now)
+## 13. Continuous Learning and Context Intelligence
+
+### 13.1 The learning loop
+
+Every interaction is a signal. The goal is to capture those signals, make them reviewable, and use them to improve the system — first manually, then progressively more automatically.
+
+#### Transcript capture
+
+Every planning session is saved as a structured session log:
+- Full conversation turns (user message → system response, with phase and query_type)
+- User identity, active perspective, and intent history
+- Draft lifecycle events (created, advanced to generate, executed, cancelled)
+- Correction events — moments where the user had to correct the system — are the highest-value signal because they encode exactly what was wrong and what the right answer looks like
+- Outcome: plan generated / executed / cancelled / abandoned
+
+Session logs are saved to `~/egeria-plans/sessions/{draft_id}.jsonl`. One line per turn. Finalised on terminal state (done, cancelled, saved-and-exited).
+
+#### Context we must capture
+
+A session log without context is much less useful. Minimum required context per session:
+
+| Field | Why it matters |
+| --- | --- |
+| `user` | Identity (OS user for now; Egeria Actor profile later) |
+| `perspective` | Did the user self-identify their role? Which one? |
+| `intent_overrides` | Did the user manually override Auto intent? A pattern here reveals classifier weaknesses |
+| `session_history` | Is this a first-time user or experienced? What have they planned before? |
+| `egeria_environment` | Which Egeria instance? Which server? Which metadata collections are active? |
+
+#### Review workflow
+
+Raw transcripts are noisy. The review approach is **targeted sampling**, not exhaustive manual review:
+
+1. **Failure triage**: sample sessions where the user corrected the system, abandoned, or thumbs-downed — these are the highest-priority reviews
+2. **Success sampling**: sample long sessions with positive outcomes — these reveal what's working and can become few-shot examples
+3. **LLM-assisted pre-classification**: use a Claude API call to pre-classify transcripts (hallucination / wrong intent / correct but unhelpful / good) before a human reviews — reduces review burden significantly
+
+#### Learning pipeline (progressive)
+
+| Stage | Mechanism | Effort |
+| --- | --- | --- |
+| **Immediate** | Fix bugs from reviews: add validator rules, update prompt rules, extend action catalog | Low — one rule per failure pattern |
+| **Short-term** | Few-shot examples in decompose prompt from approved plans | Medium — requires curation |
+| **Medium-term** | RAG over past plans: retrieve similar plans when generating new ones (pgvector already available) | Medium — new collection + indexing |
+| **Longer-term** | Fine-tuning local model on curated plan transcripts | High — requires labelled dataset |
+
+The action catalog and validator are the system's "learned rules" — structured, inspectable, and evolvable without touching the LLM. Every bug like the self-referential Parent ID issue becomes a catalog rule or validator fix that prevents all future occurrences permanently.
+
+### 13.2 Personalization
+
+As the system moves from single-user to multi-user, personalization becomes increasingly relevant. Three layers:
+
+**User identity and history**
+- Who the user is (Egeria Actor profile — name, role, team, organisation)
+- What they've planned before (session history → vocabulary, naming conventions, preferred structure)
+- What they always change or skip (implicit preference extraction from correction events)
+- Personal plan templates saved from past approved plans
+
+**Perspective-aware behaviour**
+The system already supports perspective selection (Developer / Data Steward / Governance Officer etc.). This needs to go further:
+- Perspective informs which Dr.Egeria command families are relevant
+- Perspective informs the vocabulary used in generated narrative text
+- Implicit perspective detection: if the user's history shows they always work in the Glossary family, offer that as the default
+
+**Egeria Actor integration**
+Egeria itself has Actor profiles, Person Roles, and Team structures. When a user logs in:
+- Look up their Actor profile to pre-populate perspective and organisational context
+- Suggest role assignments based on their known Egeria roles
+- Use their team's zone assignments as defaults
+
+### 13.3 Egeria as an active participant
+
+The Advisor has a live connection to Egeria via MCP. This is underutilised. Egeria is not just the target of plans — it is an active knowledge resource that should inform plan generation.
+
+**Glossary**
+Egeria has a live glossary. When the user mentions a term ("Revenue Recognition", "Finance Domain", "data steward"), check the glossary first:
+- Is this term already defined? Show the existing definition as context.
+- Are there naming conventions in the glossary that should be applied to the new plan?
+- Suggest glossary-conformant names for new objects rather than invented placeholders.
+
+**Referenced data / valid values**
+Egeria has reference data collections (project status, data classification levels, governance zone names, etc.). Rather than prompting the LLM to invent valid values, query Egeria:
+- What governance zones exist? (Use as valid values for zone assignments)
+- What project statuses are defined? (Use for status fields)
+- What data classification levels are active? (Use for classification commands)
+This dramatically reduces hallucination of field values and ensures plans use names that will actually resolve when executed.
+
+**Context graph**
+Egeria knows what already exists: existing projects, glossaries, teams, data assets. Before generating a plan:
+- Check if the named project already exists — and if so, whether the user intends to extend it or create a new one
+- Identify related objects that should be linked (e.g. a team that already manages the Finance domain)
+- Detect potential conflicts (a zone name that already exists but with different access rules)
+
+**User profiles**
+Egeria's Actor management tracks people and their roles. When "Tom Tally" is mentioned as a project leader:
+- Look up Tom Tally in Egeria's actor profiles — confirm the name, find their qualified name for the appointment command
+- If Tom Tally doesn't exist yet, note that a Create Actor Profile command may be needed
+
+**The principle**: before building anything from scratch, ask "does Egeria already have this?" — it usually does. The Advisor's job is to make Egeria's knowledge accessible conversationally, not to duplicate it.
+
+### 13.4 Implementation roadmap for 13.1–13.3
+
+| Priority | Item | Status |
+| --- | --- | --- |
+| Now | Session transcript saving (`~/egeria-plans/sessions/`) | Implementing |
+| Now | Context capture: user, perspective, intent history per session | Implementing |
+| Soon | Admin dashboard: session list + transcript viewer with failure tagging | Planned |
+| Soon | LLM-assisted transcript pre-classification (Claude API) | Planned |
+| Medium | Few-shot examples from approved plans in decompose prompt | Planned |
+| Medium | RAG over past plans (pgvector, new collection) | Planned |
+| Medium | Egeria glossary lookup during plan generation | Planned |
+| Medium | Egeria referenced data for valid values | Planned |
+| Medium | Egeria Actor profile lookup for named individuals | Planned |
+| Later | Context graph conflict detection pre-execution | Planned |
+| Later | Implicit preference extraction from correction events | Planned |
+| Later | Fine-tuning on curated plan transcripts | Research |
+
+---
+
+## 14. What's NOT in Scope (for now)
 
 - Rollback / undo of executed commands (Dr.Egeria does not support this natively)
 - Scheduling / deferred execution

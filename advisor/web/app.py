@@ -394,6 +394,24 @@ async def delete_plan_template(name: str) -> Dict[str, str]:
     return {"status": "ok" if deleted else "not_found"}
 
 
+@app.get("/api/sessions")
+async def list_sessions() -> Dict[str, Any]:
+    """Return planning session transcript metadata (newest first)."""
+    from advisor.session_logger import get_session_logger
+    return {"sessions": get_session_logger().list_sessions()}
+
+
+@app.get("/api/sessions/{session_id}")
+async def get_session(session_id: str) -> Dict[str, Any]:
+    """Return the full transcript for a planning session."""
+    from fastapi import HTTPException
+    from advisor.session_logger import get_session_logger
+    entries = get_session_logger().load_session(session_id)
+    if not entries:
+        raise HTTPException(status_code=404, detail=f"Session {session_id!r} not found")
+    return {"session_id": session_id, "entries": entries}
+
+
 @app.get("/api/templates/{command_name}/fields")
 async def get_template_fields(command_name: str, level: str = "basic") -> Dict[str, Any]:
     """Return template field metadata for a Dr.Egeria command at the given template level."""

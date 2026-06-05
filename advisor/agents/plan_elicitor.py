@@ -145,6 +145,24 @@ class PlanElicitor:
         spec["phase_label"] = _PHASE_LABELS["confirm_commands"]
         dm.save(spec)
 
+        # Log session start
+        try:
+            from advisor.session_logger import get_session_logger
+            import os
+            sl = get_session_logger()
+            sl.log_turn(
+                spec["draft_id"], role="user", content=query,
+                phase="confirm_commands", perspective=perspective,
+                metadata={
+                    "user": os.environ.get("USER") or os.environ.get("USERNAME") or "unknown",
+                    "mode": mode,
+                    "template_name": template_name,
+                    "commands_count": len(commands),
+                },
+            )
+        except Exception:
+            pass
+
         # Surface any auto-corrections made by the validator
         init_note = None
         if _val_warnings:
@@ -169,22 +187,37 @@ class PlanElicitor:
                 f"Start a new plan by describing what you want to set up.",
             )
 
+        # Log the user turn
+        try:
+            from advisor.session_logger import get_session_logger
+            get_session_logger().log_turn(
+                draft_id, role="user", content=user_response,
+                phase=spec.get("phase"),
+                perspective=spec.get("perspective"),
+            )
+        except Exception:
+            pass
+
         phase = spec.get("phase", "confirm_commands")
 
         if phase == "confirm_commands":
-            return self._handle_confirm_commands(spec, user_response)
+            result = self._handle_confirm_commands(spec, user_response)
         elif phase == "elicit_required":
-            return self._handle_elicit_required(spec, user_response)
+            result = self._handle_elicit_required(spec, user_response)
         elif phase == "elicit_optional":
-            return self._handle_elicit_optional(spec, user_response)
+            result = self._handle_elicit_optional(spec, user_response)
         elif phase == "generate":
-            return self._handle_post_generate(spec, user_response)
+            result = self._handle_post_generate(spec, user_response)
         elif phase == "refine":
-            return self._handle_refine(spec, user_response)
+            result = self._handle_refine(spec, user_response)
         elif phase == "template_offer":
-            return self._handle_template_offer(spec, user_response)
+            result = self._handle_template_offer(spec, user_response)
         else:
-            return _error_result(draft_id, f"Unknown draft phase: {phase!r}")
+            result = _error_result(draft_id, f"Unknown draft phase: {phase!r}")
+
+        # Log system response and finalize session on terminal states
+        self._log_system_response(draft_id, spec, result)
+        return result
 
     # ------------------------------------------------------------------
     # Navigation actions
@@ -222,6 +255,15 @@ class PlanElicitor:
 
     def cancel(self, draft_id: str) -> Dict[str, Any]:
         """Delete the draft and return to idle."""
+        try:
+            from advisor.session_logger import get_session_logger
+            import os
+            get_session_logger().finalize(
+                draft_id, outcome="cancelled",
+                user=os.environ.get("USER") or os.environ.get("USERNAME") or "unknown",
+            )
+        except Exception:
+            pass
         get_draft_manager().delete(draft_id)
         return {
             "query": draft_id,
@@ -776,6 +818,49 @@ class PlanElicitor:
         }
 
     # ------------------------------------------------------------------
+    # Session logging helpers
+
+    def _log_system_response(
+        self, draft_id: str, spec: Dict, result: Dict[str, Any]
+    ) -> None:
+        """Log the system response and finalize session on terminal states."""
+        try:
+            from advisor.session_logger import get_session_logger
+            import os
+            sl = get_session_logger()
+            response_text = result.get("response", "")
+            result_phase  = result.get("phase", "")
+            perspective   = spec.get("perspective") or result.get("perspective")
+
+            sl.log_turn(
+                draft_id, role="system",
+                content=response_text[:2000],   # truncate long plan docs
+                phase=result_phase,
+                query_type=result.get("query_type"),
+                perspective=perspective,
+            )
+
+            # Finalize on terminal states
+            if result_phase in ("done", "saved", "error"):
+                outcome_map = {
+                    "done":  "plan_generated" if result.get("doc_id") else "cancelled",
+                    "saved": "saved_in_progress",
+                    "error": "error",
+                }
+                sl.finalize(
+                    draft_id,
+                    outcome=outcome_map.get(result_phase, result_phase),
+                    doc_id=result.get("doc_id"),
+                    perspective=perspective,
+                    user=os.environ.get("USER") or os.environ.get("USERNAME") or "unknown",
+                    command_families=",".join(sorted({
+                        c["action"].split()[1] if len(c["action"].split()) > 1 else c["action"]
+                        for c in spec.get("commands_identified", [])
+                    })),
+                )
+        except Exception:
+            pass
+
     # Response builders
     # ------------------------------------------------------------------
 

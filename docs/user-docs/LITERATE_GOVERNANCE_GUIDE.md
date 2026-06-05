@@ -13,11 +13,19 @@ commands live together in one human-readable document.
 
 You describe what you want to accomplish. The advisor:
 
-1. **Plans** — generates a structured markdown document with goal, approach, and
-   pre-filled Dr.Egeria commands
-2. **Reviews** — shows you the plan inline; you can ask for changes conversationally
-3. **Executes** — submits the approved plan to Dr.Egeria via MCP
-4. **Reports** — verifies what was created, appends an outcome section, saves to outbox
+1. **Proposes** — extracts the objects and roles from your description and shows you
+   the proposed list of steps for confirmation *before* asking any detail questions
+2. **Builds** — opens a live **Plan Canvas** beside the chat where the steps appear as
+   cards you can reorder, edit, add to, or remove
+3. **Refines** — you iterate by talking to it *or* by editing cards directly; both views
+   stay in sync
+4. **Generates** — assembles a structured markdown Plan Document (goal, approach,
+   pre-filled Dr.Egeria commands, per-step narrative)
+5. **Executes** — submits the approved plan to Dr.Egeria via MCP
+6. **Reports** — verifies what was created, appends an outcome section, saves to outbox
+
+The whole flow is **non-linear**: you can jump back, change direction, leave and resume
+later, or switch between the canvas and the chat at any point.
 
 ---
 
@@ -68,15 +76,94 @@ automatically routed to the plan generator:
 
 ---
 
-## Reading the plan document
+## The confirm step
 
-The plan is displayed inline in the chat as a markdown document with five sections:
+Before the advisor asks you for any details, it shows you the **proposed steps** it
+extracted from your description and asks you to confirm:
+
+```
+### Sales Forecast Consolidation
+Here's what I'll create, in order:
+
+1. Create Project — Sales Forecast Consolidation
+2. Create Person Role — Project Leader
+3. Link Person Role Appointment — Tom Tally
+
+Does this look right?
+- Say "yes" or "continue" to fill in any missing details
+- Say "generate now" to create the plan immediately (gaps become placeholders)
+- Describe anything to add:  "also create a sub-project for data collection"
+- Describe anything to remove: "remove the governance zone"
+```
+
+This is your chance to correct the *shape* of the plan before getting into field
+details. If the advisor auto-corrected anything (for example, turning a self-referential
+parent into a clean sub-project, or removing a duplicate step), it tells you:
+*"Auto-corrected: …"*.
+
+You can respond conversationally:
+
+- **"yes"** / **"continue"** — proceed to fill in detail fields
+- **"generate now"** — skip straight to the document; unknown required fields become
+  `<!-- TODO -->` placeholders you can fill later
+- **"also add a sub-project for Survey of Existing Systems"** — adds a step
+- **"remove step 2"** — removes a step by number
+- **"steps 1 and 2 are duplicated"** — removes duplicates
+
+---
+
+## The Plan Canvas
+
+When a plan is active, a **Plan Canvas** panel opens to the right of the chat. Drag the
+divider between them to give whichever side more room.
+
+Each step is a **card** showing the command, its display name, any known parameters
+(✓ green), and a status dot (green = named, amber = needs a name). On each card you can:
+
+| Action | How |
+|--------|-----|
+| **Reorder** | Drag the card by its `≡` handle |
+| **Expand fields** | Click `▾` — shows the template fields with inline editing |
+| **Add a note** | Type in the narrative box — explains the step in the final document |
+| **Remove** | Click `✕` |
+| **Add a step** | Click **+ Add step** at the bottom |
+
+Use the **Basic / Advanced** toggle in the canvas toolbar to switch between the key
+fields (Basic) and the full template field set (Advanced).
+
+**Conversation handles structure; the canvas handles detail.** Adding, removing, and
+reordering steps is most natural in the chat ("add a sub-project for X", "move design
+before requirements"). Filling in a description, a date, or an owner is easiest by
+clicking the card. Neither forces you into the other — both edit the same live plan.
+
+When you are ready, click **Generate Plan** in the canvas toolbar to produce the full
+Plan Document. **Execute** appears once the document exists.
+
+---
+
+## Drafts — leave and resume
+
+Every planning session is saved as a **draft**. The **Plans** sidebar shows your active
+drafts (amber) above your inbox and outbox plans. You can:
+
+- **Leave** a session at any point (close the tab, ask something else) — it's saved
+- **Resume** by clicking the draft in the sidebar; the advisor shows you exactly where
+  you left off
+- **Discard** with the `✕` next to the draft
+
+The session also survives a browser refresh — the active draft is restored automatically.
+
+---
+
+## Reading the generated plan document
+
+Once generated, the plan is a markdown document with five sections:
 
 ### 1. Header
 ```
 # Data Management Plan: Finance Domain Glossary
-**Created:** 2026-06-02   **Status:** Draft
-**Requested by:** Dan Wolfson   **Perspective:** Data Steward
+**Created:** 2026-06-02 14:30   **Last edited:** 2026-06-02 14:42   **Status:** Draft
+**Created by:** dwolfson   **Perspective:** Data Steward
 **Purpose:** Establish canonical glossary for Finance business domain
 ```
 
@@ -117,17 +204,25 @@ Or use the CLI to open the plan in your editor (see [CLI tools](#cli-tools) belo
 
 ## Refining the plan
 
-While a plan is in your inbox (before execution), you can ask for changes:
+You can refine in **two ways**, and they edit the same live plan:
+
+**In the chat** — best for structural changes:
 
 ```
 "Add a term for Revenue Recognition"
 "Remove the team membership step — we don't need that"
 "Change the governance zone to Finance-Prod"
+"Move the design phase before requirements"
 "Add a second data steward role for the EMEA region"
 ```
 
-The advisor modifies the plan document and saves the updated version. The previous
-version is automatically backed up to `~/egeria-plans/versions/`.
+**In the canvas** — best for field detail: expand a card (`▾`) and edit fields directly,
+drag cards to reorder, or click **+ Add step**. Changes save automatically.
+
+If you have already generated the document and opened the **Plan Editor**, a
+**💬 Discuss changes** button returns you to the chat with the same draft active, so you
+can describe structural changes conversationally and come back. The previous version of
+any edited document is automatically backed up to `~/egeria-plans/versions/`.
 
 ---
 
@@ -185,15 +280,21 @@ The sidebar refreshes automatically after each plan lifecycle event.
 | `~/egeria-plans/inbox/` | Plans awaiting review or execution |
 | `~/egeria-plans/outbox/` | Executed plans with outcome section appended |
 | `~/egeria-plans/archived/` | Cancelled or superseded plans |
+| `~/egeria-plans/drafts/` | In-progress planning sessions (the live draft state) |
+| `~/egeria-plans/plan_templates/` | Reusable plan templates you've saved |
+| `~/egeria-plans/sessions/` | Full conversation transcripts (for review / learning) |
 | `~/egeria-plans/versions/` | Automatic backups saved before each edit |
 
 Paths are configurable in `config/advisor.yaml`:
 
 ```yaml
 governance_plans:
-  inbox:    ~/egeria-plans/inbox/
-  outbox:   ~/egeria-plans/outbox/
-  archived: ~/egeria-plans/archived/
+  inbox:          ~/egeria-plans/inbox/
+  outbox:         ~/egeria-plans/outbox/
+  archived:       ~/egeria-plans/archived/
+  drafts:         ~/egeria-plans/drafts/
+  plan_templates: ~/egeria-plans/plan_templates/
+  sessions:       ~/egeria-plans/sessions/
 ```
 
 Plan documents are markdown files named `{YYYYMMDD_HHMMSS}_{title-slug}.md`.
@@ -238,28 +339,35 @@ egeria-advisor-plans versions 20260602_143022_finance_glossary
 > *"As a data steward for the Finance division, I want to set up a glossary for
 > the finance domain with standard terms, categories, and data steward assignments"*
 
-**Step 2 — Review the plan**
+**Step 2 — Confirm the steps**
 
-The advisor generates a plan document. Check:
-- Are the display names right?
-- Are there any **⚠ fill in** markers that need your attention?
-- Does the approach match what you intended?
+The advisor shows the proposed steps in the chat and opens the Plan Canvas. Check the
+list is right — add, remove, or reorder by talking to it or editing cards. Then say
+**"yes"** to fill in details, or **"generate now"** to build the document immediately.
 
-Ask for changes if needed:
-> *"Change the glossary name to Finance Terms 2026"*
+**Step 3 — Refine in the canvas**
 
-**Step 3 — Execute**
+Expand cards to fill in fields, add narrative notes, or drag to reorder. The chat and
+canvas stay in sync.
+
+**Step 4 — Generate**
+
+Click **Generate Plan**. The full Plan Document is produced and saved to your inbox.
+Any unfilled required fields show a **⚠ fill in** marker.
+
+**Step 5 — Execute**
 
 Click **Execute**. The advisor submits the commands to Dr.Egeria.
 
-**Step 4 — Review the outcome**
+**Step 6 — Review the outcome**
 
 The outcome section appears inline. Check the Status and the verification report
 to confirm the objects were created correctly.
 
-**Step 5 — Find it later**
+**Step 7 — Reuse it**
 
-The completed plan is in your outbox. Click it from the Plans sidebar to review.
+The completed plan is in your outbox. You can also save the structure as a **template**
+when prompted — future plans of the same shape start from it with just the names to fill in.
 
 ---
 

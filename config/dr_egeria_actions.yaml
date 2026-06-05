@@ -1,0 +1,532 @@
+# Dr.Egeria Action Catalog
+#
+# Defines the Dr.Egeria commands available for plan generation.
+# Used by the post-processing validator and (future) IntentModel deriver
+# to apply deterministic rules, detect ordering violations, and map
+# natural-language entity descriptions to the correct commands.
+#
+# Fields per action:
+#   name            — exact Dr.Egeria command name
+#   family          — command family (matches template folder name)
+#   intent_entity   — entity type this command creates/links (used by IntentModel)
+#   aliases         — natural-language phrases that imply this command
+#   creates         — logical object type created (for container ordering)
+#   requires        — list of action names that must precede this one
+#   required_before — list of action names that must follow this one
+#   container_for   — this command creates a container required by these actions
+#   patterns        — conditional param pre-fills (evaluated during derivation)
+#   supersedes      — actions this command replaces (never emit the superseded action)
+#   not_when        — guidance on when NOT to use this command
+
+actions:
+
+  # ── Projects ────────────────────────────────────────────────────────────────
+
+  - name: Create Campaign
+    family: Projects
+    intent_entity: campaign
+    aliases:
+      - campaign
+      - initiative
+      - programme
+      - program
+      - major project
+      - strategic initiative
+    creates: campaign
+    container_for: [Create Project]
+    narrative_template: >
+      Creates the top-level campaign container.
+      All sub-projects and team assignments will be linked to this campaign.
+
+  - name: Create Project
+    family: Projects
+    intent_entity: project
+    aliases:
+      - project
+      - sub-project
+      - subproject
+      - workstream
+      - phase
+      - workpackage
+      - work package
+      - task force
+    creates: project
+    patterns:
+      - when_parent_type: [campaign, project]
+        set_params:
+          Parent Relationship Type Name: ProjectHierarchy
+          # Parent ID is set to the parent entity's display_name at derivation time
+    supersedes:
+      - action: Link Project Hierarchy
+        reason: >
+          Create Project with Parent ID and Parent Relationship Type Name=ProjectHierarchy
+          creates and links the sub-project in a single command. A separate
+          Link Project Hierarchy command is never needed.
+    narrative_template: >
+      Creates the project. If this is a sub-project, sets Parent ID to link
+      it under the parent campaign or project at creation time.
+
+  - name: Create Personal Project
+    family: Projects
+    intent_entity: personal_project
+    aliases:
+      - personal project
+      - my project
+      - individual project
+    creates: personal_project
+
+  - name: Create Study Project
+    family: Projects
+    intent_entity: study_project
+    aliases:
+      - study
+      - investigation
+      - research project
+      - discovery project
+    creates: study_project
+
+  - name: Create Task
+    family: Projects
+    intent_entity: task
+    aliases:
+      - task
+      - action item
+      - work item
+      - to-do
+    creates: task
+    not_when: >
+      Do NOT use Create Task for sub-projects. Sub-projects are Projects
+      linked via Parent ID. Tasks are leaf-level work items with no children.
+
+  - name: Link Project Dependency
+    family: Projects
+    intent_entity: project_dependency
+    aliases:
+      - depends on
+      - dependency
+      - prerequisite
+    requires: [Create Project, Create Campaign]
+
+  # ── Glossary ─────────────────────────────────────────────────────────────────
+
+  - name: Create Glossary
+    family: Glossary
+    intent_entity: glossary
+    aliases:
+      - glossary
+      - term dictionary
+      - vocabulary
+      - business glossary
+      - data dictionary
+    creates: glossary
+    container_for: [Create Glossary Term, Create Glossary Category]
+    narrative_template: >
+      Creates the glossary container that will hold all terms and categories.
+      Must be created before any glossary terms or categories can be added.
+
+  - name: Create Glossary Term
+    family: Glossary
+    intent_entity: glossary_term
+    aliases:
+      - term
+      - glossary term
+      - definition
+      - business term
+      - data term
+    creates: glossary_term
+    requires: [Create Glossary]
+    narrative_template: >
+      Creates a glossary term inside the glossary container.
+
+  - name: Create Glossary Category
+    family: Glossary
+    intent_entity: glossary_category
+    aliases:
+      - category
+      - glossary category
+      - term category
+      - sub-domain
+    creates: glossary_category
+    requires: [Create Glossary]
+
+  - name: Link Term to Category
+    family: Glossary
+    intent_entity: term_category_link
+    aliases:
+      - link term
+      - categorise term
+      - assign category
+    requires: [Create Glossary Term, Create Glossary Category]
+
+  - name: Link Term to Glossary
+    family: Glossary
+    intent_entity: term_glossary_link
+    aliases:
+      - link term to glossary
+      - assign term to glossary
+    requires: [Create Glossary Term, Create Glossary]
+
+  - name: Link Term-Term Relationship
+    family: Glossary
+    intent_entity: term_term_link
+    aliases:
+      - related term
+      - synonym
+      - antonym
+      - is a
+      - term relationship
+    requires: [Create Glossary Term]
+
+  - name: Classify Glossary as Canonical
+    family: Glossary
+    intent_entity: glossary_classification
+    requires: [Create Glossary]
+
+  - name: Classify Term as Question
+    family: Glossary
+    intent_entity: term_classification
+    requires: [Create Glossary Term]
+
+  # ── Actor Manager ─────────────────────────────────────────────────────────────
+
+  - name: Create Person Role
+    family: Actor Manager
+    intent_entity: person_role
+    aliases:
+      - role
+      - responsibility
+      - position
+      - job title
+      - data steward role
+      - project leader role
+      - owner role
+    creates: person_role
+    required_before: [Link Person Role Appointment]
+    narrative_template: >
+      Defines the named role. A role definition must exist before a person
+      can be appointed to it.
+
+  - name: Link Person Role Appointment
+    family: Actor Manager
+    intent_entity: role_appointment
+    aliases:
+      - appoint
+      - assign
+      - led by
+      - leader
+      - owned by
+      - steward
+      - responsible
+    requires: [Create Person Role]
+    narrative_template: >
+      Appoints a named person to the role defined in the preceding step.
+
+  - name: Create Team
+    family: Actor Manager
+    intent_entity: team
+    aliases:
+      - team
+      - working group
+      - committee
+    creates: team
+
+  - name: Create Organization
+    family: Actor Manager
+    intent_entity: organization
+    aliases:
+      - organisation
+      - organization
+      - department
+      - division
+      - business unit
+    creates: organization
+
+  - name: Link Team Membership
+    family: Actor Manager
+    intent_entity: team_membership
+    requires: [Create Team]
+
+  - name: Link Team Leader
+    family: Actor Manager
+    intent_entity: team_leadership
+    requires: [Create Team, Create Person Role]
+
+  - name: Link Team Structure
+    family: Actor Manager
+    intent_entity: team_structure
+    requires: [Create Team]
+
+  # ── Governance Officer ────────────────────────────────────────────────────────
+
+  - name: Create Governance Zone
+    family: Governance Officer
+    intent_entity: governance_zone
+    aliases:
+      - governance zone
+      - zone
+      - data zone
+      - subject area zone
+    creates: governance_zone
+    not_when: >
+      Do NOT create a Governance Zone unless the user explicitly mentioned one.
+      Do NOT use a Governance Zone as a parent in Link Project Hierarchy —
+      zones are not projects.
+
+  - name: Create Governance Definition
+    family: Governance Officer
+    intent_entity: governance_definition
+    aliases:
+      - governance definition
+      - policy definition
+      - governance rule
+    creates: governance_definition
+
+  - name: Create Governance Policy
+    family: Governance Officer
+    intent_entity: governance_policy
+    aliases:
+      - policy
+      - governance policy
+      - data policy
+    creates: governance_policy
+
+  - name: Create Governance Role
+    family: Governance Officer
+    intent_entity: governance_role
+    aliases:
+      - governance role
+      - data governance role
+      - CDO
+      - data owner role
+    creates: governance_role
+
+  - name: Create Governance Driver
+    family: Governance Officer
+    intent_entity: governance_driver
+    aliases:
+      - driver
+      - governance driver
+      - regulation
+      - compliance requirement
+    creates: governance_driver
+
+  - name: Create Business Imperative
+    family: Governance Officer
+    intent_entity: business_imperative
+    aliases:
+      - business imperative
+      - strategic goal
+      - business goal
+      - objective
+    creates: business_imperative
+
+  - name: Link Governance Policies
+    family: Governance Officer
+    requires: [Create Governance Policy]
+
+  - name: Link Governance Drivers
+    family: Governance Officer
+    requires: [Create Governance Driver]
+
+  - name: Link Governed By
+    family: Governance Officer
+    requires: [Create Governance Definition]
+
+  # ── Collections ───────────────────────────────────────────────────────────────
+
+  - name: Create Collection
+    family: Collections
+    intent_entity: collection
+    aliases:
+      - collection
+      - asset collection
+      - data collection
+      - group
+    creates: collection
+    container_for: [Add Member to Collection]
+
+  - name: Create Collection Folder
+    family: Collections
+    intent_entity: collection_folder
+    aliases:
+      - collection folder
+      - folder
+    creates: collection_folder
+
+  - name: Add Member to Collection
+    family: Collections
+    intent_entity: collection_member
+    requires: [Create Collection]
+
+  # ── Data Designer ─────────────────────────────────────────────────────────────
+
+  - name: Create Data Dictionary
+    family: Data Designer
+    intent_entity: data_dictionary
+    aliases:
+      - data dictionary
+      - schema dictionary
+    creates: data_dictionary
+    container_for: [Create Data Structure, Create Data Field, Create Data Class]
+
+  - name: Create Data Structure
+    family: Data Designer
+    intent_entity: data_structure
+    aliases:
+      - data structure
+      - schema
+      - table
+      - struct
+    creates: data_structure
+    requires: [Create Data Dictionary]
+
+  - name: Create Data Field
+    family: Data Designer
+    intent_entity: data_field
+    aliases:
+      - field
+      - column
+      - attribute
+      - data element
+    requires: [Create Data Structure]
+
+  - name: Create Data Class
+    family: Data Designer
+    intent_entity: data_class
+    aliases:
+      - data class
+      - data type
+      - classification type
+    creates: data_class
+
+  # ── Digital Product Manager ───────────────────────────────────────────────────
+
+  - name: Create Digital Product
+    family: Digital Product Manager
+    intent_entity: digital_product
+    aliases:
+      - digital product
+      - data product
+      - API product
+    creates: digital_product
+
+  - name: Create Agreement
+    family: Digital Product Manager
+    intent_entity: agreement
+    aliases:
+      - agreement
+      - contract
+      - SLA
+    creates: agreement
+
+  - name: Create Data Sharing Agreement
+    family: Digital Product Manager
+    intent_entity: data_sharing_agreement
+    aliases:
+      - data sharing agreement
+      - data share
+      - sharing agreement
+    creates: data_sharing_agreement
+
+  # ── External Reference ────────────────────────────────────────────────────────
+
+  - name: Create External Reference
+    family: External Reference
+    intent_entity: external_reference
+    aliases:
+      - external reference
+      - link
+      - URL
+      - external document
+    creates: external_reference
+
+  - name: Link External Reference
+    family: External Reference
+    requires: [Create External Reference]
+
+
+# ── Ordering rules ────────────────────────────────────────────────────────────
+#
+# Used by the post-processing validator to sort commands into valid order.
+# Lower priority = must run first. Entries are checked by substring match
+# against the action name (case-insensitive).
+
+ordering_priority:
+  - pattern: "create glossary$"
+    priority: 10
+  - pattern: "create glossary category"
+    priority: 20
+  - pattern: "create glossary term"
+    priority: 25
+  - pattern: "link term to"
+    priority: 35
+  - pattern: "link term-term"
+    priority: 35
+  - pattern: "classify glossary"
+    priority: 30
+  - pattern: "classify term"
+    priority: 36
+  - pattern: "create campaign"
+    priority: 10
+  - pattern: "create project"
+    priority: 20
+  - pattern: "create personal project"
+    priority: 20
+  - pattern: "create study project"
+    priority: 20
+  - pattern: "create task"
+    priority: 30
+  - pattern: "link project dependency"
+    priority: 40
+  - pattern: "create collection$"
+    priority: 10
+  - pattern: "create collection folder"
+    priority: 15
+  - pattern: "add member to collection"
+    priority: 30
+  - pattern: "create data dictionary"
+    priority: 10
+  - pattern: "create data structure"
+    priority: 20
+  - pattern: "create data field"
+    priority: 30
+  - pattern: "create data class"
+    priority: 15
+  - pattern: "create governance zone"
+    priority: 10
+  - pattern: "create governance definition"
+    priority: 10
+  - pattern: "create governance policy"
+    priority: 15
+  - pattern: "create governance driver"
+    priority: 15
+  - pattern: "create business imperative"
+    priority: 15
+  - pattern: "create governance role"
+    priority: 15
+  - pattern: "link governance"
+    priority: 40
+  - pattern: "link governed by"
+    priority: 40
+  - pattern: "create organization"
+    priority: 10
+  - pattern: "create team$"
+    priority: 15
+  - pattern: "create person role"
+    priority: 20
+  - pattern: "link team"
+    priority: 30
+  - pattern: "link person role appointment"
+    priority: 50
+  - pattern: "create digital product"
+    priority: 10
+  - pattern: "create agreement"
+    priority: 20
+  - pattern: "create data sharing agreement"
+    priority: 25
+  - pattern: "create external reference"
+    priority: 10
+  - pattern: "link external reference"
+    priority: 30
+  - pattern: "link project hierarchy"
+    priority: 999   # sentinel — should never appear after validation

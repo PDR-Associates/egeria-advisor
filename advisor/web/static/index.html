@@ -69,6 +69,41 @@
     }
     .resize-handle:hover::after, .resize-handle.dragging::after { opacity: 1; }
 
+    /* Vertical (ew) resize handle — between chat and canvas */
+    .resize-handle-v {
+      width: 5px;
+      cursor: ew-resize;
+      background: transparent;
+      border-left: 1px solid #334155;
+      flex-shrink: 0;
+      transition: background .15s, border-color .15s;
+      position: relative;
+    }
+    .resize-handle-v::after {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      width: 2px;
+      height: 24px;
+      border-radius: 1px;
+      background: #475569;
+      opacity: 0;
+      transition: opacity .15s;
+    }
+    .resize-handle-v:hover, .resize-handle-v.dragging {
+      background: #7c3aed22;
+      border-left-color: #7c3aed88;
+    }
+    .resize-handle-v:hover::after, .resize-handle-v.dragging::after { opacity: 1; }
+
+    /* Plan Canvas panel */
+    #plan-canvas-panel { min-width: 260px; }
+    .pcanvas-card { transition: opacity .15s, box-shadow .15s; }
+    .pcanvas-card.dragging-over { box-shadow: 0 -2px 0 #7c3aed; }
+    .pcanvas-card.drag-ghost { opacity: .4; }
+
     /* Scrollbars */
     ::-webkit-scrollbar { width:5px; }
     ::-webkit-scrollbar-track { background:#0f172a; }
@@ -117,12 +152,14 @@
 
     <div id="resize-reports-plans" class="resize-handle"></div>
 
-    <!-- Middle pane: Plans (Inbox / Outbox) -->
+    <!-- Middle pane: Plans (Drafts / Inbox / Outbox) -->
     <div id="sidebar-plans" class="flex flex-col sidebar-pane shrink-0">
       <div class="px-3 pt-2 pb-1 shrink-0 flex items-center justify-between">
         <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Plans</span>
-        <button onclick="loadPlans()" class="text-xs text-slate-600 hover:text-slate-400 transition-colors" title="Refresh plan list">↺</button>
+        <button onclick="loadPlans();loadDrafts();" class="text-xs text-slate-600 hover:text-slate-400 transition-colors" title="Refresh plans and drafts">↺</button>
       </div>
+      <!-- Active drafts sub-section -->
+      <div id="draft-list-section" class="px-2 pb-1 flex flex-col gap-0.5 text-xs"></div>
       <div id="plan-list" class="px-2 pb-2 flex flex-col gap-0.5 text-xs overflow-y-auto"></div>
     </div>
 
@@ -193,6 +230,45 @@
       </div>
     </div>
   </main>
+
+  <!-- ── Canvas resize handle (hidden until draft active) ───────────────── -->
+  <div id="resize-chat-canvas" class="resize-handle-v hidden"></div>
+
+  <!-- ── Plan Canvas panel (hidden until draft active) ─────────────────── -->
+  <section id="plan-canvas-panel"
+    class="hidden flex-col bg-slate-800 border-l border-slate-700 overflow-hidden">
+
+    <!-- Canvas toolbar -->
+    <div class="flex items-center gap-2 px-3 py-2 bg-slate-900 border-b border-slate-700 shrink-0">
+      <span class="text-violet-400 font-bold text-xs shrink-0">Plan Canvas</span>
+      <span id="pcanvas-title" class="text-slate-200 text-xs font-semibold flex-1 truncate"></span>
+      <button id="pcanvas-mode-btn"
+        class="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs font-semibold transition-colors"
+        title="Toggle between Basic (key fields) and Advanced (all template fields)"
+        onclick="PlanCanvas.toggleMode()">Basic</button>
+      <button id="pcanvas-generate-btn"
+        class="px-2 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition-colors"
+        title="Generate full Plan Document">Generate Plan</button>
+      <button id="pcanvas-execute-btn"
+        class="hidden px-2 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold transition-colors"
+        title="Execute the approved plan">▶ Execute</button>
+      <button onclick="PlanCanvas.close()"
+        class="text-slate-500 hover:text-slate-200 text-sm transition-colors ml-1" title="Close canvas">✕</button>
+    </div>
+
+    <!-- Command cards -->
+    <div id="pcanvas-cards" class="flex-1 overflow-y-auto px-3 py-2 flex flex-col gap-2"></div>
+
+    <!-- Add step footer -->
+    <div class="px-3 py-2 border-t border-slate-700 shrink-0">
+      <button onclick="PlanCanvas.addStep()"
+        class="w-full text-xs text-slate-500 hover:text-violet-300 border border-dashed border-slate-700
+               hover:border-violet-500/50 rounded py-1.5 transition-colors">
+        + Add step
+      </button>
+    </div>
+  </section>
+
 </div>
 
 <!-- ── Search-string modal ─────────────────────────────────────────────────── -->
@@ -246,15 +322,20 @@ let selectedIntent = '';          // '', 'explanation', 'code_search', 'report',
 let selectedPerspective = '';     // '', 'developer', 'data_engineer', 'data_steward', 'governance_officer'
 let pendingReportName = null;     // report name awaiting search-string confirmation
 let recentQueries = JSON.parse(sessionStorage.getItem('ea_recent') || '[]');
+let _activeDraftId = sessionStorage.getItem('ea_active_draft') || null;
 
 // ── Init ───────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   loadStatus();
   loadReports();
   loadPlans();
+  loadDrafts();
   loadPerspectives();
   renderRecent();
   initSidebarResize();
+  initCanvasResize();
+  initCanvasButtons();
+  if (_activeDraftId) PlanCanvas.open(_activeDraftId);
   appendMessage('assistant',
     'Welcome to **Egeria Advisor**.\n\n' +
     'Ask me about Egeria concepts, how to use pyegeria or Dr.Egeria, run a report to see live metadata, or ask me to create/update something.'
@@ -436,7 +517,7 @@ async function loadPlans() {
         (folder === 'inbox' ? 'text-violet-300 hover:bg-violet-900/40' : 'text-emerald-400 hover:bg-emerald-900/30');
       btn.title = plan.doc_id;
       btn.textContent = plan.title && plan.title !== '(untitled)' ? plan.title : plan.doc_id;
-      btn.onclick = () => openPlanEditor(plan.doc_id);
+      btn.onclick = () => openPlanEditor(plan.doc_id, plan.draft_id || null);
       row.appendChild(btn);
       if (folder === 'inbox') {
         const execBtn = document.createElement('button');
@@ -446,7 +527,7 @@ async function loadPlans() {
         execBtn.onclick = e => {
           e.stopPropagation();
           appendMessage('you', `execute the plan ${plan.doc_id}`);
-          submitQuery(`execute the plan ${plan.doc_id}`, { intent_override: 'command' });
+          submitQuery(`execute the plan ${plan.doc_id}`, {});
         };
         row.appendChild(execBtn);
       }
@@ -458,8 +539,100 @@ async function loadPlans() {
 }
 
 async function restorePlan(doc_id, folder, title) {
-  // Open the plan editor directly — no inline chat rendering needed
-  openPlanEditor(doc_id);
+  // Check if there's an active draft for this plan and pass it along
+  const plans = await fetch('/api/plans').then(r => r.json()).catch(() => ({}));
+  const entry = (plans.inbox || []).find(p => p.doc_id === doc_id);
+  openPlanEditor(doc_id, entry?.draft_id || null);
+}
+
+function discussPlanChanges() {
+  // Return to chat with the active draft re-engaged
+  if (typeof closePlanEditor === 'function') closePlanEditor();
+  // Ensure the active draft ID is set so chat routes to it
+  if (_ped && _ped.draft_id) {
+    _activeDraftId = _ped.draft_id;
+    sessionStorage.setItem('ea_active_draft', _activeDraftId);
+  }
+  // Scroll chat into view and focus the input
+  document.getElementById('chat-input')?.focus();
+  const hint = document.getElementById('chat-hint') || document.getElementById('input-hint');
+  if (hint) hint.textContent = 'Describe what you\'d like to add or change in the plan…';
+  // Show a prompt in the chat
+  appendMessage('assistant',
+    '💬 Back in planning mode. What would you like to add or change?\n\n' +
+    '- *"Add a sub-project for data quality review"*\n' +
+    '- *"Change the campaign name to Q4 Sales Forecast"*\n' +
+    '- Or say **"looks good"** to proceed to generating the plan.'
+  );
+}
+
+// ── Drafts sidebar ─────────────────────────────────────────────────────────────
+async function loadDrafts() {
+  let data;
+  try {
+    const r = await fetch('/api/drafts');
+    data = await r.json();
+  } catch { return; }
+  const el = document.getElementById('draft-list-section');
+  el.innerHTML = '';
+  const drafts = data.drafts || [];
+  if (!drafts.length) return;
+
+  const hdr = document.createElement('div');
+  hdr.className = 'px-2 pt-1 text-amber-500/80 uppercase text-xs font-semibold tracking-wider';
+  hdr.textContent = 'Active Drafts';
+  el.appendChild(hdr);
+
+  drafts.forEach(d => {
+    const row = document.createElement('div');
+    row.className = 'flex items-center gap-1';
+
+    const isActive = d.draft_id === _activeDraftId;
+    const btn = document.createElement('button');
+    btn.className = 'flex-1 text-left px-2 py-0.5 rounded transition-colors truncate ' +
+      (isActive
+        ? 'text-amber-300 bg-amber-900/30'
+        : 'text-amber-400/70 hover:bg-amber-900/20 hover:text-amber-300');
+    btn.title = `${d.title}\nPhase: ${d.phase_label || d.phase}`;
+    const label = (d.title && d.title !== '(untitled)') ? d.title : d.draft_id;
+    btn.textContent = (isActive ? '▸ ' : '') + (label.length > 30 ? label.slice(0, 29) + '…' : label);
+
+    btn.onclick = () => {
+      if (isActive) return; // already active
+      appendMessage('you', `Resume draft ${d.draft_id}`);
+      submitQuery(`resume draft ${d.draft_id}`, { intent_override: 'plan' });
+    };
+    row.appendChild(btn);
+
+    // Phase badge
+    const phase = document.createElement('span');
+    phase.className = 'shrink-0 text-slate-600 text-xs truncate max-w-[60px]';
+    phase.textContent = (d.phase_label || d.phase || '').replace('elicit_', 'Q&A:').replace('_', '');
+    row.appendChild(phase);
+
+    // Discard button
+    const del = document.createElement('button');
+    del.className = 'shrink-0 text-slate-700 hover:text-red-400 transition-colors text-xs px-1';
+    del.title = 'Discard this draft';
+    del.textContent = '✕';
+    del.onclick = async e => {
+      e.stopPropagation();
+      if (!confirm(`Discard draft "${label}"?`)) return;
+      if (d.draft_id === _activeDraftId) {
+        _activeDraftId = null;
+        sessionStorage.removeItem('ea_active_draft');
+      }
+      await fetch(`/api/drafts/${d.draft_id}`, { method: 'DELETE' }).catch(() => {});
+      loadDrafts();
+    };
+    row.appendChild(del);
+    el.appendChild(row);
+  });
+
+  // Separator before inbox/outbox
+  const sep = document.createElement('div');
+  sep.className = 'my-1 border-t border-slate-700/50';
+  el.appendChild(sep);
 }
 
 // ── Perspective picker ─────────────────────────────────────────────────────────
@@ -499,7 +672,9 @@ function sendQuery() {
 
   clearClarification();
   appendMessage('you', raw);
-  submitQuery(raw, {});
+  // When inside a planning Q&A session, force plan intent so the draft router fires
+  const extra = _activeDraftId ? { intent_override: 'plan' } : {};
+  submitQuery(raw, extra);
 }
 
 async function submitQuery(query, extra = {}) {
@@ -511,6 +686,7 @@ async function submitQuery(query, extra = {}) {
     query,
     intent_override: selectedIntent || null,
     perspective: selectedPerspective || null,
+    draft_id: _activeDraftId || null,
     ...extra,
   };
 
@@ -531,9 +707,31 @@ async function submitQuery(query, extra = {}) {
   }
 
   const qtype = result.query_type || 'general';
+  const routingAgentFromResult = result.routing_agent || qtype;
   const intent = result.intent || {};
   const isClarify = qtype === 'clarification';
+  const isPlanQA = qtype === 'plan_clarification';
   const candidates = result.candidates || [];
+
+  // Track active draft ID — persisted to sessionStorage so editor navigation doesn't lose it
+  if (isPlanQA) {
+    if (result.draft_id) {
+      _activeDraftId = result.draft_id;
+    } else {
+      // Phase is done or session cancelled
+      _activeDraftId = null;
+      loadDrafts();
+    }
+  } else if (qtype === 'plan' || qtype === 'plan_executed') {
+    _activeDraftId = null;
+  }
+  if (_activeDraftId) {
+    sessionStorage.setItem('ea_active_draft', _activeDraftId);
+    PlanCanvas.open(_activeDraftId);
+  } else {
+    sessionStorage.removeItem('ea_active_draft');
+    PlanCanvas.close();
+  }
 
   // Badge
   if (intent.label) {
@@ -552,9 +750,15 @@ async function submitQuery(query, extra = {}) {
 
   // Refresh plan sidebar after any plan lifecycle event
   if (qtype === 'plan' || qtype === 'plan_executed') loadPlans();
+  if (isPlanQA) { loadDrafts(); if (_activeDraftId) PlanCanvas.refresh(_activeDraftId); }
 
   // Normal response
-  const wrap = appendMessage('assistant', result.response, { isClarify: false, isPlan: qtype === 'plan', isExecuted: qtype === 'plan_executed', color: intent.color });
+  const wrap = appendMessage('assistant', result.response, {
+    isClarify: false,
+    isPlan: qtype === 'plan' || isPlanQA,
+    isExecuted: qtype === 'plan_executed',
+    color: intent.color,
+  });
 
   // Plan Document banner — shown when the agent saved a new plan to inbox/
   if (qtype === 'plan' && result.doc_id) {
@@ -576,6 +780,32 @@ async function submitQuery(query, extra = {}) {
     planBanner.appendChild(editBtn);
 
     wrap.appendChild(planBanner);
+  }
+
+  // Plan Q&A navigation buttons
+  if (isPlanQA && result.navigation && result.navigation.length) {
+    const nav = document.createElement('div');
+    nav.className = 'mt-2 flex gap-2 flex-wrap';
+    const navDefs = {
+      back:      { label: '← Back',        cls: 'bg-slate-700 hover:bg-slate-600 text-slate-200' },
+      save_exit: { label: '💾 Save & Exit', cls: 'bg-indigo-800 hover:bg-indigo-700 text-white' },
+      cancel:    { label: '✕ Cancel',       cls: 'bg-red-900/60 hover:bg-red-800 text-red-300' },
+    };
+    result.navigation.forEach(key => {
+      const def = navDefs[key];
+      if (!def) return;
+      const btn = document.createElement('button');
+      btn.className = `px-3 py-1.5 rounded text-xs font-semibold transition-colors ${def.cls}`;
+      btn.textContent = def.label;
+      btn.onclick = () => {
+        const commands = { back: 'back', save_exit: 'save and exit', cancel: 'cancel' };
+        const cmd = commands[key] || key;
+        appendMessage('you', def.label);
+        submitQuery(cmd, { intent_override: 'plan' });
+      };
+      nav.appendChild(btn);
+    });
+    wrap.appendChild(nav);
   }
 
   // Executed plan banner
@@ -616,7 +846,7 @@ async function submitQuery(query, extra = {}) {
   btnUp.dataset.qt = qtype;
   btnUp.dataset.vote = '1';
   btnUp.dataset.perspective = selectedPerspective || '';
-  btnUp.dataset.routingAgent = qtype || '';
+  btnUp.dataset.routingAgent = routingAgentFromResult;
   btnUp.addEventListener('click', feedbackClick);
   const btnDown = document.createElement('button');
   btnDown.className = 'text-xs text-slate-500 hover:text-red-400 transition-colors';
@@ -625,7 +855,7 @@ async function submitQuery(query, extra = {}) {
   btnDown.dataset.qt = qtype;
   btnDown.dataset.vote = '-1';
   btnDown.dataset.perspective = selectedPerspective || '';
-  btnDown.dataset.routingAgent = qtype || '';
+  btnDown.dataset.routingAgent = routingAgentFromResult;
   btnDown.addEventListener('click', feedbackClick);
   fb.appendChild(btnUp);
   fb.appendChild(btnDown);
@@ -823,6 +1053,65 @@ function initSidebarResize() {
   document.getElementById('resize-reports-plans').addEventListener('mousedown', e => startDrag(e, document.getElementById('resize-reports-plans')));
   document.getElementById('resize-plans-recent').addEventListener('mousedown',  e => startDrag(e, document.getElementById('resize-plans-recent')));
 }
+
+// ── Canvas resize (horizontal, ew-resize) ──────────────────────────────────────
+function initCanvasButtons() {
+  document.getElementById('pcanvas-generate-btn').addEventListener('click', () => {
+    if (!_activeDraftId) return;
+    appendMessage('you', 'generate now');
+    submitQuery('generate now', { intent_override: 'plan' });
+  });
+  document.getElementById('pcanvas-execute-btn').addEventListener('click', () => {
+    const docId = document.getElementById('pcanvas-title')?.dataset?.docId;
+    if (!docId) return;
+    appendMessage('you', `execute the plan ${docId}`);
+    submitQuery(`execute the plan ${docId}`, {});
+  });
+}
+
+function initCanvasResize() {
+  const handle = document.getElementById('resize-chat-canvas');
+  const canvas = document.getElementById('plan-canvas-panel');
+  const wrapper = handle.closest('.flex');   // the flex row containing chat + canvas
+
+  const MIN_W  = 260;
+  const STOR_K = 'ea_canvas_w';
+
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+  function savedWidth() {
+    const v = parseInt(localStorage.getItem(STOR_K));
+    return isNaN(v) ? Math.round(wrapper.clientWidth * 0.44) : v;
+  }
+
+  // Called by PlanCanvas.open() — applies saved/default width
+  window._applyCanvasWidth = function(w) {
+    w = clamp(w || savedWidth(), MIN_W, wrapper.clientWidth - 320);
+    canvas.style.flexBasis = w + 'px';
+    canvas.style.flexShrink = '0';
+    canvas.style.flexGrow   = '0';
+  };
+
+  handle.addEventListener('mousedown', e => {
+    e.preventDefault();
+    handle.classList.add('dragging');
+    const startX = e.clientX;
+    const startW = canvas.getBoundingClientRect().width;
+
+    function onMove(ev) {
+      const newW = clamp(startW - (ev.clientX - startX), MIN_W, wrapper.clientWidth - 320);
+      canvas.style.flexBasis = newW + 'px';
+    }
+    function onUp() {
+      handle.classList.remove('dragging');
+      localStorage.setItem(STOR_K, Math.round(canvas.getBoundingClientRect().width));
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
+  });
+}
 </script>
 
 <!-- ── Plan Editor Overlay ─────────────────────────────────────────────────── -->
@@ -833,6 +1122,12 @@ function initSidebarResize() {
     <span class="text-violet-400 font-bold text-sm shrink-0">Plan Editor</span>
     <span class="text-slate-500 text-sm">—</span>
     <span id="ped-title" class="text-slate-100 text-sm font-semibold flex-1 truncate"></span>
+    <button id="ped-discuss-btn"
+      class="hidden px-3 py-1 rounded bg-amber-800/60 hover:bg-amber-700/80 text-amber-300 text-xs font-semibold transition-colors"
+      title="Return to chat to add or refine steps conversationally"
+      onclick="discussPlanChanges()">
+      💬 Discuss changes
+    </button>
     <button id="ped-mode-btn"
       class="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-400 text-xs font-semibold transition-colors"
       title="Switch between Basic (fewer fields) and Advanced (all template fields)">
@@ -896,6 +1191,8 @@ function initSidebarResize() {
 
 </div>
 
+<script src="/static/artifact_canvas.js"></script>
+<script src="/static/plan_canvas.js"></script>
 <script src="/static/plan_editor.js"></script>
 </body>
 </html>

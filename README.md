@@ -114,8 +114,8 @@ User Query  [+ perspective + intent_override]
 A browser-based chat interface is the primary way to interact with Egeria Advisor.
 
 ```bash
-# Start the web server (default: http://localhost:8000)
-uvicorn advisor.web.app:app --reload
+# Start the web server (default: http://localhost:8880)
+uvicorn advisor.web.app:app --reload --port 8880
 ```
 
 ### Layout

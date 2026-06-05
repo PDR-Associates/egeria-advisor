@@ -9,6 +9,7 @@
 // ── State ──────────────────────────────────────────────────────────────────────
 let _ped = {
   doc_id:        null,
+  draft_id:      null,         // active planning session draft, if any
   isInbox:       true,
   mode:          'basic',      // 'basic' | 'advanced'
   narrative:     '',           // everything before ## Command Sequence
@@ -20,7 +21,7 @@ let _ped = {
 
 // ── Public entry points ────────────────────────────────────────────────────────
 
-async function openPlanEditor(doc_id) {
+async function openPlanEditor(doc_id, draft_id) {
   let data;
   try {
     const r = await fetch(`/api/plans/${encodeURIComponent(doc_id)}`);
@@ -28,9 +29,10 @@ async function openPlanEditor(doc_id) {
     data = await r.json();
   } catch (e) { alert(`Error loading plan: ${e.message}`); return; }
 
-  _ped.doc_id  = doc_id;
-  _ped.isInbox = (data.folder === 'inbox');
-  _ped.dirty   = false;
+  _ped.doc_id   = doc_id;
+  _ped.draft_id = draft_id || (typeof _activeDraftId !== 'undefined' ? _activeDraftId : null);
+  _ped.isInbox  = (data.folder === 'inbox');
+  _ped.dirty    = false;
 
   const parsed    = _parsePlanMarkdown(data.content);
   _ped.narrative  = parsed.narrative;
@@ -38,6 +40,7 @@ async function openPlanEditor(doc_id) {
   _ped.outcome    = parsed.outcome;
 
   _renderEditor();
+  _updateDiscussButton();
   document.getElementById('plan-editor-overlay').classList.remove('hidden');
   document.body.style.overflow = 'hidden';
 
@@ -45,11 +48,19 @@ async function openPlanEditor(doc_id) {
   _loadAllTemplateFields();
 }
 
+function _updateDiscussButton() {
+  const btn = document.getElementById('ped-discuss-btn');
+  if (!btn) return;
+  const hasDraft = !!_ped.draft_id;
+  btn.classList.toggle('hidden', !hasDraft);
+}
+
 function closePlanEditor() {
   if (_ped.dirty && !confirm('You have unsaved changes. Close anyway?')) return;
   document.getElementById('plan-editor-overlay').classList.add('hidden');
   document.body.style.overflow = '';
-  _ped.doc_id = null;
+  _ped.doc_id   = null;
+  _ped.draft_id = null;
 }
 
 // ── Markdown parsing ───────────────────────────────────────────────────────────

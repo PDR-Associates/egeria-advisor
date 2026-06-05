@@ -77,6 +77,7 @@ llm:
     code: codellama:13b
     conversation: llama3.1:8b
     maintenance: codellama:13b
+    planning: qwen2.5-coder:32b     # narrative generation, refinement, change application
   parameters:
     temperature: 0.3             # Lowered from 0.7 for factual answers
     max_tokens: 3000             # Increased from 2000
@@ -155,9 +156,12 @@ governance_plans:
   # Where plan documents are stored.  Asked on first use if not set.
   # Supports ~ expansion.  Separate inbox (awaiting review/execution) and
   # outbox (executed, with outcome sections appended).
-  inbox:  ~/egeria-plans/inbox/
-  outbox: ~/egeria-plans/outbox/
-  archived: ~/egeria-plans/archived/
+  inbox:        ~/egeria-plans/inbox/
+  outbox:       ~/egeria-plans/outbox/
+  archived:     ~/egeria-plans/archived/
+  drafts:       ~/egeria-plans/drafts/
+  plan_templates: ~/egeria-plans/plan_templates/
+  sessions:     ~/egeria-plans/sessions/    # full conversation transcripts
 
 cli:
   default_agent: auto

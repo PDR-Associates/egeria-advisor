@@ -423,15 +423,15 @@ After execution: maps command families to relevant `report_specs`, runs verifica
 - [x] DocumentManager `move_to_outbox` — plan moved on success; outcome appended
 - [x] Web UI: Execute button in canvas (shown once doc_id is set); `plan_executed` response type; outcome banner + outbox refresh
 
-### Phase 3 — Artifact Canvas generalisation  *(not started)*
+### Phase 3 — Artifact Canvas generalisation  *(in progress)*
 
-- [ ] `ArtifactCanvas` component — extract Plan Canvas into reusable component
-- [ ] Report Spec design flow — canvas + chat for creating/editing question_specs *(to be specified)*
+- [x] `ArtifactCanvas` class (`advisor/web/static/artifact_canvas.js`) — generic base; `PlanCanvas` refactored to use it via data adapter + item adapter pattern
+- [x] Plan versioning — `DocumentManager.update()` saves versioned backup before each overwrite
+- [x] TRACK — `metrics_collector.record_plan_event()` called on plan create and execute; admin dashboard has LGCI Plan Usage section
+- [ ] Report Spec design flow — canvas + chat for creating/editing question_specs *(needs design session)*
 - [ ] Report execution results in canvas — live results with conversational follow-up
 - [ ] CLI review loop (`$EDITOR` + diff + confirm)
-- [ ] Partial execution handling
-- [ ] Plan versioning
-- [ ] Step 8 (TRACK): usage and outcome logging
+- [ ] Partial execution handling (detect per-command success/failure from execution output)
 
 ---
 

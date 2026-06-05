@@ -76,6 +76,7 @@ class PlanElicitor:
         agent = GovernancePlanAgent()
 
         # --- Decompose intent ------------------------------------------
+        _val_warnings: List[str] = []
         if template_name:
             commands = get_template_manager().template_to_commands(template_name)
             title = template_name
@@ -84,6 +85,7 @@ class PlanElicitor:
             decomp = agent._decompose_intent(query, perspective, llm)
             title = decomp.get("title", query[:50])
             purpose = decomp.get("purpose", query)
+            _val_warnings = decomp.get("validator_warnings") or []
             from advisor.action_catalog import get_action_catalog
             catalog = get_action_catalog()
             commands = [
@@ -143,7 +145,12 @@ class PlanElicitor:
         spec["phase_label"] = _PHASE_LABELS["confirm_commands"]
         dm.save(spec)
 
-        return self._build_confirm_commands_response(spec)
+        # Surface any auto-corrections made by the validator
+        init_note = None
+        if _val_warnings:
+            init_note = "Auto-corrected: " + "; ".join(_val_warnings)
+
+        return self._build_confirm_commands_response(spec, note=init_note)
 
     # ------------------------------------------------------------------
     # Phase dispatch — continue an existing draft
@@ -410,11 +417,22 @@ class PlanElicitor:
                         spec["answers"].setdefault(key, {}).update(cmd["pre_filled"])
                         cmd["_answers_key"] = key   # remember the key for later lookup
 
+                from advisor.plan_validator import validate_commands
+                merged_cmds = spec["commands_identified"] + added
+                merged_cmds, spec["answers"], val_warnings = validate_commands(
+                    merged_cmds, spec["answers"]
+                )
                 dm.push_history(spec)
-                spec["commands_identified"] = spec["commands_identified"] + added
+                spec["commands_identified"] = merged_cmds
                 dm.save(spec)
+                note_parts = [f"Added {len(added)} step(s)."]
+                if val_warnings:
+                    note_parts.append(
+                        "Auto-corrected: " + "; ".join(val_warnings)
+                    )
+                note_parts.append("Does the plan look right now?")
                 return self._build_confirm_commands_response(
-                    spec, note=f"Added {len(added)} step(s). Does the plan look right now?"
+                    spec, note=" ".join(note_parts)
                 )
         except Exception as exc:
             logger.debug(f"_handle_confirm_commands: addition re-decompose failed: {exc}")

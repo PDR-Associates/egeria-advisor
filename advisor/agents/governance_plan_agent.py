@@ -647,6 +647,7 @@ JSON:"""
                 cmds = result.get("commands", [])
                 fixed, _, warnings = validate_commands(cmds, {})
                 result["commands"] = fixed
+                result["validator_warnings"] = warnings
                 if warnings:
                     logger.info(
                         f"GovernancePlanAgent: validator applied {len(warnings)} fixes: {warnings}"

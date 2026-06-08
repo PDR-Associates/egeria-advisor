@@ -2,9 +2,21 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Context for new conversations:** See `docs/PROJECT_SUMMARY.md` for a complete
+> phase history, capabilities overview, lessons learned, and next steps.
+> See `docs/literate-governance-plan.md` for full LGCI design documentation.
+
 ## Project Overview
 
 Egeria Advisor is a RAG (Retrieval-Augmented Generation) system providing intelligent assistance for [Egeria](https://egeria-project.org/) and pyegeria users. It uses local LLMs (Ollama), sentence-transformer embeddings, and a pgvector (PostgreSQL) vector store across 9 specialized collections (~88,900 entities total).
+
+**Current state (June 2026):** Phases 1–11 complete. Core RAG, multi-agent routing, Web UI with Plan Canvas, LGCI plan generation and execution are all operational. Primary active work: LGCI quality improvements and Egeria integration for planning.
+
+**Models in use:**
+- `llama3.1:8b` — RAG Q&A (speed)
+- `qwen2.5-coder:32b` — LGCI planning: narrative, refinement, complex extraction (quality)
+- `codellama:13b` — code generation
+- `sentence-transformers/all-MiniLM-L6-v2` — embeddings
 
 ## Setup
 
@@ -18,13 +30,17 @@ pip install -e ".[dev]"
 
 Requires Python 3.12+. External services must be running locally:
 - **pgvector** at `localhost:5442` (PostgreSQL with pgvector extension — database: `egeria_advisor`, user: `egeria_advisor`)
-- **Ollama** at `localhost:11434` (LLM inference — llama3.1:8b, codellama:13b)
+- **Ollama** at `localhost:11434` (LLM inference — pull `llama3.1:8b` and `qwen2.5-coder:32b`)
 - **MLflow** at `localhost:5025` (optional, for experiment tracking)
 
 ## Commands
 
 ```bash
-# Query (one-shot)
+# Start the web UI (primary interface)
+python -m advisor.web.app          # → http://localhost:8880
+# or: uvicorn advisor.web.app:app --reload --port 8880
+
+# Query (one-shot CLI)
 egeria-advisor "What is a glossary term in Egeria?"
 
 # Interactive multi-turn session

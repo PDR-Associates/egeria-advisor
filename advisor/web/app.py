@@ -17,7 +17,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -31,7 +31,13 @@ _SPEC_FILES = [
 ]
 
 app = FastAPI(title="Egeria Advisor", version="0.1.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"https?://localhost(:\d+)?",
+    allow_methods=["*"],
+    allow_headers=["*"],
+    allow_credentials=True,
+)
 app.mount("/static", StaticFiles(directory=_STATIC), name="static")
 
 from advisor.web.admin import router as _admin_router
@@ -182,9 +188,83 @@ async def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
+# ── Auth endpoints ─────────────────────────────────────────────────────────────
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class PortalTokenRequest(BaseModel):
+    portal_token: str
+
+
+@app.post("/api/auth/login")
+async def auth_login(req: LoginRequest) -> Dict[str, Any]:
+    """Validate Egeria credentials and return a JWT."""
+    from advisor.auth import validate_egeria_credentials, create_access_token
+    if not req.username or not req.password:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="username and password required")
+    ok = await asyncio.get_event_loop().run_in_executor(
+        None, validate_egeria_credentials, req.username, req.password
+    )
+    if not ok:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=401, detail="Invalid credentials or Egeria is unreachable.")
+    token = create_access_token(
+        user_id=req.username,
+        egeria_user=req.username,
+        egeria_password=req.password,
+    )
+    return {"access_token": token, "token_type": "bearer", "egeria_user": req.username}
+
+
+@app.post("/api/auth/portal")
+async def auth_portal(req: PortalTokenRequest) -> Dict[str, Any]:
+    """Exchange a Portal-issued short-lived token for a local JWT."""
+    from advisor.auth import exchange_portal_token, create_access_token
+    payload = exchange_portal_token(req.portal_token)
+    egeria_user = payload.get("egeria_user", "")
+    egeria_password = payload.get("egeria_password", "")
+    if not egeria_user:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="Portal token missing egeria_user.")
+    token = create_access_token(
+        user_id=egeria_user,
+        egeria_user=egeria_user,
+        egeria_password=egeria_password,
+    )
+    return {"access_token": token, "token_type": "bearer", "egeria_user": egeria_user}
+
+
+@app.get("/api/auth/me")
+async def auth_me(request: Request) -> Dict[str, Any]:
+    """Return info about the currently authenticated user."""
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    if user is None:
+        return {"authenticated": False}
+    return {
+        "authenticated": True,
+        "user_id": user.get("sub", ""),
+        "egeria_user": user.get("egeria_user", ""),
+    }
+
+
+@app.post("/api/auth/logout")
+async def auth_logout() -> Dict[str, str]:
+    """Client-side logout — server has no session state to clear."""
+    return {"status": "ok"}
+
+
 @app.post("/api/query")
-async def query_endpoint(req: QueryRequest) -> Dict[str, Any]:
+async def query_endpoint(request: Request, req: QueryRequest) -> Dict[str, Any]:
     """Process a natural-language query and return the response dict."""
+    from advisor.auth import get_current_user
+    current_user = get_current_user(request)
+    egeria_authenticated = current_user is not None
+
     user_query = req.query.strip()
     # Append search filter tag so the report pipeline can extract it
     if req.search_string and req.search_string.strip() not in ("", "*"):
@@ -209,6 +289,7 @@ async def query_endpoint(req: QueryRequest) -> Dict[str, Any]:
                 perspective=req.perspective or None,
                 page_size=req.page_size or None,
                 draft_id=req.draft_id or None,
+                egeria_authenticated=egeria_authenticated,
             ),
         )
     except Exception as exc:

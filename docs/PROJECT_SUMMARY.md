@@ -21,37 +21,67 @@ A local RAG (Retrieval-Augmented Generation) system that provides intelligent as
 ## Phase history
 
 ### Phases 1–4: Foundation (Jan–Feb 2026)
-- Basic RAG pipeline with Milvus (later migrated to pgvector)
-- Ollama integration for local LLM inference
-- MLflow experiment tracking
-- Embedding generation with sentence-transformers
+- Basic RAG pipeline, single `pyegeria` collection (Milvus backend)
+- Ollama integration for local LLM inference (`llama3.2:3b` initially)
+- MLflow experiment tracking; sentence-transformer embeddings (384-dim, all-MiniLM-L6-v2)
+- Uniform ingestion: 1000-character chunks, 200-character overlap — same parameters for all content
+
+### Phase 4b: Multi-collection infrastructure (Feb 18, 2026)
+- First expansion: 3 Python collections introduced (`pyegeria`, `pyegeria_cli`, `pyegeria_drE`), each indexed from a separate source path within egeria-python
+- `CollectionMetadata` dataclass in `advisor/collection_config.py` — source repo, paths, domain terms, include/exclude patterns, priority
+- `CollectionRouter`: domain-term matching selects which collection(s) to search; weighted result merging (60% score / 25% collection quality / 15% priority)
+- Java, docs, and workspaces collections (`egeria_java`, `egeria_docs`, `egeria_workspaces`) designed and registered but disabled — ready for Phase 2
 
 ### Phase 5: Agent framework (Feb 2026)
 - BeeAI framework integration (later retained only for ConversationAgent)
 - Multi-agent architecture established
 - Key lesson: BeeAI `FunctionTool` objects have no `.func` attribute — extract implementations into `_raw()` plain functions
 
+### Phase 5b: Phase 2 collections enabled (Feb 19, 2026)
+- `egeria_java`, `egeria_docs`, `egeria_workspaces` indexed and enabled — 6 active collections total
+- First signs that uniform parameters caused problems: documentation queries hallucinated because chunks were too small to hold a complete concept, and min\_score was too permissive for the broader doc content
+- **Key realisation**: different content types need different retrieval behaviour. Code queries benefit from more results (higher top\_k); concept queries need precision (higher min\_score). This drove Phase 7 parameter tuning.
+
 ### Phase 6: CLI (Feb 2026)
 - `egeria-advisor` CLI with `--interactive` and `--agent` modes
 - `hey_egeria` CLI command lookup (`CLICommandAgent`)
 
-### Phase 7: Prompt quality (Mar 2026)
-- Multi-collection routing by intent classification
-- Perspective-aware prompting (Developer / Data Steward / Governance Officer etc.)
-- `routing.yaml` — pattern-based query classifier
+### Phase 7: Prompt quality and intent-based routing (Feb–Mar 2026)
+- **Problem**: routing accuracy ~60% — OMAS/OMAG/OMRS terms matched both Java code and documentation; "Dr. Egeria" variants weren't matched; substring collisions caused wrong-collection retrievals
+- **Fix 1 — Domain term precision**: separated Java-specific terms from documentation terms; added all surface variants for collection names (spaces, hyphens, underscores, periods)
+- **Fix 2 — Intent detection**: `CollectionRouter` gained intent keywords (`documentation`, `code`, `example`, `cli`) with priority boosts (+8–15 points) so a query phrased as "show me examples" routes to the examples collection even when the topic matches multiple collections
+- **Fix 3 — Intent-classified prompts**: `prompt_templates.py` introduced 5 collection-specific system prompts and 9 query-type-specific instruction blocks — a code query and a concept query now receive different prompts even when routed to the same collection
+- **Fix 4 — `routing.yaml`**: pattern-based pre-classifier (CRITICAL / HIGH / MEDIUM priorities) fires before any LLM call, routing obvious cases immediately
+- Routing accuracy after fixes: 100% on 14-query test suite (up from ~60%)
+- Perspective-aware prompting added: Developer / Data Engineer / Data Steward / Governance Officer — role-specific addendum injected into system prompt
+
+### Phase 7b: Per-collection ingestion parameter tuning (Mar 2, 2026)
+- `CollectionMetadata` gained four new fields: `chunk_size`, `chunk_overlap`, `min_score`, `default_top_k`
+- Measured hallucination rate at ~80% on documentation queries with uniform 512-token chunks; root cause was chunks too small for tutorials (concept split mid-explanation) and min\_score too low for precise definitions
+- **`egeria_docs` split** into three specialised collections, each tuned to its content type:
+  - `egeria_concepts` — short concept definitions: chunk 768, overlap 150, min\_score 0.45 (highest in system), top\_k 5
+  - `egeria_types` — type schemas and attribute tables: chunk 1024, overlap 200, min\_score 0.42, top\_k 6
+  - `egeria_general` — tutorials and guides: chunk 1536, overlap 300, min\_score 0.38, top\_k 8
+- Code collections kept at chunk 512 (functions fit naturally), overlap 100, min\_score 0.35, top\_k 10
+- Java bumped to chunk 768 (methods are longer than Python functions)
+- `egeria_workspaces` matched `egeria_general` parameters (narrative notebook content)
+- After split and tuning: documentation hallucination rate fell from ~80% to ~27%
+- Mar 8: Python ingestion switched from text chunking to AST-based parsing — functions and classes are now kept intact as natural chunk boundaries; docstrings stay with their methods
 
 ### Phase 8: Routing quality (Mar 2026)
-- Major routing bug fixes — queries routing to wrong collections
-- Domain term disambiguation (OMAS/OMAG/OMRS in both code and docs)
-- LLM intent classifier for ambiguous "general" queries
-- Role-aware routing (Developer → ExamplesAgent; Data Steward → Dr.Egeria clarification)
+- LLM intent classifier (`llm_intent_classifier.py`) introduced for queries that pattern-matching classifies as `general` — zero-temperature LLM call maps to LIVE_DATA / CODE_HELP / CONCEPT / WRITE_COMMAND / AMBIGUOUS
+- `CODE_HELP` always maps to `code_search` intent even when the topic is a governance object (e.g. "give me Python to create a project" → ExamplesAgent, not DrEgeriaActionAgent)
+- Role-aware routing in `_process_query`: Developer/Data Engineer + code signals → ExamplesAgent; Data Steward/Governance + ambiguous example signals (no Python keyword) → clarification asking whether they want Python code or a Dr.Egeria template
+- Domain term conflicts (OMAS/OMAG/OMRS appearing in both code and docs) resolved by moving architecture acronyms to the documentation collections only
 
 ### Phase 9: Feedback and examples (Mar 2026)
 - Thumbs up/down feedback capture
 - ExamplesAgent: runnable Python examples + API reference (method-discovery mode)
 - DrEgeriaTemplateAgent: template file lookup
 
-### Phase 10: MCP integration (Apr–May 2026)
+### Phase 10: MCP integration and backend migration (Apr–May 2026)
+- **Apr 25: Milvus → pgvector migration** — switched vector backend from Milvus (gRPC, separate process) to PostgreSQL + pgvector extension at `localhost:5442`; HNSW index replaces IVF_FLAT; `ThreadedConnectionPool` for concurrent queries; `_TABLE_NAME_MAP` added to handle collection name normalisation (e.g. `pyegeria_drE` → `pyegeria_dre`)
+- **`egeria_templates` collection added** — Dr.Egeria markdown command templates indexed as a ninth collection from `egeria-python/sample-data/templates/`; deliberately tuned differently from all others: chunk 2048 (entire template in one chunk), overlap 0 (each file is self-contained), min\_score 0.30 (lowest in system — intent matching is fuzzy), priority 12 (highest)
 - Dr.Egeria MCP server integration (`dr_egeria_run_block`, `run_report`)
 - Report pipeline with `QuestionSpecIndex` semantic search over report specs
 - DrEgeriaActionAgent: compose and execute multi-field Dr.Egeria commands
@@ -268,7 +298,11 @@ docs/
 - LGCI Phase 2 ✓ (execution, outcome reporter)
 - LGCI Phase 3 partial (ArtifactCanvas extracted; Report Spec canvas needs design)
 
-**Planned next:**
+**Planned next (HIGH priority):**
+- **User Login / Authentication** — JWT-based auth (HS256, 8-hour TTL); Portal SSO via shared-secret token exchange (postMessage when iframed, URL fragment when new tab); credential propagation to pyegeria/MCP calls replacing hardcoded `garygeeke`; graceful degradation — RAG/explanations/plan generation always available without login, reports/commands/execution require active Egeria session. See plan file for full design. Key risk: MCP credential injection (investigate whether `run_report`/`dr_egeria_run_block` accept per-call user args before writing UI code). Dependency: `python-jose[cryptography]`.
+
+**Planned next (MEDIUM priority):**
+- **Egeria Projects & Tasks** — fill action catalog gaps for the 0130-Projects type system: Add Update Project, Update Task, Add Project Team Member, Classify Project as Experiment; add `known_fields` (mission, successCriteria, projectStatus, projectHealth, priority, dates) to existing Create actions; add routing patterns for project/task query/listing; expand report specs for Campaigns, Tasks, Study-Projects, Personal-Projects; extend plan validator for Create+Update conflict. ⚠️ Verify field names against Dr.Egeria template files before writing catalog entries.
 - **Report Spec canvas** — create/edit question_specs via chat + canvas (needs design session)
 - **Egeria integration for planning** — glossary lookup for name normalization, referenced data for valid values, Actor profile lookup for named individuals (see `docs/literate-governance-plan.md` Section 13.3)
 - **Admin transcript viewer** — list/view session logs with failure tagging

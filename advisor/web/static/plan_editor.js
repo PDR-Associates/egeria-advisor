@@ -24,7 +24,7 @@ let _ped = {
 async function openPlanEditor(doc_id, draft_id) {
   let data;
   try {
-    const r = await fetch(`/api/plans/${encodeURIComponent(doc_id)}`);
+    const r = await fetch(`/api/plans/${encodeURIComponent(doc_id)}`, { headers: Auth.getHeaders() });
     if (!r.ok) { alert(`Could not load plan ${doc_id}`); return; }
     data = await r.json();
   } catch (e) { alert(`Error loading plan: ${e.message}`); return; }
@@ -178,7 +178,7 @@ async function _fetchTemplateFields(action, level = 'basic') {
 
   try {
     const url = `/api/templates/${encodeURIComponent(action)}/fields?level=${encodeURIComponent(level)}`;
-    const r   = await fetch(url);
+    const r   = await fetch(url, { headers: Auth.getHeaders() });
     if (r.ok) {
       const data = await r.json();
       _ped.templateCache[cacheKey] = data.fields || [];
@@ -587,7 +587,7 @@ async function _savePlanEdits() {
   try {
     const r = await fetch(`/api/plans/${encodeURIComponent(_ped.doc_id)}`, {
       method:  'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
       body:    JSON.stringify({ content }),
     });
     if (!r.ok) throw new Error(await r.text());
@@ -613,7 +613,7 @@ async function _validatePlanDoc() {
   panel.classList.remove('hidden');
 
   try {
-    const r    = await fetch(`/api/plans/${encodeURIComponent(_ped.doc_id)}/validate`, { method: 'POST' });
+    const r    = await fetch(`/api/plans/${encodeURIComponent(_ped.doc_id)}/validate`, { method: 'POST', headers: Auth.getHeaders() });
     const data = await r.json();
     const ok   = data.status === 'ok';
     panel.innerHTML =

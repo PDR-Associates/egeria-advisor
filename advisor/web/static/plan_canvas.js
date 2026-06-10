@@ -11,7 +11,7 @@
 
 const _planAdapter = {
   async fetch(draftId) {
-    const r = await fetch(`/api/drafts/${encodeURIComponent(draftId)}`);
+    const r = await fetch(`/api/drafts/${encodeURIComponent(draftId)}`, { headers: Auth.getHeaders() });
     if (!r.ok) throw new Error(`draft ${draftId} not found`);
     const spec = await r.json();
     // Normalise to ArtifactCanvas shape
@@ -25,7 +25,7 @@ const _planAdapter = {
   async patch(draftId, items) {
     await fetch(`/api/drafts/${encodeURIComponent(draftId)}/commands`, {
       method:  'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
       body:    JSON.stringify({ commands: items }),
     });
   },

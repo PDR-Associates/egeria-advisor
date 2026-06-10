@@ -247,7 +247,7 @@ class ArtifactCanvas {
 
     let fields = [];
     try {
-      const r = await fetch(fieldUrl);
+      const r = await fetch(fieldUrl, { headers: (typeof Auth !== 'undefined' ? Auth.getHeaders() : {}) });
       if (r.ok) fields = (await r.json()).fields || [];
     } catch { /* skip */ }
 

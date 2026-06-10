@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Egeria Advisor</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/static/auth.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
   <script>mermaid.initialize({ startOnLoad: false, theme: 'dark' });</script>
@@ -132,6 +133,17 @@
     </label>
     <span>·</span>
     <span>Enter=send &nbsp; Shift+Enter=newline</span>
+    <span>·</span>
+    <span id="current-user" class="hidden text-cyan-400 font-medium"></span>
+    <button id="logout-btn"
+      class="hidden px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors">
+      Sign out
+    </button>
+    <button id="login-header-btn"
+      onclick="Auth.showLogin()"
+      class="hidden px-2 py-0.5 rounded bg-cyan-800 hover:bg-cyan-700 text-cyan-100 transition-colors">
+      Sign in
+    </button>
   </div>
 </header>
 
@@ -326,30 +338,36 @@ let _activeDraftId = sessionStorage.getItem('ea_active_draft') || null;
 
 // ── Init ───────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  loadStatus();
-  loadReports();
-  loadPlans();
-  loadDrafts();
-  loadPerspectives();
-  renderRecent();
   initSidebarResize();
   initCanvasResize();
   initCanvasButtons();
-  if (_activeDraftId) PlanCanvas.open(_activeDraftId);
-  appendMessage('assistant',
-    'Welcome to **Egeria Advisor**.\n\n' +
-    'Ask me about Egeria concepts, how to use pyegeria or Dr.Egeria, run a report to see live metadata, or ask me to create/update something.'
-  );
+
   const inp = document.getElementById('query-input');
   inp.addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendQuery(); }
+  });
+
+  // Auth.init fires onReady once the user is authenticated (or immediately if
+  // anonymous_rag_mode allows skipping login — the backend controls that).
+  Auth.init(() => {
+    loadStatus();
+    loadReports();
+    loadPlans();
+    loadDrafts();
+    loadPerspectives();
+    renderRecent();
+    if (_activeDraftId) PlanCanvas.open(_activeDraftId);
+    appendMessage('assistant',
+      'Welcome to **Egeria Advisor**.\n\n' +
+      'Ask me about Egeria concepts, how to use pyegeria or Dr.Egeria, run a report to see live metadata, or ask me to create/update something.'
+    );
   });
 });
 
 // ── Status dot ─────────────────────────────────────────────────────────────────
 async function loadStatus() {
   try {
-    const r = await fetch('/api/status');
+    const r = await fetch('/api/status', { headers: Auth.getHeaders() });
     const data = await r.json();
     const dot = document.getElementById('status-dot');
     const enabled = (data.mcp_servers || []).filter(s => s.enabled).length;
@@ -363,7 +381,7 @@ async function loadStatus() {
 // ── Report catalog ─────────────────────────────────────────────────────────────
 async function loadReports() {
   const dre = document.getElementById('dre-toggle').checked;
-  const r = await fetch(`/api/reports?include_dre=${dre}`);
+  const r = await fetch(`/api/reports?include_dre=${dre}`, { headers: Auth.getHeaders() });
   const data = await r.json();
   document.getElementById('report-count').textContent = `${data.total}`;
   const el = document.getElementById('report-catalog');
@@ -464,7 +482,7 @@ function pushRecent(q) {
 async function loadPerspectives() {
   let data;
   try {
-    const r = await fetch('/api/perspectives');
+    const r = await fetch('/api/perspectives', { headers: Auth.getHeaders() });
     data = await r.json();
   } catch { return; }
 
@@ -492,7 +510,7 @@ async function loadPerspectives() {
 async function loadPlans() {
   let data;
   try {
-    const r = await fetch('/api/plans');
+    const r = await fetch('/api/plans', { headers: Auth.getHeaders() });
     data = await r.json();
   } catch { return; }
   const el = document.getElementById('plan-list');
@@ -540,7 +558,7 @@ async function loadPlans() {
 
 async function restorePlan(doc_id, folder, title) {
   // Check if there's an active draft for this plan and pass it along
-  const plans = await fetch('/api/plans').then(r => r.json()).catch(() => ({}));
+  const plans = await fetch('/api/plans', { headers: Auth.getHeaders() }).then(r => r.json()).catch(() => ({}));
   const entry = (plans.inbox || []).find(p => p.doc_id === doc_id);
   openPlanEditor(doc_id, entry?.draft_id || null);
 }
@@ -570,7 +588,7 @@ function discussPlanChanges() {
 async function loadDrafts() {
   let data;
   try {
-    const r = await fetch('/api/drafts');
+    const r = await fetch('/api/drafts', { headers: Auth.getHeaders() });
     data = await r.json();
   } catch { return; }
   const el = document.getElementById('draft-list-section');
@@ -622,7 +640,7 @@ async function loadDrafts() {
         _activeDraftId = null;
         sessionStorage.removeItem('ea_active_draft');
       }
-      await fetch(`/api/drafts/${d.draft_id}`, { method: 'DELETE' }).catch(() => {});
+      await fetch(`/api/drafts/${d.draft_id}`, { method: 'DELETE', headers: Auth.getHeaders() }).catch(() => {});
       loadDrafts();
     };
     row.appendChild(del);
@@ -694,9 +712,10 @@ async function submitQuery(query, extra = {}) {
   try {
     const r = await fetch('/api/query', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
       body: JSON.stringify(body),
     });
+    if (r.status === 401) { Auth.handle401(); setThinking(false); return; }
     result = await r.json();
   } catch (e) {
     appendMessage('assistant', `**Error:** ${e.message}`);
@@ -966,7 +985,7 @@ async function feedbackClick(e) {
   const routingAgent = btn.dataset.routingAgent || null;
   await fetch('/api/feedback', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
     body: JSON.stringify({ query, query_type: queryType, vote, perspective, routing_agent: routingAgent }),
   }).catch(() => {});
   const fb = btn.parentElement;
@@ -1189,6 +1208,64 @@ function initCanvasResize() {
       class="float-right text-slate-500 hover:text-slate-200 text-xs mb-1">✕ close</button>
   </div>
 
+</div>
+
+<!-- ── Login overlay ───────────────────────────────────────────────────────── -->
+<div id="login-overlay"
+  class="hidden fixed inset-0 bg-slate-950/90 backdrop-blur-sm flex items-center justify-center z-[100]"
+  onclick="if(event.target===this)Auth.hideLogin()">
+  <div class="bg-slate-800 border border-slate-600 rounded-2xl p-8 w-96 shadow-2xl">
+    <div class="flex items-center gap-3 mb-6">
+      <img src="/static/egeria-logo.png" alt="Egeria" class="h-8 w-auto">
+      <div>
+        <div class="text-slate-100 font-bold text-lg">Sign in to Egeria Advisor</div>
+        <div class="text-slate-400 text-xs mt-0.5">Use your Egeria username and password</div>
+      </div>
+    </div>
+
+    <!-- Session expired / portal message -->
+    <div id="login-message"
+      class="hidden mb-4 px-3 py-2 rounded-lg bg-amber-900/40 border border-amber-700/50 text-amber-300 text-xs">
+    </div>
+
+    <div class="flex flex-col gap-3">
+      <div>
+        <label class="text-xs text-slate-400 block mb-1">Username</label>
+        <input id="login-username" type="text" autocomplete="username"
+          placeholder="e.g. erinoverview"
+          class="w-full bg-slate-700 text-slate-100 rounded-lg px-3 py-2 text-sm
+                 border border-slate-600 focus:outline-none focus:border-cyan-500 transition-colors">
+      </div>
+      <div>
+        <label class="text-xs text-slate-400 block mb-1">Password</label>
+        <input id="login-password" type="password" autocomplete="current-password"
+          placeholder="••••••••"
+          class="w-full bg-slate-700 text-slate-100 rounded-lg px-3 py-2 text-sm
+                 border border-slate-600 focus:outline-none focus:border-cyan-500 transition-colors">
+      </div>
+
+      <!-- Error message -->
+      <div id="login-error"
+        class="hidden px-3 py-2 rounded-lg bg-red-900/40 border border-red-700/50 text-red-300 text-xs">
+      </div>
+
+      <button id="login-submit-btn"
+        class="w-full py-2 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white font-semibold
+               text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed mt-1">
+        Sign in
+      </button>
+    </div>
+
+    <div class="mt-5 pt-4 border-t border-slate-700 text-xs text-slate-500 text-center">
+      Knowledge questions and code examples are available without signing in.<br>
+      Reports and command execution require an active Egeria session.
+      <br><br>
+      <button onclick="Auth.hideLogin()"
+        class="text-slate-400 hover:text-slate-200 underline transition-colors">
+        Continue without signing in
+      </button>
+    </div>
+  </div>
 </div>
 
 <script src="/static/artifact_canvas.js"></script>

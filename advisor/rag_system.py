@@ -22,6 +22,28 @@ from advisor.prompt_templates import get_prompt_manager
 from advisor.query_patterns import QueryType
 
 
+def _egeria_required_response(user_query: str) -> Dict[str, Any]:
+    """Return a graceful degradation response when the user is not authenticated."""
+    return {
+        "query": user_query,
+        "response": (
+            "This action requires an active Egeria session.\n\n"
+            "**Sign in** using the login button in the header to access live reports, "
+            "execute Dr. Egeria commands, and run governance plans against Egeria.\n\n"
+            "Knowledge questions, code examples, plan *generation*, and explanations "
+            "are all available without logging in."
+        ),
+        "query_type": "general",
+        "routing_agent": "auth_gate",
+        "sources": [],
+        "num_sources": 0,
+        "retrieval_time": 0.0,
+        "generation_time": 0.0,
+        "avg_relevance_score": 0.0,
+        "context_length": 0,
+    }
+
+
 class RAGSystem:
     """Complete RAG system for code advisory."""
 
@@ -60,6 +82,7 @@ class RAGSystem:
         perspective: Optional[str] = None,
         page_size: Optional[int] = None,
         draft_id: Optional[str] = None,
+        egeria_authenticated: bool = True,
     ) -> Dict[str, Any]:
         """
         Process a user query and generate a response.
@@ -69,6 +92,8 @@ class RAGSystem:
             include_context: Whether to include retrieved context
             track_metrics: Whether to track with MLflow
             dry_run: If True, compose Dr.Egeria commands but do not execute them
+            egeria_authenticated: False blocks MCP-dependent paths (report, command execution,
+                plan execution) and returns a friendly degradation message instead.
 
         Returns:
             Dictionary with response and metadata
@@ -82,6 +107,7 @@ class RAGSystem:
             perspective=perspective,
             page_size=page_size,
             draft_id=draft_id,
+            egeria_authenticated=egeria_authenticated,
         )
         
         # Always record metrics in local database (for dashboard)
@@ -234,6 +260,7 @@ class RAGSystem:
         perspective: Optional[str] = None,
         page_size: Optional[int] = None,
         draft_id: Optional[str] = None,
+        egeria_authenticated: bool = True,
     ) -> Dict[str, Any]:
         """Internal query processing."""
 
@@ -442,6 +469,8 @@ class RAGSystem:
             re.IGNORECASE,
         )
         if _exec_match:
+            if not egeria_authenticated:
+                return _egeria_required_response(user_query)
             _doc_id = _exec_match.group(1)
             _dry_run = "dry" in user_query.lower()
             logger.info(
@@ -479,6 +508,8 @@ class RAGSystem:
                 or self._is_report_query(user_query)
             )
         if is_report:
+            if not egeria_authenticated:
+                return _egeria_required_response(user_query)
             logger.info("Handling report query via MCP report pipeline")
             try:
                 from advisor.report_pipeline import get_report_pipeline
@@ -507,6 +538,8 @@ class RAGSystem:
                     return result
                 except Exception as e:
                     logger.warning(f"DrEgeriaTemplateAgent failed ({e}), falling back to DrEgeriaActionAgent")
+            if not egeria_authenticated:
+                return _egeria_required_response(user_query)
             logger.info("Handling command query via DrEgeriaActionAgent")
             try:
                 from advisor.agents.dr_egeria_agent import get_dr_egeria_agent

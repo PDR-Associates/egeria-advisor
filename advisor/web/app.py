@@ -536,6 +536,20 @@ async def get_template_fields(command_name: str, level: str = "basic") -> Dict[s
     except Exception:
         return {"fields": [], "level": level}
 
+    # Enrich valid_values for known field patterns with live Egeria data
+    zone_values: list[str] = []
+    for a in template["attributes"]:
+        name_low = a["name"].lower()
+        if not a.get("valid_values") and "zone" in name_low:
+            if not zone_values:
+                try:
+                    from advisor.egeria_context import EgeriaContext
+                    zone_values = EgeriaContext().list_governance_zones()
+                except Exception:
+                    pass
+            if zone_values:
+                a["valid_values"] = zone_values
+
     return {
         "level": level,
         "fields": [
@@ -551,6 +565,17 @@ async def get_template_fields(command_name: str, level: str = "basic") -> Dict[s
             for a in template["attributes"]
         ],
     }
+
+
+@app.get("/api/egeria/zones")
+async def get_governance_zones() -> Dict[str, Any]:
+    """Return all governance zone names from the live Egeria instance."""
+    try:
+        from advisor.egeria_context import EgeriaContext
+        zones = EgeriaContext().list_governance_zones()
+        return {"zones": zones, "count": len(zones)}
+    except Exception as exc:
+        return {"zones": [], "count": 0, "error": str(exc)}
 
 
 @app.post("/api/feedback")

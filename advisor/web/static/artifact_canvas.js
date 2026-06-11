@@ -259,18 +259,24 @@ class ArtifactCanvas {
     }
 
     fields.forEach(f => {
-      const val = existingValues[f.name] || '';
+      const val        = existingValues[f.name] || '';
+      const hasOptions = Array.isArray(f.valid_values) && f.valid_values.length > 0;
+      const listId     = hasOptions ? `dl-${Math.random().toString(36).slice(2)}` : '';
+
       const row = document.createElement('div');
       row.className = 'flex flex-col gap-0.5';
       row.innerHTML = `
         <label class="text-xs text-slate-500 flex items-center gap-1">
           ${_acEsc(f.name)}
           ${f.required ? '<span class="text-amber-400">*</span>' : ''}
+          ${hasOptions ? `<span class="text-slate-600 text-[10px]">(${f.valid_values.length} options)</span>` : ''}
         </label>
         <input type="text" value="${_acEsc(val)}"
+          ${hasOptions ? `list="${listId}"` : ''}
           class="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200
                  focus:outline-none focus:border-violet-500/60 transition-colors"
           placeholder="${_acEsc(f.description || '')}" />
+        ${hasOptions ? `<datalist id="${listId}">${f.valid_values.map(v => `<option value="${_acEsc(v)}"></option>`).join('')}</datalist>` : ''}
       `;
       let t;
       row.querySelector('input').addEventListener('input', e => {

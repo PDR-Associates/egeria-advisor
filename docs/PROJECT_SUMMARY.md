@@ -1,6 +1,6 @@
 # Egeria Advisor — Project Summary: Phases, Capabilities, Lessons Learned
 
-**Last updated:** 2026-06-07  
+**Last updated:** 2026-06-11  
 **Repository:** `/Users/dwolfson/localGit/egeria-v6/egeria-advisor`  
 **GitHub:** `https://github.com/dwolfson/egeria-advisor`
 
@@ -291,22 +291,59 @@ docs/
 
 ---
 
-## Immediate next steps (Phase 11 continuation + Phase 12)
+## Recent work (Jun 2026)
+
+### Phase 11b — LGCI quality + Egeria integration (Jun 10–11, 2026)
+
+**User Login / Authentication** ✓ (commit 47513aa)
+- JWT-based auth (HS256, 8-hour TTL, `PyJWT 2.12.1`)
+- Login overlay in Web UI; anonymous RAG mode (knowledge/code/plan generation work without login)
+- Auth gates in `rag_system.py` — reports, command execution, and plan execution require active session
+- Portal SSO design: shared-secret token exchange via postMessage (iframe) and URL fragment (new tab)
+- `advisor/auth.py` + `advisor/web/static/auth.js`; all fetch calls updated with `Auth.getHeaders()`
+
+**Admin transcript viewer** ✓ (commit 0605156)
+- `admin.html`: Plan Sessions section — outcome-badged table listing all JSONL sessions
+- Transcript modal with failure highlighting: amber for confused system turns ("I wasn't sure…"), red for user correction turns ("I asked to…", "not a project")
+- Wired into auto-refresh cycle
+
+**Pattern library expansion** ✓ (commit 0605156)
+- `_extract_entities_patterns`: added task, team, agreement, data-sharing-request entity types
+- `_ROLE_PATTERNS`: added "have X be the Y" and "role as X" phrasings
+- `_NAME_STOP`: stops at spaced dashes and the word "have"
+- `_infer_type_from_context`: covers all 9 entity types (including study_project, personal_project, agreement)
+- `_ENTITY_TO_ACTION`: added `data_sharing_request` / `data_sharing_agreement` → `Create Agreement`
+
+**Egeria context enrichment for planning** ✓ (commits 6192a66, 85ffcf8)
+- New `advisor/egeria_context.py` — `EgeriaContext` wraps ActorManager, ProjectManager, GovernanceOfficer, GlossaryManager; lazy init, graceful offline fallback, per-instance zone cache
+- Stage 1b in `_decompose_intent`: resolves person names (e.g. "Tom Tally") to Egeria Actor profile qualified names; injects `Actor Profile Qualified Name` into `Link Person Role Appointment` pre_filled fields
+- Existence check: warns when a named project/glossary already exists in Egeria
+- Governance zone valid values: `/api/templates/{cmd}/fields` injects live zone names as autocomplete options for zone fields; canvas renders `<datalist>` suggestions
+- New `/api/egeria/zones` endpoint
+
+**Partial execution detection** ✓ (commit 1363a44)
+- `OutcomeReporter.generate()` now accepts `expected_command_count` (auto-counted from plan's Command Sequence section)
+- GUID regex detects object-creation successes even when Dr.Egeria doesn't echo "success"
+- Status correctly infers Partial when fewer GUIDs returned or fewer command blocks found than expected
+- Outcome header shows "N of M commands processed (K succeeded)"
+
+---
+
+## Immediate next steps (Phase 12)
 
 **In progress / recently completed:**
 - LGCI Phase 1 ✓ (canvas, conversational planning, confirm flow)
 - LGCI Phase 2 ✓ (execution, outcome reporter)
 - LGCI Phase 3 partial (ArtifactCanvas extracted; Report Spec canvas needs design)
-
-**Planned next (HIGH priority):**
-- **User Login / Authentication** — JWT-based auth (HS256, 8-hour TTL); Portal SSO via shared-secret token exchange (postMessage when iframed, URL fragment when new tab); credential propagation to pyegeria/MCP calls replacing hardcoded `garygeeke`; graceful degradation — RAG/explanations/plan generation always available without login, reports/commands/execution require active Egeria session. See plan file for full design. Key risk: MCP credential injection (investigate whether `run_report`/`dr_egeria_run_block` accept per-call user args before writing UI code). Dependency: `python-jose[cryptography]`.
+- LGCI quality pass ✓ (auth, pattern library, Egeria context, partial execution detection)
 
 **Planned next (MEDIUM priority):**
 - **Egeria Projects & Tasks** — fill action catalog gaps for the 0130-Projects type system: Add Update Project, Update Task, Add Project Team Member, Classify Project as Experiment; add `known_fields` (mission, successCriteria, projectStatus, projectHealth, priority, dates) to existing Create actions; add routing patterns for project/task query/listing; expand report specs for Campaigns, Tasks, Study-Projects, Personal-Projects; extend plan validator for Create+Update conflict. ⚠️ Verify field names against Dr.Egeria template files before writing catalog entries.
+- **Egeria referenced data for valid field values** — `ReferenceDataManager.find_valid_value_definitions()` for project status, data classification levels, etc.; extend `EgeriaContext` with a `find_valid_values(set_name)` method and wire into the fields endpoint for more field types beyond zones.
+- **Egeria Actor lookup for unresolved names** — when `actor_found=False`, optionally prompt the user or auto-insert a `Create Actor Profile` command before the role appointment. Currently surfaces a warning only.
+- **Few-shot examples from approved plans** — index past approved plans into a new pgvector collection; retrieve similar plans during `_decompose_intent` to improve narrative generation for recurring task types.
 - **Report Spec canvas** — create/edit question_specs via chat + canvas (needs design session)
-- **Egeria integration for planning** — glossary lookup for name normalization, referenced data for valid values, Actor profile lookup for named individuals (see `docs/literate-governance-plan.md` Section 13.3)
-- **Admin transcript viewer** — list/view session logs with failure tagging
-- **Pattern library expansion** — more common phrasings in `_extract_entities_patterns`
+- **MCP credential propagation** — investigate whether `run_report`/`dr_egeria_run_block` accept per-call user args; if yes, thread JWT-extracted credentials through to MCP rather than using the service account.
 - **IntentModel** (deferred) — formal intermediate representation between extraction and command mapping
 
 ---

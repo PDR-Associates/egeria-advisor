@@ -580,6 +580,32 @@ class GovernancePlanAgent:
         if not entities.get("objects"):
             entities = {"title": query[:50], "purpose": query, "objects": [], "roles": []}
 
+        # ── Stage 1b: Egeria context enrichment ────────────────────────── #
+        # Best-effort: look up actor profiles and check entity existence in Egeria.
+        # Enriches entities in place; silently skips if Egeria is unreachable.
+        context_warnings: list[str] = []
+        try:
+            from advisor.egeria_context import EgeriaContext
+            ctx = EgeriaContext()
+            ctx.enrich_entities(entities)
+            # Surface "already exists" warnings so the user can decide to update instead
+            for obj in entities.get("objects", []):
+                if obj.get("exists_in_egeria") and not obj.get("type", "").endswith("sub_project"):
+                    context_warnings.append(
+                        f"'{obj['name']}' already exists in Egeria "
+                        f"(GUID: {obj['egeria_guid'][:8]}…). "
+                        f"The plan will create a new one — rename it if you meant to update the existing one."
+                    )
+            # Surface unresolved actors
+            for role in entities.get("roles", []):
+                if role.get("actor_found") is False:
+                    context_warnings.append(
+                        f"'{role['person']}' was not found in Egeria's actor profiles. "
+                        f"A 'Create Actor Profile' step may be needed, or check the spelling."
+                    )
+        except Exception as _ctx_exc:
+            logger.debug(f"GovernancePlanAgent: context enrichment skipped: {_ctx_exc}")
+
         # ── Stage 2: deterministic command mapping ──────────────────────── #
         commands = self._entities_to_commands(entities, existing_commands or [])
 
@@ -593,7 +619,7 @@ class GovernancePlanAgent:
             "title":              entities.get("title", query[:50]).strip(),
             "purpose":            entities.get("purpose", query),
             "commands":           commands,
-            "validator_warnings": warnings,
+            "validator_warnings": warnings + context_warnings,
         }
 
     # Name stops at these words (sentence-level boundaries)
@@ -831,9 +857,16 @@ JSON:"""
                 {"Display Name": role_title},
             ))
             if person_name:
+                appt_pre_filled: Dict[str, str] = {
+                    "role_name":   role_title,
+                    "person_name": person_name,
+                }
+                # Use Egeria-resolved qualified name when available (avoids execution failure)
+                if role.get("actor_found") and role.get("actor_qualified_name"):
+                    appt_pre_filled["Actor Profile Qualified Name"] = role["actor_qualified_name"]
                 commands.append(_make_cmd(
                     "Link Person Role Appointment", "",
-                    {"role_name": role_title, "person_name": person_name},
+                    appt_pre_filled,
                 ))
 
         return commands

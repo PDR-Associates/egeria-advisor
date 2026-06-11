@@ -535,7 +535,9 @@ class GovernancePlanAgent:
         "data_field":        "Create Data Field",
         "data_class":        "Create Data Class",
         "digital_product":   "Create Digital Product",
-        "agreement":         "Create Agreement",
+        "agreement":              "Create Agreement",
+        "data_sharing_request":   "Create Agreement",
+        "data_sharing_agreement": "Create Agreement",
         "external_reference": "Create External Reference",
     }
 
@@ -595,26 +597,41 @@ class GovernancePlanAgent:
         }
 
     # Name stops at these words (sentence-level boundaries)
-    _NAME_STOP = r'(?=\s*(?:,|\.|\bwith\b|\bto\s+be\b|\bled\s+by\b|\bto\s+create\b|\band\b|\bincluding\b|\bwhere\b|\busing\b|$))'
+    _NAME_STOP = r'(?=\s*(?:,|\.|\s+-\s+|\bwith\b|\bhave\b|\bto\s+be\b|\bled\s+by\b|\bto\s+create\b|\band\b|\bincluding\b|\bwhere\b|\busing\b|$))'
 
     # Pattern vocab: (regex, entity_type) — name captured in group 1
     _ENTITY_PATTERNS = [
-        # "called <name>" / "named <name>"
-        (r'\b(?:project|campaign|glossary|collection)\s+(?:called|named)\s+"?(.+?)"?' + _NAME_STOP, None),
+        # "called <name>" / "named <name>" — generic; entity type inferred from context word
+        (r'\b(?:project|campaign|glossary|collection|task|team|agreement|study)\s+(?:called|named)\s+"?(.+?)"?' + _NAME_STOP, None),
+        # "a data sharing request/agreement called/named/for <name>"
+        (r'\b(?:a\s+)?data\s+sharing\s+(?:request|agreement)\s+(?:called|named|for)\s+"?(.+?)"?' + _NAME_STOP, "agreement"),
+        # "an agreement called/named/for <name>"
+        (r'\ban?\s+agreement\s+(?:called|named|for)\s+"?(.+?)"?' + _NAME_STOP, "agreement"),
+        # "a task called/named/for <name>"
+        (r'\ba\s+task\s+(?:called|named|for)\s+"?(.+?)"?' + _NAME_STOP, "task"),
+        # "a team called/named/for <name>"
+        (r'\ba\s+team\s+(?:called|named|for)\s+"?(.+?)"?' + _NAME_STOP, "team"),
         # "a campaign for <name>"
         (r'\ba\s+campaign\s+for\s+"?(.+?)"?' + _NAME_STOP, "campaign"),
         # "a project for / project called"
         (r'\ba\s+project\s+(?:for|called)\s+"?(.+?)"?' + _NAME_STOP, "project"),
         # "a glossary for / called"
         (r'\ba\s+glossary\s+(?:for|called)\s+"?(.+?)"?' + _NAME_STOP, "glossary"),
-        # "set up a glossary" — name after "for" or "called"
-        (r'\bset\s+up\s+a\s+(?:glossary|project|campaign)\s+(?:for\s+the\s+|for\s+|called\s+)?"?(.+?)"?' + _NAME_STOP, None),
+        # "set up a <type>" — name after "for" or "called"
+        (r'\bset\s+up\s+a\s+(?:glossary|project|campaign|task|team)\s+(?:for\s+the\s+|for\s+|called\s+)?"?(.+?)"?' + _NAME_STOP, None),
+        # "create a data sharing request called <name>" (handles "I want to create a data sharing request...")
+        (r'\bcreate\s+(?:a\s+)?data\s+sharing\s+(?:request|agreement)\s+(?:called\s+|named\s+)?"?(.+?)"?' + _NAME_STOP, "agreement"),
     ]
-    # Role: "led by <person> as <role>" or "with <person> as <role>"
+    # Role: "led by <person> as <role>" / "with <person> as <role>" /
+    #        "have <person> be the <role>" / "<role> as <person>"
     _ROLE_PATTERNS = [
         r'\b(?:to\s+be\s+)?led\s+by\s+"?([A-Z][a-zA-Z\s\.]{1,30}?)"?\s+as\s+(?:the\s+)?([\w\s]{2,30})',
         r'\b(?:to\s+be\s+)?led\s+by\s+"?([A-Z][a-zA-Z\s\.]{1,30}?)"?' + _NAME_STOP,
         r'\bwith\s+"?([A-Z][a-zA-Z\s\.]{1,30}?)"?\s+as\s+(?:the\s+)?([\w\s]{2,30})',
+        # "have Tom Tally be the leader" / "have Tom as the project manager"
+        r'\bhave\s+"?([A-Z][a-zA-Z\s\.]{1,30}?)"?\s+(?:be\s+(?:the\s+)?|as\s+(?:the\s+)?)([\w\s]{2,30})',
+        # "project leader as Tom Tally" / "leader: Tom Tally" (role first, then name)
+        r'\b(?:project\s+)?(?:leader|manager|steward|owner|sponsor|lead)\s+(?:as\s+|:\s*)?"?([A-Z][a-zA-Z\s\.]{1,30}?)"?' + _NAME_STOP,
     ]
     _SUBPROJECT_PATTERN = re.compile(
         r'\bsub[-\s]?projects?\s+(?:for\s+)?["\']?(.+?)(?=["\']?\s*(?:$|\.|,\s*(?:led|with|and\s+[a-z])))',
@@ -633,9 +650,14 @@ class GovernancePlanAgent:
         ql = q.lower()
 
         def _infer_type_from_context() -> str:
-            if "campaign" in ql:   return "campaign"
-            if "glossary" in ql:   return "glossary"
-            if "collection" in ql: return "collection"
+            if "campaign"     in ql:                       return "campaign"
+            if "glossary"     in ql:                       return "glossary"
+            if "collection"   in ql:                       return "collection"
+            if "task"         in ql:                       return "task"
+            if "team"         in ql:                       return "team"
+            if "agreement"    in ql or "data sharing" in ql: return "agreement"
+            if "study"        in ql or "investigation" in ql: return "study_project"
+            if "personal"     in ql:                       return "personal_project"
             return "project"
 
         # Detect main entity type and name
@@ -648,11 +670,15 @@ class GovernancePlanAgent:
                 if etype:
                     main_type = etype
                 else:
-                    # Infer from the matched text or surrounding context
+                    # Infer from the matched keyword or surrounding context
                     matched_lower = m.group(0).lower()
-                    if "campaign" in matched_lower:   main_type = "campaign"
-                    elif "glossary" in matched_lower: main_type = "glossary"
-                    else:                             main_type = _infer_type_from_context()
+                    if "campaign"   in matched_lower:   main_type = "campaign"
+                    elif "glossary" in matched_lower:   main_type = "glossary"
+                    elif "collection" in matched_lower: main_type = "collection"
+                    elif "task"     in matched_lower:   main_type = "task"
+                    elif "team"     in matched_lower:   main_type = "team"
+                    elif "study"    in matched_lower:   main_type = "study_project"
+                    else:                               main_type = _infer_type_from_context()
                 break
 
         if not main_name:

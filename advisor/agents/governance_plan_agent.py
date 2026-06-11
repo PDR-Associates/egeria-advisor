@@ -399,9 +399,13 @@ class GovernancePlanAgent:
                 f"Plan document `{doc_id}` has no Command Sequence section to execute.",
             )
 
+        # Count H2 command headers so OutcomeReporter can detect partial execution
+        expected_command_count = len(re.findall(r'^##\s+\S', command_section, re.MULTILINE))
+
         logger.info(
             f"GovernancePlanAgent.execute: doc_id={doc_id!r}, "
-            f"dry_run={dry_run}, command_chars={len(command_section)}"
+            f"dry_run={dry_run}, commands={expected_command_count}, "
+            f"command_chars={len(command_section)}"
         )
 
         # Execute via Dr.Egeria MCP
@@ -443,7 +447,10 @@ class GovernancePlanAgent:
 
         # Generate outcome section
         reporter = get_outcome_reporter()
-        outcome_md = reporter.generate(plan_content, execution_output, perspective)
+        outcome_md = reporter.generate(
+            plan_content, execution_output, perspective,
+            expected_command_count=expected_command_count,
+        )
 
         # Move to outbox with outcome appended
         moved = doc_manager.move_to_outbox(doc_id, outcome_md)

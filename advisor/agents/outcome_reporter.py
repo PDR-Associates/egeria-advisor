@@ -60,14 +60,17 @@ class OutcomeReporter:
         plan_content: str,
         execution_output: str,
         perspective: str | None = None,
+        expected_command_count: int | None = None,
     ) -> str:
         """
         Generate a markdown Outcome section for the plan document.
 
         Args:
-            plan_content:      Full markdown of the plan that was executed.
-            execution_output:  Raw output string returned by Dr.Egeria.
-            perspective:       User's role (used to filter reports).
+            plan_content:            Full markdown of the plan that was executed.
+            execution_output:        Raw output string returned by Dr.Egeria.
+            perspective:             User's role (used to filter reports).
+            expected_command_count:  Number of commands submitted; used to detect
+                                     partial execution when output shows fewer.
 
         Returns:
             Markdown string for the Outcome section (ready to append to the plan).
@@ -76,9 +79,13 @@ class OutcomeReporter:
         object_names = self._extract_display_names(plan_content)
         report_specs = self._select_report_specs(families)
 
+        if expected_command_count is None:
+            expected_command_count = self._count_commands(plan_content)
+
         logger.info(
             f"OutcomeReporter: families={families}, "
-            f"report_specs={report_specs}, objects={object_names[:5]}"
+            f"report_specs={report_specs}, objects={object_names[:5]}, "
+            f"expected_commands={expected_command_count}"
         )
 
         # Run verification reports
@@ -86,7 +93,7 @@ class OutcomeReporter:
 
         # Determine overall status from execution output
         cmd_results = self._parse_command_results(execution_output)
-        status = self._infer_status(execution_output)
+        status = self._infer_status(execution_output, expected_command_count, cmd_results)
 
         # Synthesise narrative
         narrative = self._synthesise_narrative(
@@ -100,6 +107,7 @@ class OutcomeReporter:
             execution_output=execution_output,
             report_results=report_results,
             cmd_results=cmd_results,
+            expected_command_count=expected_command_count,
         )
 
     # ---------------------------------------------------------------------- #
@@ -255,14 +263,25 @@ class OutcomeReporter:
     # ---------------------------------------------------------------------- #
 
     _SUCCESS_WORDS = frozenset(("success", "created", "updated", "processed", "completed", "done", "linked", "✓"))
-    _FAILURE_WORDS = frozenset(("error", "exception", "failed", "failure", "traceback", "✗"))
+    _FAILURE_WORDS = frozenset(("error", "exception", "failed", "failure", "traceback", "✗", "cannot", "not found"))
+    # GUIDs returned by Egeria look like 8-4-4-4-12 hex
+    _GUID_RE = re.compile(r'\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b', re.IGNORECASE)
+
+    def _count_commands(self, plan_content: str) -> int:
+        """Count H2 command headers in the Command Sequence section of a plan."""
+        section = self._extract_command_section(plan_content)
+        return len(re.findall(r'^##\s+\S', section, re.MULTILINE))
 
     def _parse_command_results(self, execution_output: str) -> List[Dict[str, str]]:
         """
         Try to extract per-command success/failure from Dr.Egeria output.
 
-        Returns a list of {command, status, message} dicts.
-        If the output has no recognisable structure, returns an empty list.
+        Recognises:
+          - "## CommandName" or "Processing: CommandName" block headers
+          - GUID presence in the output block (strong success signal)
+          - Keyword-based success/failure detection
+
+        Returns a list of {command, status, message} dicts, or [] if no structure found.
         """
         results: List[Dict[str, str]] = []
 
@@ -271,7 +290,6 @@ class OutcomeReporter:
         blocks = re.split(r'(?m)^(?:##\s+|Processing[:\s]+)(.+)$', execution_output)
 
         if len(blocks) < 3:
-            # No recognisable per-command structure
             return results
 
         # blocks: [pre, cmd1, body1, cmd2, body2, ...]
@@ -279,7 +297,8 @@ class OutcomeReporter:
             cmd = blocks[i].strip()
             body = blocks[i + 1] if i + 1 < len(blocks) else ""
             body_lower = body.lower()
-            has_success = any(w in body_lower for w in self._SUCCESS_WORDS)
+            has_guid    = bool(self._GUID_RE.search(body))
+            has_success = has_guid or any(w in body_lower for w in self._SUCCESS_WORDS)
             has_failure = any(w in body_lower for w in self._FAILURE_WORDS)
             if has_failure and has_success:
                 status = "Partial"
@@ -289,7 +308,6 @@ class OutcomeReporter:
                 status = "Success"
             else:
                 status = "Unknown"
-            # Grab first non-empty line of body as a short message
             msg = next((ln.strip() for ln in body.splitlines() if ln.strip()), "")
             results.append({"command": cmd, "status": status, "message": msg[:120]})
 
@@ -299,11 +317,20 @@ class OutcomeReporter:
     # Status inference                                                         #
     # ---------------------------------------------------------------------- #
 
-    def _infer_status(self, execution_output: str) -> str:
-        # If per-command results are available, derive status from them
-        cmd_results = self._parse_command_results(execution_output)
+    def _infer_status(
+        self,
+        execution_output: str,
+        expected_command_count: int | None = None,
+        cmd_results: Optional[List[Dict[str, str]]] = None,
+    ) -> str:
+        if cmd_results is None:
+            cmd_results = self._parse_command_results(execution_output)
+
         if cmd_results:
             statuses = {r["status"] for r in cmd_results}
+            # Fewer parsed results than expected = execution stopped early
+            if expected_command_count and len(cmd_results) < expected_command_count:
+                return "Partial"
             if statuses == {"Success"}:
                 return "Success"
             if "Failed" in statuses or "Unknown" in statuses:
@@ -312,13 +339,23 @@ class OutcomeReporter:
                 return "Failed"
             return "Partial"
 
-        # Fall back to keyword scan of the whole output
+        # No per-command structure — fall back to keyword + GUID scan
         out_lower = execution_output.lower()
-        if any(w in out_lower for w in self._FAILURE_WORDS):
-            if any(w in out_lower for w in self._SUCCESS_WORDS):
-                return "Partial"
+        has_guid    = bool(self._GUID_RE.search(execution_output))
+        has_success = has_guid or any(w in out_lower for w in self._SUCCESS_WORDS)
+        has_failure = any(w in out_lower for w in self._FAILURE_WORDS)
+
+        # If GUIDs found but also errors → partial
+        if has_failure and has_success:
+            return "Partial"
+        if has_failure:
             return "Failed"
-        if any(w in out_lower for w in self._SUCCESS_WORDS):
+        if has_success:
+            # Check GUID count vs expected as a rough completeness proxy
+            if expected_command_count and expected_command_count > 1:
+                guid_count = len(self._GUID_RE.findall(execution_output))
+                if guid_count < expected_command_count:
+                    return "Partial"
             return "Success"
         return "Unknown"
 
@@ -367,11 +404,32 @@ class OutcomeReporter:
         execution_output: str,
         report_results: Dict[str, str],
         cmd_results: Optional[List[Dict[str, str]]] = None,
+        expected_command_count: int | None = None,
     ) -> str:
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        # Build completion summary line
+        completion = ""
+        if cmd_results and expected_command_count:
+            parsed = len(cmd_results)
+            succeeded = sum(1 for r in cmd_results if r["status"] == "Success")
+            if parsed < expected_command_count:
+                completion = (
+                    f"   **Commands:** {parsed} of {expected_command_count} processed "
+                    f"({succeeded} succeeded)"
+                )
+            else:
+                completion = f"   **Commands:** {succeeded} of {expected_command_count} succeeded"
+        elif expected_command_count:
+            guid_count = len(self._GUID_RE.findall(execution_output))
+            if guid_count:
+                completion = (
+                    f"   **Objects created:** ~{guid_count} of {expected_command_count} expected"
+                )
+
         lines = [
             "## Outcome",
-            f"**Executed:** {now}   **Status:** {status}",
+            f"**Executed:** {now}   **Status:** {status}{completion}",
             "",
             "### Summary",
             "",

@@ -211,25 +211,31 @@ The `CollectionRouter` selects 1–N collections per query based on classified i
 The **Literate Governance with Context Intelligence (LGCI)** feature allows users to describe a governance task in plain language and receive a complete, executable Plan Document.
 
 **Key files:**
-- `advisor/agents/governance_plan_agent.py` — orchestrator: `_decompose_intent` (two-stage) → `_entities_to_commands` → validator → `_compose_document` → `execute()`
-- `advisor/agents/plan_elicitor.py` — multi-phase conversational Q&A (`confirm_commands` → `elicit_required` → `generate` → `refine` → `template_offer`)
-- `advisor/governance_draft.py` — `DraftManager`: persists in-progress sessions to `~/egeria-plans/drafts/`
+- `advisor/agents/governance_plan_agent.py` — orchestrator: `_decompose_intent` (two-stage + keyword index) → `_entities_to_commands` → validator → `_compose_document` → `execute()`
+- `advisor/agents/plan_elicitor.py` — multi-phase conversational Q&A (`confirm_commands` → `elicit_required` → `generate` → `refine` → `template_offer`); includes restart path ("completely wrong") and confidence-gated "Did you mean X?" suggestions
+- `advisor/governance_draft.py` — `DraftManager`: persists in-progress sessions to `~/egeria-plans/drafts/`; `builder_mode` flag for Plan Editor drafts
 - `advisor/governance_docs.py` — `DocumentManager`: inbox/outbox lifecycle for completed plans
 - `advisor/plan_templates.py` — `PlanTemplateManager`: save/load reusable `{{placeholder}}` templates
-- `advisor/action_catalog.py` — `ActionCatalog`: loads `config/dr_egeria_actions.yaml` (42 actions with ordering, supersedes, narrative templates)
+- `advisor/action_catalog.py` — `ActionCatalog`: loads `config/dr_egeria_actions.yaml` (55 actions across 10 families, with ordering, supersedes, narrative templates)
+- `advisor/command_keyword_index.py` — `CommandKeywordIndex`: all ~126 Dr.Egeria commands (55 catalogued + ~71 from template filesystem); 4-tier confidence scoring; used by `_infer_type_from_context()` and `/api/actions`
 - `advisor/plan_validator.py` — `validate_commands()`: deterministic post-processing rules applied after every decomposition
 - `advisor/session_logger.py` — `SessionLogger`: JSONL transcript per session to `~/egeria-plans/sessions/`
-- `advisor/web/static/artifact_canvas.js` — `ArtifactCanvas`: generic split-view canvas base
+- `advisor/egeria_context.py` — `EgeriaContext`: lazy-loaded pyegeria clients; actor profile lookup, governance zone listing, project/glossary existence check
+- `advisor/web/static/artifact_canvas.js` — `ArtifactCanvas`: generic split-view canvas base; `addItem()` opens command picker modal
 - `advisor/web/static/plan_canvas.js` — `PlanCanvas`: thin adapter over ArtifactCanvas (drag-reorder, add/remove, per-card narrative, field editing, Basic/Advanced toggle)
+
+**Dr.Egeria template library:** ~126 unique commands in 253 files (basic/advanced pairs) across 12 families. The action catalog covers 55 of these. The remaining ~71 are accessible via the Plan Editor (command picker modal uses `GET /api/actions` which scans the template filesystem). **Always check the actual template files for field names before adding catalog entries** — mismatches silently drop values at execution time.
 
 **Design rules:**
 13. **Sub-projects use `Create Project` with `Parent ID`** — never emit `Link Project Hierarchy`. The validator converts any `Link Project Hierarchy` commands to `Create Project` with `Parent ID` + `Parent Relationship Type Name = ProjectHierarchy`.
 14. **`validate_commands()` runs after every decomposition and after canvas additions** — deduplicate, remove superseded, clear self-referential/orphaned Parent IDs, insert missing containers, role-before-appointment, topological sort. Always call it; never skip. Warnings surface to the user as "Auto-corrected: …".
-15. **Two-stage decomposition** — `_decompose_intent` keeps the LLM away from command structure. Stage 1 extracts entities/roles (pattern-based `_extract_entities_patterns` first, LLM `_extract_entities_llm` fallback); Stage 2 `_entities_to_commands` maps entities → commands deterministically. Never ask the LLM to emit Dr.Egeria command JSON directly — local 8B models hallucinate example values and duplicate commands. Add new phrasings to the pattern library and new object types to the action catalog.
+15. **Two-stage decomposition** — `_decompose_intent` keeps the LLM away from command structure. Stage 1 extracts entities/roles (pattern-based `_extract_entities_patterns` first, LLM `_extract_entities_llm` fallback); Stage 2 `_entities_to_commands` maps entities → commands deterministically. Never ask the LLM to emit Dr.Egeria command JSON directly — local 8B models hallucinate example values and duplicate commands. Add new phrasings to the pattern library and new object types to the action catalog and keyword index.
 16. **Planning uses `get_planning_llm()` not `get_ollama_client()`** — returns a client pinned to `llm.models.planning` (`qwen2.5-coder:32b`) for narrative, refinement, answer parsing, and the LLM extraction fallback. RAG Q&A stays on `llama3.1:8b`.
 17. **Draft routing in `_process_query`** fires when `draft_id` is set in the request — all messages forwarded to `PlanElicitor.process()` regardless of intent. Navigation commands (`back`, `cancel`, `save and exit`) matched by regex before forwarding.
 18. **`plan_clarification` vs `plan` query types** — `plan_clarification` is the active Q&A phase (canvas shows nav buttons); `plan` means a document was saved to inbox; `plan_executed` means execution complete and plan moved to outbox.
 19. **The action catalog** (`config/dr_egeria_actions.yaml`) is the authoritative source for ordering priorities, supersedes relationships, container dependencies, and narrative templates. Update it when Dr.Egeria templates change — do not embed these rules in LLM prompts.
+20. **Interrogative routing guard** — `_is_interrogative()` in `rag_system.py` fires before any intent override is applied. Queries beginning with "what is", "how does", "explain", "define", "why", "who", "where", etc. are redirected to `explanation` intent regardless of the user's intent selector. Only active when no `draft_id` is set (draft-active queries go through PlanElicitor regardless).
+21. **Plan Editor (builder mode)** — `POST /api/drafts/builder` creates a blank draft with `builder_mode: True`. The command picker modal (opened by `addItem()`) fetches `GET /api/actions` which returns all ~126 commands grouped by family from `CommandKeywordIndex.all_commands()`. The `builder_mode` flag is stored in the draft but not yet read by `_process_query` to reroute chat queries — that is the next planned implementation step.
 
 ### Data Pipeline (`advisor/data_prep/`)
 

@@ -523,69 +523,66 @@ After execution: maps command families to relevant `report_specs`, runs verifica
 - [ ] Report execution results in canvas — live results with conversational follow-up
 - [ ] CLI review loop (`$EDITOR` + diff + confirm)
 
-### Phase 4 — Routing quality + Plan Editor mode  *(planned)*
+### Phase 4 — Routing quality + Plan Editor mode  *(Phase 4A/4B complete; 4C in progress)*
 
 This phase addresses routing defects identified through real-use testing and adds the direct Plan Editor mode.
 
-#### 4A — Routing fixes (priority order)
+#### 4A — Routing fixes *(complete)*
 
-**Issue 3 / Fix 1 — Negative routing guard** *(highest impact)*
-Interrogative query forms (`What is`, `What are`, `How does`, `Explain`, `Tell me about`, `Define`) must never reach action agents regardless of the intent setting. When intent=Plan is set but the query is interrogative, route to DocAgent. This is a pre-flight check in `rag_system._process_query()` that fires before all other routing, even before draft routing.
+**Issue 3 / Fix 1 — Negative routing guard** ✓
+- [x] `_INTERROGATIVE_PREFIXES` constant + `_is_interrogative()` in `advisor/rag_system.py`
+- [x] Guard fires before intent override: interrogative queries with intent=plan/command/act → redirected to `explanation`
+- [x] Draft-active queries bypass the guard (draft_id routing fires first)
 
-- [ ] Add `_is_interrogative(query)` guard in `advisor/rag_system.py` — checks regex patterns for interrogative forms
-- [ ] When `_is_interrogative` returns True: route to DocAgent with `intent=explanation` regardless of `query_type_override`
-- [ ] Exception: `draft_id` is set AND query is not interrogative → still route to draft/plan flow
+**Fix 2 — Intent override as suggestion not mandate** ✓
+- [x] Priority order documented in code: interrogative guard > draft_id routing > intent override > pattern classifier
 
-**Fix 2 — Intent override as suggestion not mandate**
-Currently intent=Plan is treated as an absolute mandate, causing "What is a Dr.Egeria Template?" to enter the plan agent. The intent override should be a strong *prior* that can be overridden by query shape. Priority: `_is_interrogative` guard > `draft_id` routing > intent override > pattern classifier.
+**Fix 3 — Dr.Egeria command keyword index** ✓
+- [x] `advisor/command_keyword_index.py` — `CommandKeywordIndex` class
+- [x] 4-tier confidence: exact alias (0.95) → catalog name (0.90) → template filesystem (0.75) → partial substring (0.55)
+- [x] `lookup(phrase)` used in `_infer_type_from_context()` as last resort before "project" fallback
+- [x] `all_commands()` powers `/api/actions` endpoint
 
-- [ ] Document intent override semantics in a routing priority comment in `rag_system._process_query()`
-- [ ] Ensure `_is_interrogative` fires before `query_type_override` is applied
+**Fix 4 — Confidence-gated clarification in `confirm_commands`** ✓
+- [x] Low-confidence inferences (< 0.80) flagged in `_extract_entities_patterns()`
+- [x] `keyword_suggestions` threaded through `_decompose_intent()` → `PlanElicitor.start()` → stored in draft spec
+- [x] `_build_confirm_commands_response()` shows "⚠️ I interpreted X as Y — if that's not right…"
 
-**Fix 3 — Dr.Egeria command keyword index**
-The pattern extractor defaults to `"Create Project"` when it doesn't recognise an entity type (e.g. "blueprint", "component"). A keyword index maps all ~126 template names + synonyms to their canonical command name, enabling confidence-gated lookup instead of the generic fallback.
+**Issue 1 — "Completely wrong" correction path** ✓
+- [x] `restart_signals` block in `_handle_confirm_commands()`: clears commands, prompts fresh description without leaving the draft
 
-- [ ] Build `config/dr_egeria_keyword_index.yaml` — all template filenames decoded to display names + catalog aliases + LLM-expanded synonyms
-- [ ] `advisor/command_keyword_index.py` — `CommandKeywordIndex` class: `lookup(phrase) → (command_name, confidence, family)`; confidence based on match quality (exact alias > partial > synonym)
-- [ ] Use in `_infer_type_from_context()`: when `confidence < 0.7`, return a clarification string "did you mean {command_name}?" instead of committing to a type
-- [ ] Use in `_ENTITY_TO_ACTION` resolution: replace generic `"Create Project"` fallback with keyword index lookup
+**Issue 4 / Fix 5 — Explain routing for Dr.Egeria concepts** ✓
+- [x] `routing.yaml` explanation CRITICAL patterns expanded: all "what is/are a dr egeria template" variants
+- [x] `egeria_general` and `pyegeria_drE` domain terms include "dr egeria template" keywords
 
-**Fix 4 — Confidence-gated clarification in `confirm_commands`**
-When entity type confidence is low, surface "Did you mean X?" in the `confirm_commands` phase before proceeding — one question, one turn, then commit.
+**Issue 5 / Fix 6 — Show Me routing for Dr.Egeria templates** ✓
+- [x] CRITICAL command patterns in `routing.yaml`: "show me a dr egeria template" → `DrEgeriaTemplateAgent`
 
-- [ ] Pass confidence scores through from `_extract_entities_patterns` / `_extract_entities_llm` → `_entities_to_commands` → canvas commands
-- [ ] Add `low_confidence_suggestions` list to `confirm_commands` response when any entity has confidence < 0.7
+**Solution Architect catalog gap** ✓ *(part of 4C)*
+- [x] 13 Solution Architect commands added to `dr_egeria_actions.yaml` (catalog 42 → 55)
+- [x] `_ENTITY_TO_ACTION` + `_infer_type_from_context()` wired for blueprint/component/supply chain
 
-**Issue 4 / Fix 5 — Explain routing for Dr.Egeria concepts**
-"What is a Dr.Egeria Template?" fails because `egeria_general` and `pyegeria_drE` collections are not selected when the query contains "Dr.Egeria" as the primary topic.
+#### 4B — Plan Editor mode *(complete)*
 
-- [ ] Add "Dr.Egeria", "Dr Egeria", "dr-egeria", "dr_egeria" as domain terms pointing to `egeria_general` + `pyegeria_drE` in `config/routing.yaml`
-- [ ] DocAgent collection routing: when query mentions Dr.Egeria, always include `egeria_general` and `pyegeria_drE` collections
+- [x] `GET /api/actions` — all ~126 commands grouped by family (catalog + template filesystem)
+- [x] `POST /api/drafts/builder` — blank draft with `builder_mode: true`; bypasses `_decompose_intent()`
+- [x] "New Plan (Builder)" button in Plans sidebar
+- [x] Builder title modal → blank canvas
+- [x] Command picker modal: search input + family filter tabs + action cards with Add button
+- [x] `addItem()` in `artifact_canvas.js` opens picker instead of `prompt()`
+- [ ] Builder mode chat routing — `builder_mode` flag stored but not yet read by `_process_query` to switch chat to DocAgent for informational queries *(next)*
 
-**Issue 5 / Fix 6 — Show Me routing for Dr.Egeria templates**
-"Show me a Dr.Egeria template" hallucinated Python code because it routed to ExamplesAgent. It should route to `DrEgeriaTemplateAgent`.
+#### 4C — Action catalog expansion *(in progress)*
 
-- [ ] Add HIGH-priority `routing.yaml` pattern: "show me a dr.egeria template" / "show me a dr egeria template" / "show a template" (with "dr egeria" qualifier) → `command` with `template` keyword → `DrEgeriaTemplateAgent`
-- [ ] Extend `_CODE_EXAMPLE_SIGNALS` guard: don't suppress report routing for queries with "dr.egeria template" / "show a template" when no Python keyword present
+The 55-entry catalog covers the most common commands plus the full Solution Architect family. Phase 4C expands coverage to the ~71 remaining uncatalogued templates so that conversational planning can decompose intent involving any Dr.Egeria command family.
 
-#### 4B — Plan Editor mode
-
-- [ ] `GET /api/actions` endpoint — returns all ~126 commands grouped by family (catalog entries + uncatalogued template names from filesystem scan)
-- [ ] Command picker modal in `artifact_canvas.js` / `plan_canvas.js` — replaces the `prompt()` dialog in `addItem()`; search input + family filter tabs + action cards with "Add to plan" button
-- [ ] "New Plan (Builder)" sidebar button — opens blank canvas with title prompt; sets `builder_mode: true` on the draft; bypasses `GovernancePlanAgent._decompose_intent()`
-- [ ] Draft `builder_mode` flag — stored in draft JSON; when set, chat routes informational queries to DocAgent rather than GovernancePlanAgent
-- [ ] Builder mode chat context — system prompt note injected: "User is in plan builder mode. Answer help questions about Dr.Egeria commands and fields. Do not generate new plan proposals."
-
-#### 4C — Action catalog expansion (medium priority)
-
-The 42-entry catalog covers the most common commands. Phase 4C expands coverage to the ~84 uncatalogued templates so that conversational planning can decompose intent involving any Dr.Egeria command family.
-
-- [ ] Collections family — 15 commands (Create_Collection, Create_Collection_Folder, Create_Subject_Area, etc.)
-- [ ] Solution Architect family — 13 commands (Create_Solution_Blueprint, Create_Solution_Component, etc.) *(partial — Blueprint/Component aliases already in keyword index)*
-- [ ] Governance Officer family — ~36 commands *(large; prioritise the Create_* commands first)*
-- [ ] Data Designer family — 15 commands *(needed for data structure planning)*
-- [ ] Digital Product Manager family — 11 commands
-- [ ] Remaining families (External Reference, Feedback) — 18 commands combined
+- [x] Solution Architect family — 13 commands *(complete)*
+- [ ] Collections family — 12 remaining commands (Create_Subject_Area, Create_Security_Group, Create_Folio, etc.)
+- [ ] Governance Officer family — ~27 remaining Create_* commands *(largest gap; prioritise most-used)*
+- [ ] Data Designer family — 11 remaining commands *(needed for data structure planning)*
+- [ ] Digital Product Manager family — 8 remaining commands
+- [ ] External Reference family — 7 remaining commands
+- [ ] Feedback family — 9 commands *(lower priority)*
 
 ---
 
@@ -744,11 +741,15 @@ Egeria's Actor management tracks people and their roles. When "Tom Tally" is men
 | Now | Egeria project/glossary existence check with user warnings | **Complete** |
 | Now | Partial execution detection (GUID count + command count comparison) | **Complete** |
 | Now | Pattern library expansion (task, team, agreement, role phrasings, name stop) | **Complete** |
-| Now | Negative routing guard — interrogative forms bypass plan agent | **Phase 4A Fix 1** |
-| Now | Dr.Egeria concept routing fix (What is a Dr.Egeria Template?) | **Phase 4A Fix 5** |
-| Now | Show Me routing fix for Dr.Egeria templates | **Phase 4A Fix 6** |
-| Now | Command keyword index (blueprint/component/etc. → canonical command name) | **Phase 4A Fix 3** |
-| Soon | Plan Editor mode — command picker modal + builder entry point | **Phase 4B** |
+| Now | Negative routing guard — interrogative forms bypass plan agent | **Complete** |
+| Now | Dr.Egeria concept routing fix (What is a Dr.Egeria Template?) | **Complete** |
+| Now | Show Me routing fix for Dr.Egeria templates | **Complete** |
+| Now | Command keyword index (blueprint/component/etc. → canonical command name) | **Complete** |
+| Now | "Completely wrong" correction path in confirm_commands | **Complete** |
+| Now | Confidence-gated "Did you mean X?" clarification | **Complete** |
+| Now | Solution Architect catalog (13 commands) | **Complete** |
+| Now | Plan Editor mode — command picker modal + builder entry point | **Complete** |
+| Soon | Builder mode chat routing (read builder_mode flag in _process_query) | **Phase 4B remainder** |
 | Soon | LLM-assisted transcript pre-classification (Claude API) | Planned |
 | Medium | Few-shot examples from approved plans in decompose prompt | Planned |
 | Medium | RAG over past plans (pgvector, new collection) | Planned |

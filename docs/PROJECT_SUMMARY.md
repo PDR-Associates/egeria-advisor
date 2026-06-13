@@ -1,6 +1,6 @@
 # Egeria Advisor — Project Summary: Phases, Capabilities, Lessons Learned
 
-**Last updated:** 2026-06-11  
+**Last updated:** 2026-06-13  
 **Repository:** `/Users/dwolfson/localGit/egeria-v6/egeria-advisor`  
 **GitHub:** `https://github.com/dwolfson/egeria-advisor`
 
@@ -102,7 +102,7 @@ The major new capability: describe a data management task in plain language → 
 | DraftManager | `advisor/governance_draft.py` | Persists in-progress sessions |
 | DocumentManager | `advisor/governance_docs.py` | inbox/outbox lifecycle for plans |
 | PlanTemplateManager | `advisor/plan_templates.py` | Reusable `{{placeholder}}` templates |
-| ActionCatalog | `advisor/action_catalog.py` + `config/dr_egeria_actions.yaml` | 42 Dr.Egeria actions with rules |
+| ActionCatalog | `advisor/action_catalog.py` + `config/dr_egeria_actions.yaml` | 55 Dr.Egeria actions with rules |
 | Plan validator | `advisor/plan_validator.py` | Deterministic post-processing rules |
 | SessionLogger | `advisor/session_logger.py` | JSONL transcripts per session |
 | ArtifactCanvas | `advisor/web/static/artifact_canvas.js` | Generic split-view canvas base |
@@ -215,7 +215,15 @@ Calling `my_tool.func(...)` raises `AttributeError`. Extract implementations int
 
 ### 7. The action catalog is the right place for structural knowledge
 
-42 Dr.Egeria actions with their ordering priorities, container dependencies, supersedes relationships, and natural-language aliases. This is the system's "learned rules" — structured, inspectable, and evolvable without touching the LLM or prompts.
+55 Dr.Egeria actions (out of ~126 unique commands across 12 template families) with their ordering priorities, container dependencies, supersedes relationships, and natural-language aliases. This is the system's "learned rules" — structured, inspectable, and evolvable without touching the LLM or prompts. Actions not yet in the catalog are still accessible via the Plan Editor (direct builder) mode through the command keyword index.
+
+### 9. Intent override is a suggestion, not a mandate
+
+Treating intent=Plan as an absolute mandate caused "What is a Dr.Egeria Template?" to enter the planning agent and attempt to create a glossary term for it. A pre-flight interrogative guard fires before intent is applied: `what is`, `how does`, `explain`, `define`, etc. always route to DocAgent regardless of what intent is set.
+
+### 10. Build the action catalog from real use cases, not upfront coverage
+
+The catalog grew to 42 entries by adding entries only when scenarios were tested. This left entire families (Solution Architect, most of Governance Officer) missing. When a user asked "Create a blueprint called X", the system defaulted to "Create Project". The fix requires both a complete command keyword index (built from the template filesystem) and a systematic catalog expansion pass — not just adding entries reactively.
 
 ### 8. Model routing significantly improves quality without full model switch
 
@@ -229,17 +237,28 @@ Using a 32B model for narrative generation / refinement while keeping 8B for hig
 User (Web UI @ localhost:8880)
   → FastAPI (advisor/web/app.py)
   → RAGSystem (advisor/rag_system.py)
-      ├─ Draft routing (draft_id present → PlanElicitor)
-      ├─ Plan execution routing ("execute the plan X" → GovernancePlanAgent.execute)
+      ├─ Draft routing (draft_id present → PlanElicitor)   [fires first]
+      ├─ Template/resume navigation patterns
+      ├─ Interrogative guard (what is/how does/explain → DocAgent, overrides intent)
       ├─ QueryProcessor → intent classifier → route to agent/pipeline
+      │     └─ if intent override set (plan/command/act) but query is interrogative
+      │          → override redirected to 'explanation' before classifier fires
       │
       ├─ plan              → GovernancePlanAgent → PlanElicitor → Plan Canvas
+      │     ├─ confirm_commands: restart_signals → fresh description
+      │     └─ keyword_suggestions → "Did you mean X?" in confirm
       ├─ report            → ReportPipeline → MCP run_report
       ├─ command (+template) → DrEgeriaTemplateAgent (filesystem)
       ├─ command           → DrEgeriaActionAgent → MCP dr_egeria_run_block
       ├─ code_search/example → ExamplesAgent (BeeAI + direct retrieval)
       ├─ explanation/etc   → DocAgent
       └─ fallback          → RAG retrieval → pgvector → LLM generation
+
+Plan Editor (builder mode):
+  POST /api/drafts/builder → blank draft (builder_mode=True)
+  GET  /api/actions        → all ~126 commands grouped by family
+  → Plan Canvas opens; user searches/picks commands via command picker modal
+  → same canvas + execution path as conversational mode
 ```
 
 **Vector collections (9 active, ~88,900 entities):**
@@ -252,38 +271,41 @@ User (Web UI @ localhost:8880)
 
 ```
 advisor/
-  rag_system.py              — main orchestrator
+  rag_system.py              — main orchestrator; interrogative routing guard
   query_processor.py         — pattern-match classifier
   llm_client.py              — OllamaClient + get_planning_llm()
   config.py                  — Pydantic config models
-  action_catalog.py          — ActionCatalog (42 actions)
+  action_catalog.py          — ActionCatalog (55 actions)
+  command_keyword_index.py   — CommandKeywordIndex: all ~126 commands, 4-tier confidence lookup
   plan_validator.py          — validate_commands() — 6 deterministic rules
   governance_draft.py        — DraftManager
   governance_docs.py         — DocumentManager
   plan_templates.py          — PlanTemplateManager
   session_logger.py          — SessionLogger (JSONL transcripts)
+  egeria_context.py          — EgeriaContext: live actor/project/zone lookups
   agents/
-    governance_plan_agent.py — GovernancePlanAgent (two-stage extraction)
-    plan_elicitor.py         — PlanElicitor (confirm→generate→refine)
+    governance_plan_agent.py — GovernancePlanAgent (two-stage extraction + keyword index)
+    plan_elicitor.py         — PlanElicitor (confirm→generate→refine + restart path)
     dr_egeria_agent.py       — DrEgeriaActionAgent
     dre_template_agent.py    — DrEgeriaTemplateAgent
     examples_agent.py        — ExamplesAgent
     doc_agent.py             — DocAgent
-    outcome_reporter.py      — OutcomeReporter
+    outcome_reporter.py      — OutcomeReporter (partial execution detection)
   web/
-    app.py                   — FastAPI routes
+    app.py                   — FastAPI routes (incl. /api/actions, /api/drafts/builder)
     static/
-      index.html             — SPA
+      index.html             — SPA (command picker modal, builder entry)
       plan_canvas.js         — PlanCanvas adapter
-      artifact_canvas.js     — ArtifactCanvas base
+      artifact_canvas.js     — ArtifactCanvas base (addItem → command picker)
       plan_editor.js         — Plan Editor (full-document view)
+      auth.js                — JWT auth helper
 config/
   advisor.yaml               — primary config (llm models, paths, rag params)
-  dr_egeria_actions.yaml     — action catalog (42 actions)
+  dr_egeria_actions.yaml     — action catalog (55 actions, 10 families)
   governance_report_map.yaml — family → report_spec mapping
   routing.yaml               — query classification patterns
 docs/
-  literate-governance-plan.md — LGCI design (v4, comprehensive)
+  literate-governance-plan.md — LGCI design (v5, comprehensive)
   user-docs/
     LITERATE_GOVERNANCE_GUIDE.md — LGCI user guide
     QUICK_START.md               — Getting started
@@ -292,6 +314,43 @@ docs/
 ---
 
 ## Recent work (Jun 2026)
+
+### Phase 11c — Routing fixes + Plan Editor mode (Jun 13, 2026)
+
+**Action catalog gap analysis and expansion** ✓ (commit 4412ff5)
+- Identified that the catalog covered only 42 of ~126 unique Dr.Egeria commands — one-third
+- Dr.Egeria provides 253 template files in basic/advanced pairs across 12 families; the catalog was built reactively, leaving entire families absent
+- Added **Solution Architect** family (13 commands: Create Solution Blueprint, Create Solution Component, Create Solution Role, Create Information Supply Chain, and 9 Link commands) — catalog grows from 42 → 55
+- Wired `solution_blueprint`, `solution_component`, `information_supply_chain`, `solution_role` into `_ENTITY_TO_ACTION` and `_infer_type_from_context()` — fixes "blueprint" and "component" defaulting to "Create Project"
+
+**Routing defect fixes** ✓ (commit 4412ff5)
+- **Negative routing guard** — `_INTERROGATIVE_PREFIXES` constant + `_is_interrogative()` method in `rag_system.py`; fires before intent override is applied; "What is X?" with intent=Plan now routes to DocAgent instead of entering the plan agent
+- **Intent override semantics** — guard priority documented: interrogative check > draft_id routing > intent override > pattern classifier
+- **Dr.Egeria Explain routing** (Issue 4) — `routing.yaml` explanation patterns expanded with all "what is a dr egeria template" and "what are dr egeria templates" variants; `egeria_general` and `pyegeria_drE` domain terms extended to include "dr egeria template" keywords so DocAgent selects the right collections
+- **Show Me routing** (Issue 5) — "show me a dr egeria template" and related forms added to CRITICAL command patterns in `routing.yaml`; routes to `DrEgeriaTemplateAgent` instead of `ExamplesAgent`
+
+**Command keyword index** ✓ (commit e57625f)
+- New `advisor/command_keyword_index.py` — `CommandKeywordIndex` class
+- Builds from catalog aliases (0.95 confidence) + catalog command names (0.90) + template filesystem scan of all ~126 commands (0.75) + partial substring matching (0.55)
+- `lookup(phrase) → CommandMatch(command, family, confidence, source)` — used in `_infer_type_from_context()` as last resort before defaulting to "project"
+- `all_commands()` returns full catalog + uncatalogued templates grouped by family — powers `/api/actions` endpoint
+- Replaces the blind `"Create Project"` fallback for unknown entity types
+
+**Confidence-gated clarification** ✓ (commit e57625f)
+- Low-confidence entity type inferences (confidence < 0.80) are flagged and threaded through `_decompose_intent()` → `PlanElicitor.start()` → stored in draft spec
+- `_build_confirm_commands_response()` surfaces "⚠️ I interpreted **\"X\"** as **Create Solution Blueprint** — if that's not right, describe what you meant" warnings when type was inferred with low confidence
+
+**"Completely wrong" correction path** ✓ (commit e57625f)
+- New `restart_signals` block in `_handle_confirm_commands()`: "completely wrong", "totally wrong", "not what I asked", "start over", "misunderstood", etc.
+- Clears command list, prompts fresh description — full restart without leaving the draft
+- `correction_signals` hint updated to mention "completely wrong" as an option
+
+**Plan Editor mode** ✓ (commit e57625f)
+- `POST /api/drafts/builder` — creates blank draft with `builder_mode: True`; bypasses `_decompose_intent()`
+- `GET /api/actions` — returns all ~126 commands grouped by family for the picker UI
+- "New Plan (Builder)" button in Plans sidebar header
+- Builder title modal → creates blank canvas
+- **Command picker modal**: search input + family filter tabs + command cards with "Add" button; replaces `prompt()` in `addItem()`; `artifact_canvas.js` opens the picker when available
 
 ### Phase 11b — LGCI quality + Egeria integration (Jun 10–11, 2026)
 
@@ -329,22 +388,34 @@ docs/
 
 ---
 
-## Immediate next steps (Phase 12)
+## Current state and next steps (Jun 2026)
 
-**In progress / recently completed:**
-- LGCI Phase 1 ✓ (canvas, conversational planning, confirm flow)
-- LGCI Phase 2 ✓ (execution, outcome reporter)
-- LGCI Phase 3 partial (ArtifactCanvas extracted; Report Spec canvas needs design)
-- LGCI quality pass ✓ (auth, pattern library, Egeria context, partial execution detection)
+**LGCI phases complete:**
+- Phase 1 ✓ — canvas, conversational planning, confirm→generate→refine flow
+- Phase 2 ✓ — execution, outcome reporter, partial execution detection
+- Phase 3 partial — ArtifactCanvas extracted; Report Spec canvas needs design
+- Phase 11b ✓ — auth, pattern library, Egeria context enrichment, zone valid values
+- Phase 11c ✓ — routing fixes, catalog expansion, keyword index, plan editor
 
-**Planned next (MEDIUM priority):**
-- **Egeria Projects & Tasks** — fill action catalog gaps for the 0130-Projects type system: Add Update Project, Update Task, Add Project Team Member, Classify Project as Experiment; add `known_fields` (mission, successCriteria, projectStatus, projectHealth, priority, dates) to existing Create actions; add routing patterns for project/task query/listing; expand report specs for Campaigns, Tasks, Study-Projects, Personal-Projects; extend plan validator for Create+Update conflict. ⚠️ Verify field names against Dr.Egeria template files before writing catalog entries.
-- **Egeria referenced data for valid field values** — `ReferenceDataManager.find_valid_value_definitions()` for project status, data classification levels, etc.; extend `EgeriaContext` with a `find_valid_values(set_name)` method and wire into the fields endpoint for more field types beyond zones.
-- **Egeria Actor lookup for unresolved names** — when `actor_found=False`, optionally prompt the user or auto-insert a `Create Actor Profile` command before the role appointment. Currently surfaces a warning only.
+**Planned next (in priority order):**
+
+- **Action catalog expansion (Phase 4C)** — the catalog covers 55 of ~126 unique commands. Phase 4C adds the remaining ~71 to enable *conversational* planning across all Dr.Egeria families. Priority order: Collections (15), Solution Architect Link commands (8 remaining), Governance Officer Create commands (~27 remaining), Data Designer (11 remaining), Digital Product Manager (8 remaining). ⚠️ Verify field names against Dr.Egeria template files before writing entries.
+
+- **Egeria Projects & Tasks** — fill specific catalog gaps for the 0130-Projects type system: Update Project, Update Task, Add Project Team Member, Classify Project as Experiment; add `known_fields` (mission, successCriteria, projectStatus, projectHealth, priority, dates) to existing Create actions; routing patterns for project/task listing; report specs for Campaigns, Tasks.
+
+- **Egeria referenced data for valid field values** — `ReferenceDataManager` for project status, data classification levels, etc.; extend `EgeriaContext.find_valid_values(set_name)` and wire into the fields endpoint for field types beyond governance zones.
+
+- **Egeria Actor lookup for unresolved names** — when `actor_found=False`, optionally auto-insert a `Create Actor Profile` command before the role appointment. Currently surfaces a warning only.
+
 - **Few-shot examples from approved plans** — index past approved plans into a new pgvector collection; retrieve similar plans during `_decompose_intent` to improve narrative generation for recurring task types.
-- **Report Spec canvas** — create/edit question_specs via chat + canvas (needs design session)
-- **MCP credential propagation** — investigate whether `run_report`/`dr_egeria_run_block` accept per-call user args; if yes, thread JWT-extracted credentials through to MCP rather than using the service account.
-- **IntentModel** (deferred) — formal intermediate representation between extraction and command mapping
+
+- **Report Spec canvas** — create/edit question_specs via chat + canvas (needs design session).
+
+- **MCP credential propagation** — investigate whether `run_report`/`dr_egeria_run_block` accept per-call user args; if yes, thread JWT-extracted credentials through to MCP.
+
+- **Builder mode chat routing** — when `builder_mode: True` is set on a draft, informational chat queries should route to DocAgent rather than GovernancePlanAgent (currently not yet implemented — the flag is stored but not yet read by `_process_query`).
+
+- **IntentModel** (deferred) — formal intermediate representation between extraction and command mapping.
 
 ---
 

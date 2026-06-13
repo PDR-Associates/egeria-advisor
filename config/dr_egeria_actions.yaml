@@ -428,6 +428,127 @@ actions:
       - sharing agreement
     creates: data_sharing_agreement
 
+  # ── Solution Architect ────────────────────────────────────────────────────────
+
+  - name: Create Solution Blueprint
+    family: Solution Architect
+    intent_entity: solution_blueprint
+    aliases:
+      - solution blueprint
+      - blueprint
+      - architecture blueprint
+      - system blueprint
+      - system architecture
+      - solution architecture
+    creates: solution_blueprint
+    container_for: [Create Solution Component, Link Solution Component to Blueprint]
+    narrative_template: >
+      Creates the solution blueprint — a high-level architectural description
+      of the digital service in terms of its solution components.
+
+  - name: Create Solution Component
+    family: Solution Architect
+    intent_entity: solution_component
+    aliases:
+      - solution component
+      - component
+      - software component
+      - system component
+      - building block
+      - module
+    creates: solution_component
+    requires: [Create Solution Blueprint]
+    narrative_template: >
+      Creates a reusable solution component — a building block of the blueprint.
+
+  - name: Create Solution Role
+    family: Solution Architect
+    intent_entity: solution_role
+    aliases:
+      - solution role
+      - architecture role
+      - system role
+    creates: solution_role
+    requires: [Create Solution Blueprint]
+
+  - name: Create Information Supply Chain
+    family: Solution Architect
+    intent_entity: information_supply_chain
+    aliases:
+      - information supply chain
+      - supply chain
+      - data pipeline
+      - data flow
+      - information flow
+    creates: information_supply_chain
+
+  - name: Link Solution Component to Blueprint
+    family: Solution Architect
+    intent_entity: solution_component_link
+    aliases:
+      - link component to blueprint
+      - attach component
+      - add component to blueprint
+    requires: [Create Solution Blueprint, Create Solution Component]
+
+  - name: Link Blueprint Child
+    family: Solution Architect
+    aliases:
+      - link blueprint child
+      - blueprint hierarchy
+      - nested blueprint
+    requires: [Create Solution Blueprint]
+
+  - name: Link SubComponent
+    family: Solution Architect
+    aliases:
+      - link subcomponent
+      - component hierarchy
+      - nested component
+    requires: [Create Solution Component]
+
+  - name: Link Actor to Blueprint
+    family: Solution Architect
+    aliases:
+      - link actor to blueprint
+      - assign actor to blueprint
+    requires: [Create Solution Blueprint]
+
+  - name: Link Solution Design
+    family: Solution Architect
+    aliases:
+      - link solution design
+      - attach design
+    requires: [Create Solution Blueprint]
+
+  - name: Link Information Supply Chain Child
+    family: Solution Architect
+    aliases:
+      - link supply chain child
+      - supply chain segment
+    requires: [Create Information Supply Chain]
+
+  - name: Link Information Supply Chain Peers
+    family: Solution Architect
+    aliases:
+      - link supply chain peers
+      - connect supply chains
+    requires: [Create Information Supply Chain]
+
+  - name: Link Component to Actor
+    family: Solution Architect
+    aliases:
+      - link component to actor
+      - assign actor to component
+    requires: [Create Solution Component]
+
+  - name: Link Solution Components
+    family: Solution Architect
+    aliases:
+      - link solution components
+      - connect components
+    requires: [Create Solution Component]
+
   # ── External Reference ────────────────────────────────────────────────────────
 
   - name: Create External Reference
@@ -524,6 +645,30 @@ ordering_priority:
     priority: 20
   - pattern: "create data sharing agreement"
     priority: 25
+  - pattern: "create solution blueprint"
+    priority: 10
+  - pattern: "create information supply chain"
+    priority: 10
+  - pattern: "create solution component"
+    priority: 20
+  - pattern: "create solution role"
+    priority: 20
+  - pattern: "link solution component to blueprint"
+    priority: 30
+  - pattern: "link blueprint child"
+    priority: 35
+  - pattern: "link subcomponent"
+    priority: 35
+  - pattern: "link actor to blueprint"
+    priority: 40
+  - pattern: "link solution design"
+    priority: 40
+  - pattern: "link information supply chain"
+    priority: 40
+  - pattern: "link component to actor"
+    priority: 40
+  - pattern: "link solution components"
+    priority: 40
   - pattern: "create external reference"
     priority: 10
   - pattern: "link external reference"

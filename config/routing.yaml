@@ -63,10 +63,17 @@ query_patterns:
       - "guide me through"
       - "help me plan"
     command:
-      # Dr.Egeria example/sample requests — beat python example patterns so "give me a
-      # Dr.Egeria example" doesn't route to ExamplesAgent (Python code).
-      # These contain "example"/"sample"/"show me" which triggers DrEgeriaTemplateAgent
-      # inside the command branch.
+      # Dr.Egeria template/sample/example requests — beat python example patterns so
+      # "give me a Dr.Egeria template" routes to DrEgeriaTemplateAgent, not ExamplesAgent.
+      - "show me a dr egeria template"
+      - "show me a dr. egeria template"
+      - "show me dr egeria template"
+      - "show me a dr egeria"
+      - "show a dr egeria template"
+      - "give me a dr egeria template"
+      - "give me a dr. egeria template"
+      - "dr egeria template for"
+      - "dr. egeria template for"
       - "dr egeria example"
       - "dr egeria sample"
       - "dr egeria for"
@@ -86,10 +93,22 @@ query_patterns:
       - "how do i use dr egeria"
       - "how to use dr egeria"
       - "what is dr egeria"
+      - "what is a dr egeria"
+      - "what is dr. egeria"
+      - "what is a dr. egeria"
+      - "what are dr egeria"
+      - "what are dr. egeria"
       - "explain dr egeria"
+      - "explain a dr egeria"
+      - "explain dr. egeria"
       - "how does dr egeria"
       - "how do i use dr. egeria"
-      - "what is dr. egeria"
+      - "what is a dr egeria template"
+      - "what is a dr. egeria template"
+      - "what are dr egeria templates"
+      - "what is an egeria template"
+      - "explain egeria template"
+      - "how does a dr egeria template"
     example:
       # Python/code example requests — must beat command and report patterns
       - "python example"
@@ -491,6 +510,11 @@ collection_domain_terms:
     - "markdown-translator"
     - "dre"
     - "markdown-to-pyegeria"
+    - "dr egeria template"
+    - "dr. egeria template"
+    - "egeria markdown template"
+    - "markdown command"
+    - "egeria command template"
 
   egeria_java:
     - "java"
@@ -566,6 +590,10 @@ collection_domain_terms:
     - "deployment"
     - "installation"
     - "usage"
+    - "dr egeria"
+    - "dr. egeria"
+    - "dr egeria template"
+    - "egeria template"
 
   egeria_workspaces:
     - "workspace"

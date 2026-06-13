@@ -167,6 +167,29 @@ class RAGSystem:
         "can you explain", "give me an overview",
     )
 
+    # Interrogative forms that must NEVER reach action agents regardless of intent.
+    # These indicate the user wants an explanation, not to create/execute anything.
+    _INTERROGATIVE_PREFIXES = (
+        "what is ", "what are ", "what's a ", "what's the ", "what's an ",
+        "what does ", "what do ",
+        "how does ", "how do ", "how is ", "how are ", "how would ",
+        "explain ", "define ", "describe ",
+        "tell me about ", "tell me what ",
+        "can you explain", "could you explain",
+        "give me an overview", "give me a summary",
+        "what exactly is", "what exactly are",
+        "why is ", "why are ", "why does ", "why do ",
+        "who is ", "who are ",
+        "when is ", "when are ", "when does ",
+        "where is ", "where are ", "where does ",
+    )
+
+    def _is_interrogative(self, query: str) -> bool:
+        """Return True if this query is an informational question that must
+        route to DocAgent regardless of intent setting."""
+        q = query.strip().lower()
+        return any(q.startswith(p) for p in self._INTERROGATIVE_PREFIXES)
+
     # Keywords that signal the user wants Python code, not live Egeria data.
     _CODE_EXAMPLE_SIGNALS = (
         "python", "code example", "code sample", "write python",
@@ -324,6 +347,21 @@ class RAGSystem:
                 return result
             except Exception as exc:
                 logger.warning(f"Template start failed ({exc}), continuing normal routing")
+
+        # ------------------------------------------------------------------ #
+        # Negative routing guard: interrogative forms bypass action agents   #
+        # regardless of the intent override.  "What is X" / "How does Y"    #
+        # must never reach GovernancePlanAgent, DrEgeriaActionAgent, or      #
+        # ExamplesAgent — even when intent=Plan is selected.                 #
+        # The draft_id block above already handled active drafts; this guard #
+        # fires only for new (draft-free) queries.                           #
+        # ------------------------------------------------------------------ #
+        if self._is_interrogative(user_query) and query_type_override in ('plan', 'command', 'act'):
+            logger.info(
+                f"Interrogative guard: query is informational; "
+                f"overriding intent '{query_type_override}' → explanation"
+            )
+            query_type_override = 'explanation'
 
         # Process query to understand intent
         query_analysis = self.query_processor.process(user_query)

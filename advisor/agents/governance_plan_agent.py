@@ -545,7 +545,14 @@ class GovernancePlanAgent:
         "agreement":              "Create Agreement",
         "data_sharing_request":   "Create Agreement",
         "data_sharing_agreement": "Create Agreement",
-        "external_reference": "Create External Reference",
+        "external_reference":     "Create External Reference",
+        "solution_blueprint":     "Create Solution Blueprint",
+        "blueprint":              "Create Solution Blueprint",
+        "solution_component":     "Create Solution Component",
+        "component":              "Create Solution Component",
+        "information_supply_chain": "Create Information Supply Chain",
+        "supply_chain":           "Create Information Supply Chain",
+        "solution_role":          "Create Solution Role",
     }
 
     def _decompose_intent(
@@ -683,14 +690,18 @@ class GovernancePlanAgent:
         ql = q.lower()
 
         def _infer_type_from_context() -> str:
-            if "campaign"     in ql:                       return "campaign"
-            if "glossary"     in ql:                       return "glossary"
-            if "collection"   in ql:                       return "collection"
-            if "task"         in ql:                       return "task"
-            if "team"         in ql:                       return "team"
-            if "agreement"    in ql or "data sharing" in ql: return "agreement"
-            if "study"        in ql or "investigation" in ql: return "study_project"
-            if "personal"     in ql:                       return "personal_project"
+            if "campaign"          in ql:                          return "campaign"
+            if "glossary"          in ql:                          return "glossary"
+            if "collection"        in ql:                          return "collection"
+            if "task"              in ql:                          return "task"
+            if "team"              in ql:                          return "team"
+            if "agreement"         in ql or "data sharing" in ql: return "agreement"
+            if "study"             in ql or "investigation" in ql: return "study_project"
+            if "personal"          in ql:                          return "personal_project"
+            if "blueprint"         in ql:                          return "solution_blueprint"
+            if "component"         in ql:                          return "solution_component"
+            if "supply chain"      in ql:                          return "information_supply_chain"
+            if "solution role"     in ql:                          return "solution_role"
             return "project"
 
         # Detect main entity type and name
@@ -705,13 +716,16 @@ class GovernancePlanAgent:
                 else:
                     # Infer from the matched keyword or surrounding context
                     matched_lower = m.group(0).lower()
-                    if "campaign"   in matched_lower:   main_type = "campaign"
-                    elif "glossary" in matched_lower:   main_type = "glossary"
-                    elif "collection" in matched_lower: main_type = "collection"
-                    elif "task"     in matched_lower:   main_type = "task"
-                    elif "team"     in matched_lower:   main_type = "team"
-                    elif "study"    in matched_lower:   main_type = "study_project"
-                    else:                               main_type = _infer_type_from_context()
+                    if "campaign"      in matched_lower:   main_type = "campaign"
+                    elif "glossary"    in matched_lower:   main_type = "glossary"
+                    elif "collection"  in matched_lower:   main_type = "collection"
+                    elif "task"        in matched_lower:   main_type = "task"
+                    elif "team"        in matched_lower:   main_type = "team"
+                    elif "study"       in matched_lower:   main_type = "study_project"
+                    elif "blueprint"   in matched_lower:   main_type = "solution_blueprint"
+                    elif "component"   in matched_lower:   main_type = "solution_component"
+                    elif "supply chain" in matched_lower:  main_type = "information_supply_chain"
+                    else:                                   main_type = _infer_type_from_context()
                 break
 
         if not main_name:

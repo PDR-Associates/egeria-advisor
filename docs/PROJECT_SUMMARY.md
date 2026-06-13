@@ -126,6 +126,123 @@ User describes task
 
 ---
 
+## Architecture evolution (Mermaid diagrams)
+
+### Phases 1–4: Basic RAG
+
+```mermaid
+flowchart LR
+    User -->|query| CLI
+    CLI --> RAG[RAGSystem]
+    RAG --> Embed[Embeddings\nall-MiniLM-L6-v2]
+    Embed --> Milvus[(Milvus\npyegeria collection)]
+    Milvus -->|top-k chunks| RAG
+    RAG --> Ollama[Ollama\nllama3.2:3b]
+    Ollama -->|answer| CLI
+    MLflow[(MLflow)] -.->|tracking| RAG
+```
+
+### Phase 4b–7: Multi-collection + routing
+
+```mermaid
+flowchart LR
+    User -->|query| WebUI[Web UI\n:8880]
+    WebUI --> API[FastAPI]
+    API --> QP[QueryProcessor\nrouting.yaml CRITICAL/HIGH/MEDIUM]
+    QP -->|intent| CR[CollectionRouter\ndomain-term matching]
+    CR --> MCS[MultiCollectionStore]
+    MCS --> PG[(pgvector\n9 collections\n~88.9k entities)]
+    PG -->|chunks| LLM[Ollama\nllama3.1:8b]
+    LLM -->|answer + sources| WebUI
+
+    subgraph Collections
+        pyegeria
+        pyegeria_cli
+        pyegeria_drE
+        egeria_java
+        egeria_concepts
+        egeria_types
+        egeria_general
+        egeria_workspaces
+        egeria_templates
+    end
+
+    MCS --> Collections
+```
+
+### Phase 8–9: Agent routing
+
+```mermaid
+flowchart TD
+    Q[User Query] --> Guard{Interrogative\nguard}
+    Guard -->|what is / explain / how does| DocAgent
+    Guard -->|action query| QP[QueryProcessor\n+ LLM intent classifier]
+
+    QP -->|plan| PlanAgent[GovernancePlanAgent\nPlanElicitor]
+    QP -->|report| ReportPipeline
+    QP -->|command + template| DreTemplate[DrEgeriaTemplateAgent\nfilesystem lookup]
+    QP -->|command| DreAction[DrEgeriaActionAgent\nMCP dr_egeria_run_block]
+    QP -->|code_search / example| Examples[ExamplesAgent\nBeeAI + direct retrieval]
+    QP -->|explanation / concept| DocAgent[DocAgent\npgvector RAG]
+
+    ReportPipeline -->|run_report| MCP[Dr.Egeria MCP]
+    DreAction -->|dr_egeria_run_block| MCP
+
+    PlanAgent --> Canvas[Plan Canvas\nSPA split view]
+    Canvas -->|execute| MCP
+```
+
+### Phase 10–11: LGCI full lifecycle
+
+```mermaid
+flowchart TD
+    User -->|"describe task\ne.g. set up a glossary\nfor Finance..."| Elicitor[PlanElicitor\nconfirm_commands phase]
+
+    subgraph Decomposition
+        Elicitor --> Stage1A[_extract_entities_patterns\nregex, no LLM]
+        Stage1A -->|no match| Stage1B[_extract_entities_llm\nqwen2.5-coder:32b]
+        Stage1A --> Stage1C[EgeriaContext\nenrich: actor lookup\nzone valid values\nexistence check]
+        Stage1B --> Stage1C
+        Stage1C --> Stage2[_entities_to_commands\ndeterministic mapping\n_ENTITY_TO_ACTION]
+        Stage2 --> Validator[validate_commands\ndedup / supersedes\ncontainers / ordering]
+    end
+
+    Validator --> Canvas[Plan Canvas\ndrag/reorder/edit\nfield autocomplete\ndatalist for zones]
+    Canvas -->|user confirms| Generate[GovernancePlanAgent\n_compose_document\nqwen2.5-coder:32b narrative]
+    Generate --> Inbox[(~/egeria-plans/inbox/)]
+
+    Inbox -->|user clicks Execute| Exec[GovernancePlanAgent.execute\ndr_egeria_run_block via MCP]
+    Exec --> Reporter[OutcomeReporter\nGUID detection\npartial execution\nverification reports]
+    Reporter --> Outbox[(~/egeria-plans/outbox/\nplan + outcome section)]
+
+    Sessions[(~/egeria-plans/sessions/\nJSONL transcripts)] -.->|review & learning| Admin[Admin dashboard]
+```
+
+### Phase 11c: Plan Editor mode
+
+```mermaid
+flowchart LR
+    subgraph Entry points
+        NL[Natural language\n"Set up a glossary..."] --> Elicitor[PlanElicitor\ndecompose intent]
+        Builder["New Plan (Builder)\nknows Dr.Egeria commands"] --> Blank[Blank canvas\nbuilder_mode=true]
+        Template[Saved template] --> Fill[Fill placeholders]
+    end
+
+    subgraph Command picker
+        Blank --> Picker[Command Picker Modal\nsearch + family tabs]
+        Picker -->|GET /api/actions| Index[CommandKeywordIndex\n55 catalogued\n~71 from templates\n126 total]
+        Index --> Families["Collections / Data Designer\nGovernance Officer / Glossary\nProjects / Solution Architect\nDigital Product Mgr / ..."]
+    end
+
+    Elicitor --> Canvas[Plan Canvas]
+    Blank --> Canvas
+    Fill --> Canvas
+
+    Canvas --> Execute[Same execution path\ndr_egeria_run_block MCP]
+```
+
+---
+
 ## Current capabilities
 
 ### Query / RAG
@@ -414,6 +531,10 @@ docs/
 - **MCP credential propagation** — investigate whether `run_report`/`dr_egeria_run_block` accept per-call user args; if yes, thread JWT-extracted credentials through to MCP.
 
 - **Builder mode chat routing** — when `builder_mode: True` is set on a draft, informational chat queries should route to DocAgent rather than GovernancePlanAgent (currently not yet implemented — the flag is stored but not yet read by `_process_query`).
+
+- **Multi-user considerations** — the system is currently single-user (OS user identity, one set of Egeria credentials, shared pgvector). Multi-user raises questions across several layers: (1) *Auth* — JWT already in place; Egeria credentials per-user would require per-session MCP processes or credential injection into tool calls; (2) *Isolation* — plan drafts and session transcripts currently sit in `~/egeria-plans/`; multi-user needs per-user directories or a shared store keyed on user ID; (3) *Egeria permissions* — each user may have different Egeria access rights; the system currently uses a service account; (4) *Vector store* — the indexed collections are shared (public Egeria documentation + code), which is fine; only the plan artifacts and live-data queries are user-specific; (5) *Session state* — `_activeDraftId` is in `sessionStorage` (per-browser-tab), which is already per-user in practice. Recommend: defer full multi-user until the Portal integration (shared-secret SSO) is in place, since the Portal defines the auth boundary.
+
+- **Docker deployment** — the system has four external dependencies (pgvector, Ollama, Dr.Egeria MCP, Egeria itself) that a Docker Compose setup would need to manage. Key considerations: (1) Ollama GPU passthrough requires `--gpus all` and is Linux-only natively (macOS runs Ollama outside Docker); (2) pgvector can be `ankane/pgvector` image; (3) the Advisor itself is straightforward to containerize; (4) Dr.Egeria MCP and Egeria require separate containers or external hosts; (5) volume mounts for `~/egeria-plans/` and the vector store data. A minimal Compose file would cover: advisor + pgvector + Ollama (or point to external). Full environment including Egeria server is more complex and likely out of scope for the first Docker pass.
 
 - **IntentModel** (deferred) — formal intermediate representation between extraction and command mapping.
 

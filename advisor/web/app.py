@@ -459,6 +459,44 @@ async def delete_draft(draft_id: str) -> Dict[str, str]:
     return {"status": "ok" if deleted else "not_found"}
 
 
+@app.get("/api/actions")
+async def list_actions() -> Dict[str, Any]:
+    """Return all known Dr.Egeria commands grouped by family.
+
+    Used by the Plan Editor command picker modal to populate the command catalog.
+    Each entry: {name, family, aliases, in_catalog}
+    """
+    from advisor.command_keyword_index import get_command_keyword_index
+    return {"families": get_command_keyword_index().all_commands()}
+
+
+@app.post("/api/drafts/builder")
+async def create_builder_draft(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Create a new blank draft in builder mode (Plan Editor entry point).
+
+    Body: {title: str, perspective?: str}
+    Returns the draft spec with builder_mode=true and an empty command list.
+    """
+    from advisor.governance_draft import get_draft_manager
+    title = (body.get("title") or "Untitled Plan").strip()
+    perspective = body.get("perspective")
+    dm = get_draft_manager()
+    spec = dm.create(
+        title=title,
+        original_query=f"[builder] {title}",
+        commands_identified=[],
+        pending_questions={"required": [], "optional": []},
+        pre_filled_answers={},
+        mode="basic",
+        perspective=perspective,
+    )
+    spec["phase"] = "confirm_commands"
+    spec["phase_label"] = "Building plan"
+    spec["builder_mode"] = True
+    dm.save(spec)
+    return spec
+
+
 @app.get("/api/plan-templates")
 async def list_plan_templates() -> Dict[str, Any]:
     """Return available plan templates."""

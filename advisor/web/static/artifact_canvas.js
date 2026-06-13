@@ -85,12 +85,23 @@ class ArtifactCanvas {
   }
 
   async addItem() {
-    const typeName = prompt('Command name (e.g. "Create Project", "Create Glossary Term"):');
-    if (!typeName?.trim()) return;
-    const newItem = this._opts.itemAdapter.makeNew(typeName.trim());
-    this._items.push(newItem);
-    await this._sync();
-    this._render();
+    // Use the command picker modal if available (Plan Editor mode),
+    // otherwise fall back to a simple prompt for non-browser environments.
+    if (typeof openCmdPicker === 'function') {
+      openCmdPicker(async (commandName) => {
+        const newItem = this._opts.itemAdapter.makeNew(commandName);
+        this._items.push(newItem);
+        await this._sync();
+        this._render();
+      });
+    } else {
+      const typeName = prompt('Command name (e.g. "Create Project", "Create Glossary Term"):');
+      if (!typeName?.trim()) return;
+      const newItem = this._opts.itemAdapter.makeNew(typeName.trim());
+      this._items.push(newItem);
+      await this._sync();
+      this._render();
+    }
   }
 
   toggleMode() {

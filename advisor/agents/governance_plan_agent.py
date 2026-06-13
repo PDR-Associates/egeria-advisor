@@ -629,11 +629,17 @@ class GovernancePlanAgent:
         if warnings:
             logger.info(f"GovernancePlanAgent: validator fixes: {warnings}")
 
+        # Collect low-confidence suggestions from all extracted objects
+        keyword_suggestions: list[dict] = []
+        for obj in entities.get("objects", []):
+            keyword_suggestions.extend(obj.pop("low_confidence_suggestions", []))
+
         return {
             "title":              entities.get("title", query[:50]).strip(),
             "purpose":            entities.get("purpose", query),
             "commands":           commands,
             "validator_warnings": warnings + context_warnings,
+            "keyword_suggestions": keyword_suggestions,
         }
 
     # Name stops at these words (sentence-level boundaries)
@@ -689,19 +695,52 @@ class GovernancePlanAgent:
 
         ql = q.lower()
 
+        # keyword → entity_type map for fast inline matching
+        _KW_MAP = {
+            "campaign": "campaign", "glossary": "glossary",
+            "collection": "collection", "task": "task", "team": "team",
+            "blueprint": "solution_blueprint", "component": "solution_component",
+            "supply chain": "information_supply_chain", "solution role": "solution_role",
+            "study": "study_project", "personal": "personal_project",
+        }
+
+        # Tracks entity-type inferences that used the keyword index (low confidence)
+        # so confirm_commands can surface "Did you mean X?"
+        _low_confidence_suggestions: list[dict] = []
+
         def _infer_type_from_context() -> str:
-            if "campaign"          in ql:                          return "campaign"
-            if "glossary"          in ql:                          return "glossary"
-            if "collection"        in ql:                          return "collection"
-            if "task"              in ql:                          return "task"
-            if "team"              in ql:                          return "team"
-            if "agreement"         in ql or "data sharing" in ql: return "agreement"
-            if "study"             in ql or "investigation" in ql: return "study_project"
-            if "personal"          in ql:                          return "personal_project"
-            if "blueprint"         in ql:                          return "solution_blueprint"
-            if "component"         in ql:                          return "solution_component"
-            if "supply chain"      in ql:                          return "information_supply_chain"
-            if "solution role"     in ql:                          return "solution_role"
+            for kw, etype in _KW_MAP.items():
+                if kw in ql:
+                    return etype
+            if "agreement" in ql or "data sharing" in ql:
+                return "agreement"
+            if "investigation" in ql:
+                return "study_project"
+            # Last resort: consult the keyword index against the full query
+            try:
+                from advisor.command_keyword_index import get_command_keyword_index
+                idx = get_command_keyword_index()
+                # Try each word/bigram from the query
+                words = ql.split()
+                for i in range(len(words) - 1, -1, -1):
+                    for length in (2, 1):
+                        phrase = " ".join(words[i:i + length])
+                        match = idx.lookup(phrase)
+                        if match and match.confidence >= 0.50:
+                            # Map command name back to entity type via _ENTITY_TO_ACTION inverse
+                            inv = {v.lower(): k for k, v in self._ENTITY_TO_ACTION.items()}
+                            etype = inv.get(match.command.lower())
+                            if etype:
+                                if match.confidence < 0.80:
+                                    _low_confidence_suggestions.append({
+                                        "phrase": phrase,
+                                        "suggested_command": match.command,
+                                        "family": match.family,
+                                        "confidence": match.confidence,
+                                    })
+                                return etype
+            except Exception:
+                pass
             return "project"
 
         # Detect main entity type and name
@@ -714,24 +753,26 @@ class GovernancePlanAgent:
                 if etype:
                     main_type = etype
                 else:
-                    # Infer from the matched keyword or surrounding context
                     matched_lower = m.group(0).lower()
-                    if "campaign"      in matched_lower:   main_type = "campaign"
-                    elif "glossary"    in matched_lower:   main_type = "glossary"
-                    elif "collection"  in matched_lower:   main_type = "collection"
-                    elif "task"        in matched_lower:   main_type = "task"
-                    elif "team"        in matched_lower:   main_type = "team"
-                    elif "study"       in matched_lower:   main_type = "study_project"
-                    elif "blueprint"   in matched_lower:   main_type = "solution_blueprint"
-                    elif "component"   in matched_lower:   main_type = "solution_component"
-                    elif "supply chain" in matched_lower:  main_type = "information_supply_chain"
-                    else:                                   main_type = _infer_type_from_context()
+                    matched_type = next(
+                        (et for kw, et in _KW_MAP.items() if kw in matched_lower), None
+                    )
+                    if matched_type:
+                        main_type = matched_type
+                    elif "agreement" in matched_lower or "data sharing" in matched_lower:
+                        main_type = "agreement"
+                    else:
+                        main_type = _infer_type_from_context()
                 break
 
         if not main_name:
             return {"objects": [], "roles": []}
 
-        objects.append({"type": main_type or "project", "name": main_name})
+        objects.append({
+            "type": main_type or "project",
+            "name": main_name,
+            "low_confidence_suggestions": _low_confidence_suggestions,
+        })
 
         # Sub-projects
         sub_m = self._SUBPROJECT_PATTERN.search(q)

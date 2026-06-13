@@ -86,6 +86,7 @@ class PlanElicitor:
             title = decomp.get("title", query[:50])
             purpose = decomp.get("purpose", query)
             _val_warnings = decomp.get("validator_warnings") or []
+            _keyword_suggestions = decomp.get("keyword_suggestions") or []
             from advisor.action_catalog import get_action_catalog
             catalog = get_action_catalog()
             commands = [
@@ -163,11 +164,21 @@ class PlanElicitor:
         except Exception:
             pass
 
-        # Surface any auto-corrections made by the validator
-        init_note = None
+        # Surface auto-corrections and low-confidence keyword suggestions
+        init_note_parts: list[str] = []
         if _val_warnings:
-            init_note = "Auto-corrected: " + "; ".join(_val_warnings)
+            init_note_parts.append("Auto-corrected: " + "; ".join(_val_warnings))
+        if _keyword_suggestions:
+            for s in _keyword_suggestions:
+                init_note_parts.append(
+                    f"⚠️ I interpreted **\"{s['phrase']}\"** as "
+                    f"**{s['suggested_command']}** — if that's not right, "
+                    f"say *\"change it to [command name]\"* or describe what you meant."
+                )
+        # Store suggestions in spec so re-shown if user loops back
+        spec["keyword_suggestions"] = _keyword_suggestions
 
+        init_note = "\n\n".join(init_note_parts) if init_note_parts else None
         return self._build_confirm_commands_response(spec, note=init_note)
 
     # ------------------------------------------------------------------
@@ -420,6 +431,37 @@ class PlanElicitor:
                     ),
                 )
 
+        # "Completely wrong" — user wants to describe their intent from scratch
+        restart_signals = (
+            "completely wrong", "totally wrong", "not what i wanted",
+            "not what i asked", "all wrong", "got it wrong", "missed the point",
+            "that's not what i", "that is not what i", "misunderstood",
+            "start over", "start again", "redo this", "try again",
+            "nothing like what", "nothing like i asked",
+        )
+        if any(w in low for w in restart_signals):
+            dm.push_history(spec)
+            spec["phase"] = "confirm_commands"
+            spec["commands_identified"] = []
+            spec["answers"] = {}
+            dm.save(spec)
+            return {
+                "query": user_response,
+                "response": (
+                    "No problem — let's start fresh. "
+                    "Describe what you want to accomplish and I'll build a new plan.\n\n"
+                    "For example: *\"Create a campaign called X with sub-projects for A, B, C, "
+                    "led by [name] as project leader\"*"
+                ),
+                "query_type": "plan_clarification",
+                "draft_id": spec["draft_id"],
+                "routing_agent": "governance_plan_agent",
+                "sources": [], "num_sources": 0,
+                "retrieval_time": 0.0, "generation_time": 0.0,
+                "avg_relevance_score": 0.0, "context_length": 0,
+                "nav": _NAV_FIRST, "can_go_back": True,
+            }
+
         correction_signals = (
             "that's wrong", "that is wrong", "incorrect", "not right",
             "shouldn't have", "should not have", "didn't ask", "i didn't ask",
@@ -432,7 +474,8 @@ class PlanElicitor:
                     "Which step is wrong? You can:\n"
                     "- Say **\"remove step N\"** to delete a specific step\n"
                     "- Say **\"remove the [command name]\"** to remove by name\n"
-                    "- Describe what should change instead"
+                    "- Describe what should change instead\n"
+                    "- Say **\"completely wrong\"** to describe your intent from scratch"
                 ),
             )
 

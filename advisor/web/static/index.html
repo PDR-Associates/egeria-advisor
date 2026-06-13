@@ -168,7 +168,10 @@
     <div id="sidebar-plans" class="flex flex-col sidebar-pane shrink-0">
       <div class="px-3 pt-2 pb-1 shrink-0 flex items-center justify-between">
         <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Plans</span>
-        <button onclick="loadPlans();loadDrafts();" class="text-xs text-slate-600 hover:text-slate-400 transition-colors" title="Refresh plans and drafts">↺</button>
+        <div class="flex items-center gap-2">
+          <button onclick="openBuilderModal()" class="text-xs text-violet-400 hover:text-violet-200 transition-colors font-medium" title="New Plan (Builder) — browse and select Dr.Egeria commands directly">+ Builder</button>
+          <button onclick="loadPlans();loadDrafts();" class="text-xs text-slate-600 hover:text-slate-400 transition-colors" title="Refresh plans and drafts">↺</button>
+        </div>
       </div>
       <!-- Active drafts sub-section -->
       <div id="draft-list-section" class="px-2 pb-1 flex flex-col gap-0.5 text-xs"></div>
@@ -281,6 +284,43 @@
     </div>
   </section>
 
+</div>
+
+<!-- ── Builder: New Plan title modal ──────────────────────────────────────── -->
+<div id="builder-title-modal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50" onclick="if(event.target===this)closeBuilderModal()">
+  <div class="bg-slate-800 border border-slate-600 rounded-xl p-5 w-96 shadow-2xl">
+    <h3 class="text-sm font-semibold text-slate-200 mb-3">New Plan (Builder)</h3>
+    <p class="text-xs text-slate-400 mb-3">Give your plan a title, then browse and add Dr.Egeria commands directly from the canvas.</p>
+    <input id="builder-title-input" type="text" placeholder="e.g. Sales Forecasting Architecture"
+      class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-slate-200
+             focus:outline-none focus:border-violet-500 mb-4"
+      onkeydown="if(event.key==='Enter')createBuilderPlan()" />
+    <div class="flex gap-2 justify-end">
+      <button onclick="closeBuilderModal()" class="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>
+      <button onclick="createBuilderPlan()" class="px-4 py-1.5 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition-colors">Create Plan</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Command picker modal ────────────────────────────────────────────────── -->
+<div id="cmd-picker-modal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50" onclick="if(event.target===this)closeCmdPicker()">
+  <div class="bg-slate-800 border border-slate-600 rounded-xl shadow-2xl flex flex-col" style="width:680px;max-height:80vh">
+    <!-- Header -->
+    <div class="px-4 pt-4 pb-3 border-b border-slate-700 shrink-0">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-sm font-semibold text-slate-200">Add Command</h3>
+        <button onclick="closeCmdPicker()" class="text-slate-500 hover:text-slate-200 text-sm transition-colors">✕</button>
+      </div>
+      <input id="cmd-picker-search" type="text" placeholder="Search commands…"
+        class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-xs text-slate-200
+               focus:outline-none focus:border-violet-500 transition-colors"
+        oninput="filterCmdPicker(this.value)" />
+    </div>
+    <!-- Family tabs -->
+    <div id="cmd-picker-tabs" class="flex gap-1 px-4 pt-2 pb-1 flex-wrap shrink-0 border-b border-slate-700/50"></div>
+    <!-- Command list -->
+    <div id="cmd-picker-list" class="flex-1 overflow-y-auto px-3 py-2 flex flex-col gap-1"></div>
+  </div>
 </div>
 
 <!-- ── Search-string modal ─────────────────────────────────────────────────── -->
@@ -1130,6 +1170,145 @@ function initCanvasResize() {
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup',   onUp);
   });
+}
+
+// ── Builder modal ──────────────────────────────────────────────────────────────
+function openBuilderModal() {
+  document.getElementById('builder-title-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('builder-title-input').focus(), 50);
+}
+function closeBuilderModal() {
+  document.getElementById('builder-title-modal').classList.add('hidden');
+  document.getElementById('builder-title-input').value = '';
+}
+async function createBuilderPlan() {
+  const title = document.getElementById('builder-title-input').value.trim();
+  if (!title) return;
+  closeBuilderModal();
+  try {
+    const r = await fetch('/api/drafts/builder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      body: JSON.stringify({ title, perspective: _currentPerspective }),
+    });
+    const spec = await r.json();
+    _activeDraftId = spec.draft_id;
+    sessionStorage.setItem('ea_active_draft', _activeDraftId);
+    PlanCanvas.open(_activeDraftId);
+    loadDrafts();
+    appendMessage('assistant',
+      `**${title}** — plan canvas is open. Use **+ Add step** to browse and add ` +
+      `Dr.Egeria commands, or ask me questions in chat.`
+    );
+  } catch (e) {
+    appendMessage('assistant', 'Could not create builder plan: ' + e.message);
+  }
+}
+
+// ── Command picker ──────────────────────────────────────────────────────────────
+let _cmdPickerData = null;   // { family: [{name, family, aliases, in_catalog}] }
+let _cmdPickerFamily = null; // currently selected family filter
+let _cmdPickerCallback = null; // called with command name when user picks one
+
+async function openCmdPicker(onSelect) {
+  _cmdPickerCallback = onSelect;
+  document.getElementById('cmd-picker-modal').classList.remove('hidden');
+  document.getElementById('cmd-picker-search').value = '';
+  if (!_cmdPickerData) {
+    document.getElementById('cmd-picker-list').innerHTML =
+      '<p class="text-xs text-slate-500 p-2">Loading commands…</p>';
+    try {
+      const r = await fetch('/api/actions', { headers: Auth.getHeaders() });
+      const data = await r.json();
+      _cmdPickerData = data.families || {};
+    } catch {
+      document.getElementById('cmd-picker-list').innerHTML =
+        '<p class="text-xs text-red-400 p-2">Could not load command catalog.</p>';
+      return;
+    }
+  }
+  _cmdPickerFamily = null;
+  _renderCmdPickerTabs();
+  _renderCmdPickerList('');
+  setTimeout(() => document.getElementById('cmd-picker-search').focus(), 50);
+}
+
+function closeCmdPicker() {
+  document.getElementById('cmd-picker-modal').classList.add('hidden');
+  _cmdPickerCallback = null;
+}
+
+function _renderCmdPickerTabs() {
+  const el = document.getElementById('cmd-picker-tabs');
+  el.innerHTML = '';
+  const families = Object.keys(_cmdPickerData || {});
+  // "All" tab
+  const allBtn = document.createElement('button');
+  allBtn.textContent = 'All';
+  allBtn.className = `px-2 py-0.5 rounded text-xs transition-colors ${
+    !_cmdPickerFamily ? 'bg-violet-700 text-white' : 'text-slate-400 hover:text-slate-200'
+  }`;
+  allBtn.onclick = () => { _cmdPickerFamily = null; _renderCmdPickerTabs(); _renderCmdPickerList(document.getElementById('cmd-picker-search').value); };
+  el.appendChild(allBtn);
+  families.forEach(fam => {
+    const btn = document.createElement('button');
+    btn.textContent = fam;
+    btn.className = `px-2 py-0.5 rounded text-xs transition-colors ${
+      _cmdPickerFamily === fam ? 'bg-violet-700 text-white' : 'text-slate-400 hover:text-slate-200'
+    }`;
+    btn.onclick = () => { _cmdPickerFamily = fam; _renderCmdPickerTabs(); _renderCmdPickerList(document.getElementById('cmd-picker-search').value); };
+    el.appendChild(btn);
+  });
+}
+
+function filterCmdPicker(q) { _renderCmdPickerList(q); }
+
+function _renderCmdPickerList(searchQ) {
+  const el = document.getElementById('cmd-picker-list');
+  el.innerHTML = '';
+  const q = searchQ.toLowerCase().trim();
+  const families = _cmdPickerData || {};
+  let total = 0;
+
+  const famKeys = _cmdPickerFamily ? [_cmdPickerFamily] : Object.keys(families);
+  famKeys.forEach(fam => {
+    const cmds = (families[fam] || []).filter(c => {
+      if (!q) return true;
+      return c.name.toLowerCase().includes(q) ||
+             (c.aliases || []).some(a => a.includes(q));
+    });
+    if (!cmds.length) return;
+    total += cmds.length;
+    if (!_cmdPickerFamily) {
+      const hdr = document.createElement('p');
+      hdr.className = 'text-xs font-semibold text-slate-500 uppercase tracking-wider px-1 pt-2 pb-0.5';
+      hdr.textContent = fam;
+      el.appendChild(hdr);
+    }
+    cmds.forEach(cmd => {
+      const row = document.createElement('div');
+      row.className = 'flex items-center justify-between gap-2 px-2 py-1.5 rounded hover:bg-slate-700/60 cursor-pointer group';
+      row.innerHTML = `
+        <div class="flex flex-col min-w-0">
+          <span class="text-xs text-slate-200 font-medium truncate">${_esc(cmd.name)}</span>
+          ${cmd.aliases?.length ? `<span class="text-[10px] text-slate-500 truncate">${_esc(cmd.aliases.slice(0,3).join(', '))}</span>` : ''}
+        </div>
+        <button class="shrink-0 px-2 py-0.5 rounded bg-violet-800 hover:bg-violet-600 text-white text-xs opacity-0 group-hover:opacity-100 transition-all">Add</button>
+      `;
+      row.onclick = () => {
+        if (_cmdPickerCallback) _cmdPickerCallback(cmd.name);
+        closeCmdPicker();
+      };
+      el.appendChild(row);
+    });
+  });
+  if (!total) {
+    el.innerHTML = '<p class="text-xs text-slate-500 p-3 text-center">No commands match.</p>';
+  }
+}
+
+function _esc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 </script>
 

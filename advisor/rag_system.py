@@ -196,6 +196,14 @@ class RAGSystem:
         "python code", "pyegeria example", "python snippet",
     )
 
+    # Phrases that explicitly request a Dr.Egeria template/command, used to
+    # redirect "Show Me" (code_search) intent away from ExamplesAgent.
+    _DRE_TEMPLATE_SIGNALS = (
+        "dr egeria template", "dr. egeria template", "dr.egeria template", "dre template",
+        "dr egeria command", "dr. egeria command", "dr.egeria command", "dre command",
+        "egeria template", "egeria markdown template", "markdown command",
+    )
+
     def _is_report_query(self, query: str) -> bool:
         """
         Return True if the query is a data-retrieval request that the report
@@ -362,6 +370,18 @@ class RAGSystem:
                 f"overriding intent '{query_type_override}' → explanation"
             )
             query_type_override = 'explanation'
+
+        # Dr.Egeria template guard: "Show me a Dr.Egeria template" must route
+        # to DrEgeriaTemplateAgent, not ExamplesAgent, regardless of intent.
+        # This fires before the intent override so 'code_search' (Show Me)
+        # cannot hijack Dr.Egeria-specific template requests.
+        if query_type_override and query_type_override != 'command':
+            _qlow = user_query.lower()
+            if any(sig in _qlow for sig in self._DRE_TEMPLATE_SIGNALS):
+                logger.info(
+                    f"Dr.Egeria template guard: redirecting '{query_type_override}' → 'command'"
+                )
+                query_type_override = 'command'
 
         # Process query to understand intent
         query_analysis = self.query_processor.process(user_query)

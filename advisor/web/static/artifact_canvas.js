@@ -164,14 +164,50 @@ class ArtifactCanvas {
     card.dataset.acIdx = idx;
     card.draggable = true;
 
+    // ── Note card — free-form text with no command UI ──────────────────────
+    if (type === '_note') {
+      card.classList.add('border-amber-800/30');
+      card.innerHTML = `
+        <div class="card-header flex items-center gap-1.5 px-2.5 py-2 cursor-grab active:cursor-grabbing">
+          <span class="text-slate-600 text-base leading-none shrink-0 select-none">≡</span>
+          <span class="text-slate-600 text-xs w-5 shrink-0 text-right">${idx + 1}.</span>
+          <span class="text-amber-400/80 text-xs font-semibold flex-1">📝 Note</span>
+          <button class="remove-btn text-slate-700 hover:text-red-400 text-xs px-1 transition-colors" title="Remove">✕</button>
+        </div>
+        <div class="px-2.5 pb-2.5">
+          <textarea class="narrative-input w-full bg-amber-950/20 text-slate-300 text-sm rounded p-2
+                           resize-none border border-amber-800/30 focus:outline-none focus:border-amber-500/50
+                           transition-colors placeholder-slate-600"
+            rows="3" placeholder="Section heading, context, or explanatory text for the plan document…"
+            data-ac-idx="${idx}">${_acEsc(narrative)}</textarea>
+        </div>
+      `;
+      card.querySelector('.remove-btn').addEventListener('click', async e => {
+        e.stopPropagation();
+        this._items.splice(idx, 1);
+        await this._sync();
+        this._render();
+      });
+      let _noteTimer;
+      card.querySelector('.narrative-input').addEventListener('input', e => {
+        clearTimeout(_noteTimer);
+        _noteTimer = setTimeout(async () => {
+          this._opts.itemAdapter.setNarrative(this._items[idx], e.target.value);
+          await this._sync();
+        }, 800);
+      });
+      this._attachDragHandlers(card, idx);
+      return card;
+    }
+
     card.innerHTML = `
       <div class="card-header flex items-center gap-1.5 px-2.5 py-2 cursor-grab active:cursor-grabbing">
         <span class="text-slate-600 text-base leading-none shrink-0 select-none">≡</span>
         <span class="text-slate-600 text-xs w-5 shrink-0 text-right">${idx + 1}.</span>
         <span class="ac-type text-violet-300 text-xs font-semibold flex-1 truncate">${_acEsc(type)}</span>
         <span class="w-2 h-2 rounded-full shrink-0 ${statusColor}" title="${statusTitle}"></span>
-        <button class="expand-btn flex items-center gap-1 text-slate-400 hover:text-violet-300 text-sm px-2 py-0.5 rounded hover:bg-slate-700/50 transition-colors" title="Expand / collapse fields">
-          <span class="expand-arrow">▾</span><span class="text-xs">Fields</span>
+        <button class="expand-btn flex items-center gap-1.5 text-slate-400 hover:text-violet-200 px-2 py-1 rounded hover:bg-slate-700/60 transition-colors" title="Expand / collapse fields">
+          <span class="expand-arrow text-lg leading-none">▾</span><span class="text-xs font-medium">Fields</span>
         </button>
         <button class="remove-btn text-slate-700 hover:text-red-400 text-xs px-1 transition-colors" title="Remove">✕</button>
       </div>
@@ -186,36 +222,11 @@ class ArtifactCanvas {
           rows="2" placeholder="Rationale, instructions, or notes…"
           data-ac-idx="${idx}">${_acEsc(narrative)}</textarea>
       </div>
-      <div class="fields-section hidden px-2.5 pb-2.5 flex flex-col gap-1.5 max-h-64 overflow-y-auto"></div>
+      <div class="fields-section hidden px-2.5 pb-2.5 flex flex-col gap-1.5 overflow-y-auto" style="max-height:32rem"></div>
     `;
 
     // ── Drag-and-drop ──────────────────────────────────────────────────────
-    card.addEventListener('dragstart', e => {
-      this._dragSrcIdx = idx;
-      card.classList.add('drag-ghost');
-      e.dataTransfer.effectAllowed = 'move';
-    });
-    card.addEventListener('dragend', () => {
-      card.classList.remove('drag-ghost');
-      document.querySelectorAll('.pcanvas-card').forEach(c => c.classList.remove('dragging-over'));
-    });
-    card.addEventListener('dragover', e => {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-      document.querySelectorAll('.pcanvas-card').forEach(c => c.classList.remove('dragging-over'));
-      if (this._dragSrcIdx !== idx) card.classList.add('dragging-over');
-    });
-    card.addEventListener('dragleave', () => card.classList.remove('dragging-over'));
-    card.addEventListener('drop', async e => {
-      e.preventDefault();
-      card.classList.remove('dragging-over');
-      if (this._dragSrcIdx === null || this._dragSrcIdx === idx) return;
-      const [moved] = this._items.splice(this._dragSrcIdx, 1);
-      this._items.splice(idx, 0, moved);
-      this._dragSrcIdx = null;
-      await this._sync();
-      this._render();
-    });
+    this._attachDragHandlers(card, idx);
 
     // ── Remove ─────────────────────────────────────────────────────────────
     card.querySelector('.remove-btn').addEventListener('click', async e => {
@@ -249,6 +260,37 @@ class ArtifactCanvas {
     });
 
     return card;
+  }
+
+  // ── Drag-and-drop wiring (shared between command cards and note cards) ────
+
+  _attachDragHandlers(card, idx) {
+    card.addEventListener('dragstart', e => {
+      this._dragSrcIdx = idx;
+      card.classList.add('drag-ghost');
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    card.addEventListener('dragend', () => {
+      card.classList.remove('drag-ghost');
+      document.querySelectorAll('.pcanvas-card').forEach(c => c.classList.remove('dragging-over'));
+    });
+    card.addEventListener('dragover', e => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      document.querySelectorAll('.pcanvas-card').forEach(c => c.classList.remove('dragging-over'));
+      if (this._dragSrcIdx !== idx) card.classList.add('dragging-over');
+    });
+    card.addEventListener('dragleave', () => card.classList.remove('dragging-over'));
+    card.addEventListener('drop', async e => {
+      e.preventDefault();
+      card.classList.remove('dragging-over');
+      if (this._dragSrcIdx === null || this._dragSrcIdx === idx) return;
+      const [moved] = this._items.splice(this._dragSrcIdx, 1);
+      this._items.splice(idx, 0, moved);
+      this._dragSrcIdx = null;
+      await this._sync();
+      this._render();
+    });
   }
 
   // ── Field expansion ────────────────────────────────────────────────────────

@@ -71,6 +71,17 @@ const _planItemAdapter = {
       placeholders: {},
     };
   },
+  makeNote() {
+    return {
+      action:       '_note',
+      display_name: '',
+      description:  '',
+      rationale:    '',
+      narrative:    '',
+      pre_filled:   {},
+      placeholders: {},
+    };
+  },
 };
 
 // ── PlanCanvas singleton ──────────────────────────────────────────────────────
@@ -121,9 +132,20 @@ const PlanCanvas = (() => {
     await _ensureCanvas().addItem();
   }
 
+  async function addNote() {
+    const canvas = _ensureCanvas();
+    const note = _planItemAdapter.makeNote();
+    canvas._items.push(note);
+    await canvas._sync();
+    canvas._render();
+    // Scroll to the new note card
+    const cardsEl = document.getElementById('pcanvas-cards');
+    if (cardsEl) setTimeout(() => cardsEl.scrollTop = cardsEl.scrollHeight, 50);
+  }
+
   function toggleMode() {
     _ensureCanvas().toggleMode();
   }
 
-  return { open, close, refresh, addStep, toggleMode };
+  return { open, close, refresh, addStep, addNote, toggleMode };
 })();

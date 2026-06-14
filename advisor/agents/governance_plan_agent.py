@@ -614,12 +614,15 @@ class GovernancePlanAgent:
         "governance_zone":     "Governance-Zones",
     }
 
-    # Detects "view/run/show report for X", "mermaid diagram/graph of X",
-    # "view X as mermaid", "architecture diagram for X".
+    # Detects "view/run/show report for X", "report on X", "print list/mermaid/report [for X]",
+    # "mermaid diagram/graph of X", "view X as mermaid", "architecture diagram for X".
     # _VR_STOP terminates the name capture at common clause boundaries.
     _VR_STOP = r'(?=\s*(?:as\s+a\s+mermaid|as\s+mermaid|\.\s|\s*$))'
     _VIEW_REPORT_PATTERN = re.compile(
         r'\b(?:view|run|show|display|get)\s+(?:a\s+)?(?:the\s+)?report\s+(?:for|on|of)\s+"?(.+?)' + _VR_STOP
+        + r'|\breport\s+on\s+(?:the\s+)?"?(.+?)' + _VR_STOP
+        + r'|\bprint\s+(?:list|mermaid|report)\s+(?:for|of|on)\s+(?:the\s+)?"?(.+?)' + _VR_STOP
+        + r'|\bprint\s+(?:list|mermaid|report)\b'
         + r'|\bmermaid\s+(?:diagram|graph|chart)\s+(?:of|for)\s+"?(.+?)' + _VR_STOP
         + r'|\bview\s+"?(.+?)"?\s+as\s+(?:a\s+)?mermaid'
         + r'|\b(?:architecture|system)\s+diagram\s+(?:of|for)\s+"?(.+?)' + _VR_STOP,
@@ -802,7 +805,15 @@ class GovernancePlanAgent:
             target_name = next((g.strip() for g in vr_m.groups() if g), "")
             # Strip leading articles ("the", "a", "an")
             target_name = re.sub(r'^(?:the|a|an)\s+', '', target_name, flags=re.IGNORECASE)
-            output_fmt = "MERMAID" if re.search(r'\bmermaid\b', ql) else "TABLE"
+            # Detect explicit output format from the phrase used
+            if re.search(r'\bmermaid\b', ql):
+                output_fmt = "MERMAID"
+            elif re.search(r'\bprint\s+report\b|\bfull\s+report\b', ql):
+                output_fmt = "MD"
+            elif re.search(r'\bprint\s+list\b', ql):
+                output_fmt = "LIST"
+            else:
+                output_fmt = "LIST"
             # Infer report spec from entity type keywords in query
             report_spec = "Solution-Blueprint"  # default
             for kw, spec in [

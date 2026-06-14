@@ -336,6 +336,20 @@
       class="w-full bg-slate-700 text-slate-100 rounded-lg px-3 py-1.5 text-sm
              border border-slate-600 focus:outline-none focus:border-cyan-500 mb-3">
     <label class="text-xs text-slate-400 block mb-1">
+      Output format
+      <span class="text-slate-600 ml-1">(how to render the results)</span>
+    </label>
+    <select id="output-format-select"
+      class="w-full bg-slate-700 text-slate-100 rounded-lg px-3 py-1.5 text-sm
+             border border-slate-600 focus:outline-none focus:border-cyan-500 mb-3">
+      <option value="LIST">LIST — concise summary list (default)</option>
+      <option value="TABLE">TABLE — structured data table</option>
+      <option value="MERMAID">MERMAID — diagram / mind map</option>
+      <option value="MD">MD — full Markdown narrative report</option>
+      <option value="JSON">JSON — raw JSON</option>
+      <option value="DICT">DICT — property dictionary</option>
+    </select>
+    <label class="text-xs text-slate-400 block mb-1">
       Max results
       <span class="text-slate-600 ml-1">(limits graph nodes queried; default 100)</span>
     </label>
@@ -455,6 +469,7 @@ function runReport(name) {
   document.getElementById('modal-report-name').textContent = name;
   document.getElementById('search-string-input').value = '';
   document.getElementById('page-size-input').value = '';
+  document.getElementById('output-format-select').value = 'LIST';
   document.getElementById('search-modal').classList.remove('hidden');
   setTimeout(() => document.getElementById('search-string-input').focus(), 50);
 }
@@ -469,11 +484,15 @@ function confirmRunReport() {
   const filter = document.getElementById('search-string-input').value.trim();
   const pageSizeRaw = document.getElementById('page-size-input').value.trim();
   const pageSize = pageSizeRaw ? parseInt(pageSizeRaw, 10) : null;
+  const outputFmt = document.getElementById('output-format-select').value || 'LIST';
   closeSearchModal();
   if (!name) return;
-  const label = filter ? `Run report: **${name}** — filter: *${filter}*` : `Run report: **${name}**`;
+  const fmtLabel = outputFmt !== 'LIST' ? ` (${outputFmt})` : '';
+  const label = filter
+    ? `Run report: **${name}** — filter: *${filter}*${fmtLabel}`
+    : `Run report: **${name}**${fmtLabel}`;
   appendMessage('you', label);
-  const extra = { search_string: filter || null, intent_override: 'report' };
+  const extra = { search_string: filter || null, intent_override: 'report', output_format: outputFmt };
   if (pageSize && pageSize > 0) extra.page_size = pageSize;
   submitQuery(`run report ${name}`, extra);
 }

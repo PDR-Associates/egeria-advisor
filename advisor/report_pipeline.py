@@ -627,11 +627,30 @@ class ReportPipeline:
         "mermaid": "MERMAID",
     }
 
+    # Maps the web UI fmt tag values and pyegeria output_type names to internal format codes
+    _FMT_TAG_MAP: Dict[str, str] = {
+        "list":     "LIST",
+        "table":    "TABLE",
+        "mermaid":  "MERMAID",
+        "md":       "MARKDOWN",
+        "markdown": "MARKDOWN",
+        "report":   "MARKDOWN",
+        "json":     "JSON",
+        "dict":     "DICT",
+        "form":     "DICT",
+    }
+
     def _detect_output_format(self, query: str) -> str:
         """
         Detect user-specified output format from query text.
-        Returns "DICT" (default), "MARKDOWN", "JSON", "TABLE", or "MERMAID".
+        Checks for an explicit fmt:'FORMAT' tag first (set by the web UI modal),
+        then falls back to keyword matching.
+        Returns "LIST", "DICT", "MARKDOWN", "JSON", "TABLE", or "MERMAID".
         """
+        fm = self._FMT_TAG_RE.search(query)
+        if fm:
+            tag = fm.group(1).strip().lower()
+            return self._FMT_TAG_MAP.get(tag, "LIST")
         q = query.lower()
         for phrase, fmt in self._FORMAT_KEYWORDS.items():
             if phrase in q:
@@ -643,6 +662,10 @@ class ReportPipeline:
         """
         Convert raw report output (dict / list / str) to the requested display format.
         """
+        # LIST output from pyegeria is already a rendered string
+        if fmt == "LIST" and isinstance(raw, str):
+            return raw
+
         # run_report() always stringifies its result — try to recover the structure
         if isinstance(raw, str) and fmt in ("TABLE", "DICT"):
             try:
@@ -799,6 +822,8 @@ class ReportPipeline:
     _RUN_REPORT_RE = re.compile(r"run\s+report\s+(.+)", re.IGNORECASE)
     # Extracts an optional search filter appended by the web UI: filter:'<value>'
     _FILTER_TAG_RE = re.compile(r"\s+filter:'([^']*)'", re.IGNORECASE)
+    # Extracts an explicit output format tag appended by the web UI: fmt:'<FORMAT>'
+    _FMT_TAG_RE = re.compile(r"\s+fmt:'([^']*)'", re.IGNORECASE)
 
     def _resolve_report_name(self, name: str) -> str:
         """
@@ -826,7 +851,7 @@ class ReportPipeline:
         """
         From the captured group of _RUN_REPORT_RE, extract:
           (report_name, search_string)
-        Strips any filter tag and any trailing format keywords.
+        Strips filter tag, fmt tag, and any trailing format keywords.
         """
         # Extract search filter if present
         fm = self._FILTER_TAG_RE.search(raw)
@@ -835,6 +860,11 @@ class ReportPipeline:
             raw = raw[:fm.start()].strip()
         else:
             search_string = "*"
+
+        # Strip explicit fmt tag if present
+        ft = self._FMT_TAG_RE.search(raw)
+        if ft:
+            raw = (raw[:ft.start()] + raw[ft.end():]).strip()
 
         # Strip format keywords that the web UI may have appended
         for phrase in sorted(self._FORMAT_KEYWORDS, key=len, reverse=True):
@@ -913,7 +943,15 @@ class ReportPipeline:
     ) -> Dict[str, Any]:
         """Shared execution path: run a named report and format the result."""
         fmt = self._detect_output_format(query)
-        mcp_output_type = "MARKDOWN" if fmt == "MARKDOWN" else ("MERMAID" if fmt == "MERMAID" else "DICT")
+        # Map internal display format to pyegeria output_type for the MCP call
+        _MCP_TYPE_MAP = {
+            "MARKDOWN": "MARKDOWN",
+            "MERMAID":  "MERMAID",
+            "LIST":     "LIST",
+            "TABLE":    "DICT",   # TABLE uses DICT from MCP, rendered as table here
+            "JSON":     "DICT",
+        }
+        mcp_output_type = _MCP_TYPE_MAP.get(fmt, "DICT")
 
         logger.info(
             f"Running report: {report_name} (output_type={mcp_output_type}, "

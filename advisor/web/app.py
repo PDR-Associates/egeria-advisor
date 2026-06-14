@@ -78,7 +78,7 @@ async def _startup():
 class QueryRequest(BaseModel):
     query: str
     session_id: Optional[str] = None
-    output_format: Optional[str] = None    # reserved; format is detected from query text
+    output_format: Optional[str] = None    # "LIST"|"TABLE"|"MERMAID"|"MD"|"JSON"|"DICT" — overrides auto-detect
     intent_override: Optional[str] = None  # "explanation" | "code_search" | "report" | "command" | "debugging"
     search_string: Optional[str] = None    # filter string for report queries (default "*")
     perspective: Optional[str] = None      # user role: "developer" | "data_engineer" | "data_steward" | "governance_officer"
@@ -269,6 +269,9 @@ async def query_endpoint(request: Request, req: QueryRequest) -> Dict[str, Any]:
     # Append search filter tag so the report pipeline can extract it
     if req.search_string and req.search_string.strip() not in ("", "*"):
         user_query += f" filter:'{req.search_string.strip()}'"
+    # Append output format tag when explicitly set (e.g. from the report modal dropdown)
+    if req.output_format:
+        user_query += f" fmt:'{req.output_format.strip()}'"
 
     try:
         rag = _get_rag()

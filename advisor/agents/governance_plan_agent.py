@@ -663,6 +663,8 @@ class GovernancePlanAgent:
         (r'\ba\s+project\s+(?:for|called)\s+"?(.+?)"?' + _NAME_STOP, "project"),
         # "a glossary for / called"
         (r'\ba\s+glossary\s+(?:for|called)\s+"?(.+?)"?' + _NAME_STOP, "glossary"),
+        # Solution Architect: "a blueprint called/named/for <name>" (singular — use LLM for lists)
+        (r'\b(?:a\s+)?(?:solution\s+)?blueprint\s+(?:called|named|for)\s+"?(.+?)"?' + _NAME_STOP, "solution_blueprint"),
         # "set up a <type>" — name after "for" or "called"
         (r'\bset\s+up\s+a\s+(?:glossary|project|campaign|task|team)\s+(?:for\s+the\s+|for\s+|called\s+)?"?(.+?)"?' + _NAME_STOP, None),
         # "create a data sharing request called <name>" (handles "I want to create a data sharing request...")
@@ -812,11 +814,22 @@ class GovernancePlanAgent:
         prompt = f"""Extract ALL objects and role assignments from this request.
 Return ONLY valid JSON. Each distinct named object appears EXACTLY ONCE.
 
-Object types: campaign, project, sub_project (child of another), glossary,
-  glossary_term, glossary_category, team, collection, governance_zone
+Object types:
+  project, campaign, sub_project (child project — include "parent" field),
+  glossary, glossary_term, glossary_category,
+  team, collection, governance_zone,
+  solution_blueprint, solution_component (architectural building block),
+  information_supply_chain, solution_role,
+  data_dictionary, data_structure, data_field, data_spec,
+  certification_type, governance_policy, governance_rule,
+  digital_product, agreement, external_reference
 
-For sub_project, include "parent" with the parent's name from the request.
-"name" must be copied EXACTLY from the request text — never use the type word as the name.
+Rules:
+- For solution_component: if the user mentions a blueprint as container, also include
+  a solution_blueprint object (infer name from context if not explicitly given).
+- For sub_project: include "parent" with the parent campaign/project name.
+- "name" must be copied EXACTLY from the request — never use the type word as the name.
+- If a list of names is given for the same type, create one object per name.
 
 {existing_hint}{perspective_hint}Request: "{query}"
 
@@ -879,6 +892,23 @@ JSON:"""
                     top_level_name = ec.get("display_name", "")
                     break
 
+        # Identify the solution blueprint name (from extracted objects or existing commands)
+        # so solution_components can be linked to it automatically.
+        blueprint_name = ""
+        for obj in entities.get("objects", []):
+            otype = (obj.get("type") or "").lower().replace("-", "_").replace(" ", "_")
+            if otype in ("solution_blueprint", "blueprint"):
+                blueprint_name = (obj.get("name") or "").strip()
+                break
+        if not blueprint_name:
+            for ec in existing_commands:
+                if ec.get("action") == "Create Solution Blueprint":
+                    blueprint_name = ec.get("display_name", "")
+                    break
+
+        # Deferred link-to-blueprint commands (emitted after all Create Solution Component cmds)
+        _blueprint_links: List[Dict] = []
+
         for obj in entities.get("objects", []):
             entity_type = (obj.get("type") or "").lower().replace("-", "_").replace(" ", "_")
             name = (obj.get("name") or "").strip()
@@ -906,6 +936,17 @@ JSON:"""
                 pre_filled["Parent Relationship Type Name"] = "ProjectHierarchy"
 
             commands.append(_make_cmd(action, name, pre_filled))
+
+            # For each solution component, queue a link-to-blueprint command
+            if action == "Create Solution Component" and blueprint_name:
+                _blueprint_links.append(_make_cmd(
+                    "Link Solution Component to Blueprint",
+                    f"{name} → {blueprint_name}",
+                    {"Solution Blueprint": blueprint_name, "Solution Component": name},
+                ))
+
+        # Append blueprint link commands after all component Creates
+        commands.extend(_blueprint_links)
 
         for role in entities.get("roles", []):
             # Accept both "role" and "role_name" as field names

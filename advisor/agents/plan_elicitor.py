@@ -963,7 +963,8 @@ class PlanElicitor:
             "- Say **\"yes\"** or **\"continue\"** to fill in any missing details\n"
             "- Say **\"generate now\"** to create the plan immediately (missing fields become placeholders)\n"
             "- Describe anything to **add**: *\"also create a sub-project for data collection\"*\n"
-            "- Describe anything to **remove**: *\"remove the governance zone\"*"
+            "- Describe anything to **remove**: *\"remove the governance zone\"*\n"
+            "- Say **\"completely wrong\"** to describe your intent from scratch"
         )
 
         return _clarification_result(

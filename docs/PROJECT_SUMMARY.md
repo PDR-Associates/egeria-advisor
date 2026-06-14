@@ -1,6 +1,6 @@
 # Egeria Advisor — Project Summary: Phases, Capabilities, Lessons Learned
 
-**Last updated:** 2026-06-13  
+**Last updated:** 2026-06-14  
 **Repository:** `/Users/dwolfson/localGit/egeria-v6/egeria-advisor`  
 **GitHub:** `https://github.com/dwolfson/egeria-advisor`
 
@@ -102,7 +102,7 @@ The major new capability: describe a data management task in plain language → 
 | DraftManager | `advisor/governance_draft.py` | Persists in-progress sessions |
 | DocumentManager | `advisor/governance_docs.py` | inbox/outbox lifecycle for plans |
 | PlanTemplateManager | `advisor/plan_templates.py` | Reusable `{{placeholder}}` templates |
-| ActionCatalog | `advisor/action_catalog.py` + `config/dr_egeria_actions.yaml` | 55 Dr.Egeria actions with rules |
+| ActionCatalog | `advisor/action_catalog.py` + `config/dr_egeria_actions.yaml` | 138 Dr.Egeria actions with rules |
 | Plan validator | `advisor/plan_validator.py` | Deterministic post-processing rules |
 | SessionLogger | `advisor/session_logger.py` | JSONL transcripts per session |
 | ArtifactCanvas | `advisor/web/static/artifact_canvas.js` | Generic split-view canvas base |
@@ -123,6 +123,83 @@ User describes task
   → OutcomeReporter → verification reports → outcome section
   → Plan moved to outbox
 ```
+
+### Phase 11d: Catalog expansion, multi-item extraction, and UX polish (Jun 14, 2026)
+
+#### Action catalog expanded: 55 → 138 entries
+
+`config/dr_egeria_actions.yaml` now covers all Dr.Egeria template families:
+
+| Family | Entries |
+|---|---|
+| Collections | 15 |
+| Data Designer | 15 |
+| Digital Product Manager | 11 |
+| External Reference | 9 |
+| Feedback | 9 |
+| Glossary | 10 |
+| Governance Officer | 43 |
+| Projects | 6 |
+| Solution Architect | 13 |
+| Actor Manager | 7 |
+
+80+ ordering priority rules added. Previously missing families (Collections, Governance Officer, Data Designer, Digital Product Manager, External Reference, Feedback, Glossary) were added after testing revealed that multi-family plans defaulted to "Create Project" for any unrecognised entity type.
+
+#### Dr.Egeria template routing guard
+
+Added `_DRE_TEMPLATE_SIGNALS` to `rag_system.py`. When the user selects **Show me** intent but their query contains phrases like "dr. egeria template", "egeria template", "markdown command", etc., intent is redirected from `code_search` → `command` before routing fires — so "Show me a Dr.Egeria template to create a collection" correctly returns the template rather than Python code.
+
+#### Pattern-based multi-item list extraction
+
+Added `_MULTI_ENTITY_PATTERN` and `_GEO_PREFIX` class constants to `GovernancePlanAgent`. When the user writes *"solution components for UK Sales DB, EU Sales DB, US Sales DB and WorldWide Sales DB"*, the pattern extractor:
+
+1. Detects the plural entity type + comma-separated name list
+2. Splits the names into individual entities
+3. Derives a blueprint name from the common suffix of all names (stripping geographic prefixes: UK, EU, US, Canada, WorldWide, etc.) — e.g. → "Sales Forecast Database Blueprint"
+4. Generates one `Create Solution Blueprint` + N `Create Solution Component` commands
+
+This runs entirely without LLM involvement. The `_extract_entities_llm` fallback was also extended to handle the full type list (solution_blueprint, solution_component, information_supply_chain, governance_policy, digital_product, etc.) to improve non-list LLM extraction quality.
+
+#### Child-declares-parent pattern — `In Solution Blueprints` pre-fill
+
+The Dr.Egeria pattern for parent-child relationships is: children declare their container at creation time via a Reference Name List field (e.g. `In Solution Blueprints` on `Create Solution Component`). No separate Link command is needed.
+
+`_make_cmd()` now auto-generates a qualified name for every command using the pyegeria convention (`{EgeriaType}::{display-name-with-dashes}`) via `_ACTION_TO_EGERIA_TYPE` (31-entry dict). The blueprint's qualified name is pre-filled into `In Solution Blueprints` on every component command — visible and editable in the Plan Canvas immediately after the confirm step.
+
+#### Unique `_answers_key` for same-action commands
+
+Previously, five `Create Solution Component` commands all shared the same answers dict key, causing the Plan Canvas to display "WorldWide Sales Forecast Database" for all five. Fixed: `_make_cmd` now sets `_answers_key = f"{action}:{display_name}"` — each command gets a unique key regardless of how many share the same action type.
+
+#### "Generate Now" and "Completely Wrong" as buttons
+
+Added `_NAV_CONFIRM = ["generate_now", "completely_wrong", "save_exit", "cancel"]` to `PlanElicitor`. The confirm_commands response now uses this nav list so the Web UI renders four clickable buttons:
+
+| Button | What it does |
+|---|---|
+| ⚡ Generate Now | Skip Q&A, produce plan immediately; required fields become TODO placeholders |
+| ✗ Completely Wrong | Clear proposed steps, ask user to re-describe from scratch |
+| 💾 Save & Exit | Save draft, return to normal chat |
+| ✕ Cancel | Discard draft |
+
+The "Completely Wrong" path resets phase to `description` and presents a fresh `_clarification_result` with `nav=["back", "cancel"]`.
+
+#### Plan Canvas expand button
+
+The expand/collapse trigger on each command card was a tiny `▾` character. Replaced with a labelled button showing `▾ Fields` with hover background, making it easier to discover and click.
+
+#### User documentation updates
+
+- `docs/user-docs/LITERATE_GOVERNANCE_GUIDE.md` — updated confirm step section with button table; added multi-item type tip with supported patterns table; documented blueprint auto-naming and qualified name override
+- `docs/user-docs/QUICK_START.md` — added queries 6 and 7 (single-topic plan, multi-item plan with blueprint); added troubleshooting rows for wrong command type and same-name display bug; added "Restarting the server after a code update" section
+
+#### Commits
+
+| SHA | Summary |
+|---|---|
+| `690c10a` | Catalog expansion (55 → 138) + Show Me routing fix |
+| `f51c0d8` | Solution component routing + completely wrong on first confirm |
+| `8ec1ff8` | Multi-item extraction + In Solution Blueprints pre-fill + Generate Now/Completely Wrong buttons |
+| `334d55e` | Unique `_answers_key` + qualified name auto-gen + expand button + docs |
 
 ---
 
@@ -332,7 +409,7 @@ Calling `my_tool.func(...)` raises `AttributeError`. Extract implementations int
 
 ### 7. The action catalog is the right place for structural knowledge
 
-55 Dr.Egeria actions (out of ~126 unique commands across 12 template families) with their ordering priorities, container dependencies, supersedes relationships, and natural-language aliases. This is the system's "learned rules" — structured, inspectable, and evolvable without touching the LLM or prompts. Actions not yet in the catalog are still accessible via the Plan Editor (direct builder) mode through the command keyword index.
+138 Dr.Egeria actions (~126 unique commands across 10 template families) with their ordering priorities, container dependencies, supersedes relationships, and natural-language aliases. This is the system's "learned rules" — structured, inspectable, and evolvable without touching the LLM or prompts. All families are now catalogued. Commands not in the catalog are accessible via the Plan Editor (direct builder) mode through the command keyword index.
 
 ### 9. Intent override is a suggestion, not a mandate
 
@@ -392,7 +469,7 @@ advisor/
   query_processor.py         — pattern-match classifier
   llm_client.py              — OllamaClient + get_planning_llm()
   config.py                  — Pydantic config models
-  action_catalog.py          — ActionCatalog (55 actions)
+  action_catalog.py          — ActionCatalog (138 actions, all families)
   command_keyword_index.py   — CommandKeywordIndex: all ~126 commands, 4-tier confidence lookup
   plan_validator.py          — validate_commands() — 6 deterministic rules
   governance_draft.py        — DraftManager
@@ -418,7 +495,7 @@ advisor/
       auth.js                — JWT auth helper
 config/
   advisor.yaml               — primary config (llm models, paths, rag params)
-  dr_egeria_actions.yaml     — action catalog (55 actions, 10 families)
+  dr_egeria_actions.yaml     — action catalog (138 actions, 10 families)
   governance_report_map.yaml — family → report_spec mapping
   routing.yaml               — query classification patterns
 docs/

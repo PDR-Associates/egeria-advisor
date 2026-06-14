@@ -123,11 +123,26 @@ Give me a python example to create a governance zone
 ```
 *→ Complete Python script using GovernanceOfficer.create_governance_definition with GovernanceZoneProperties body*
 
-### 5. Dr.Egeria template (set role to Data Steward, Act)
+### 5. Dr.Egeria template (set role to Data Steward, Act or Show me)
 ```
 Show me a Dr.Egeria template for creating a glossary
 ```
 *→ Markdown template to paste into an Egeria Workspaces Jupyter cell*
+
+### 6. Governance plan — single topic (set Intent to Plan)
+```
+Set up a glossary for the finance domain with terms and categories
+```
+*→ Proposed command list → Plan Canvas → Plan Document → Execute*
+
+### 7. Governance plan — multiple items of the same type (Intent: Plan)
+```
+Create a plan to define solution components for UK Sales Forecast database,
+EU Sales Forecast database, US Sales Forecast Database and WorldWide Sales
+Forecast Database. Put all of these components in the same blueprint.
+```
+*→ 1 × Create Solution Blueprint (auto-named from common suffix) + 1 per component,
+each with `In Solution Blueprints` pre-filled with the blueprint's qualified name*
 
 ---
 
@@ -207,6 +222,23 @@ egeria-advisor --agent
 | Response mentions methods that don't exist | Include the class name: "using GovernanceOfficer" |
 | MCP dot is red | Egeria server not reachable — report and action queries won't work |
 | "No relevant content found" | Check that collections are indexed: `python scripts/count_vectors.py` |
+| Plan creates wrong command type (e.g. Create Project instead of Create Solution Component) | The server may be running old code — restart it (see below) |
+| All plan steps show the same name | Start a **fresh** plan — don't resume an old draft from before a code update |
+
+### Restarting the server after a code update
+
+Python loads modules once at startup; code changes don't take effect until you restart.
+If you pull new changes or the assistant makes code edits, always restart:
+
+```bash
+# Stop the running server (Ctrl-C), then:
+source activate_venv.sh
+python -m advisor.web.app
+```
+
+Existing drafts stored in `~/egeria-plans/drafts/` use commands extracted under the old
+code. After a restart, **start a new plan** rather than resuming a draft that was created
+before the update.
 
 See **[Query Routing Guide](QUERY_ROUTING_GUIDE.md)** for detailed routing behaviour and troubleshooting.
 

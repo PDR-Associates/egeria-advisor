@@ -68,11 +68,37 @@ automatically routed to the plan generator:
   multiple objects in one request
 - Be specific about the domain, purpose, and who owns the data — the more context
   you give, the better the parameter suggestions
+- To create **multiple items of the same type**, list them with commas and "and":
+  *"solution components for UK Sales DB, EU Sales DB, US Sales DB and WorldWide Sales DB"*
+- When you mention a **container** alongside its contents, name the container relationship:
+  *"Put all of these components in the same blueprint"*
+  The advisor will auto-name the blueprint from the common part of the item names and
+  pre-fill each component's **In Solution Blueprints** field with the blueprint's
+  qualified name — no separate Link step needed.
 
 **What does NOT trigger a plan:**
 - *"Create a glossary"* — single object, goes to DrEgeriaActionAgent directly
 - *"Give me a Dr.Egeria template for a glossary"* — returns the template only
 - *"List glossaries"* — a report query
+
+### Supported multi-item types
+
+The advisor detects lists of the following types automatically:
+
+| Phrase pattern | Command generated |
+|---|---|
+| *"solution components for A, B and C"* | `Create Solution Component` × N |
+| *"glossary terms for …"* | `Create Glossary Term` × N |
+| *"tasks for …"* | `Create Task` × N |
+| *"data structures for …"* | `Create Data Structure` × N |
+
+When a **blueprint** is mentioned alongside components, the advisor:
+1. Derives a blueprint name from the common part of the component names
+2. Generates a `SolutionBlueprint::Name` qualified name for it
+3. Pre-fills **In Solution Blueprints** on every component with that qualified name
+
+You can override the auto-generated blueprint name or qualified name in the Plan Canvas
+(expand the card → edit the field directly).
 
 ---
 
@@ -89,26 +115,36 @@ Here's what I'll create, in order:
 2. Create Person Role — Project Leader
 3. Link Person Role Appointment — Tom Tally
 
+---
 Does this look right?
 - Say "yes" or "continue" to fill in any missing details
 - Say "generate now" to create the plan immediately (gaps become placeholders)
 - Describe anything to add:  "also create a sub-project for data collection"
 - Describe anything to remove: "remove the governance zone"
+- Say "completely wrong" to describe your intent from scratch
 ```
+
+Four **buttons** also appear below the response:
+
+| Button | What it does |
+|--------|-------------|
+| **⚡ Generate Now** | Skip the field Q&A and produce the plan immediately; required fields become `<!-- TODO -->` placeholders |
+| **✗ Completely Wrong** | Clear the proposed steps entirely and ask you to re-describe what you want |
+| **💾 Save & Exit** | Save the draft and return to normal chat; resume from the Plans sidebar |
+| **✕ Cancel** | Discard the draft |
 
 This is your chance to correct the *shape* of the plan before getting into field
 details. If the advisor auto-corrected anything (for example, turning a self-referential
 parent into a clean sub-project, or removing a duplicate step), it tells you:
 *"Auto-corrected: …"*.
 
-You can respond conversationally:
+You can also respond conversationally:
 
 - **"yes"** / **"continue"** — proceed to fill in detail fields
-- **"generate now"** — skip straight to the document; unknown required fields become
-  `<!-- TODO -->` placeholders you can fill later
 - **"also add a sub-project for Survey of Existing Systems"** — adds a step
-- **"remove step 2"** — removes a step by number
+- **"remove step 2"** / **"remove step N"** — removes a step by number
 - **"steps 1 and 2 are duplicated"** — removes duplicates
+- **"that's wrong"** — asks which step to change
 
 ---
 

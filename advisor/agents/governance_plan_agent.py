@@ -521,6 +521,49 @@ class GovernancePlanAgent:
     # ---------------------------------------------------------------------- #
 
     # ── Entity type → Dr.Egeria action mapping ──────────────────────────── #
+    # Maps Dr.Egeria action name → Egeria open-metadata type name, used to
+    # auto-generate qualified names matching pyegeria's __create_qualified_name__ convention:
+    # "{EgeriaType}::{display-name-with-dashes}"
+    _ACTION_TO_EGERIA_TYPE: Dict[str, str] = {
+        "Create Campaign":                "Project",
+        "Create Project":                 "Project",
+        "Create Personal Project":        "Project",
+        "Create Study Project":           "Project",
+        "Create Task":                    "Project",
+        "Create Glossary":                "Glossary",
+        "Create Glossary Term":           "GlossaryTerm",
+        "Create Glossary Category":       "GlossaryCategory",
+        "Create Team":                    "Team",
+        "Create Organization":            "Organization",
+        "Create Collection":              "Collection",
+        "Create Data Dictionary":         "Collection",
+        "Create Data Structure":          "DataStructure",
+        "Create Data Field":              "DataField",
+        "Create Data Class":              "DataClass",
+        "Create Data Spec":               "Collection",
+        "Create Governance Zone":         "GovernanceZone",
+        "Create Governance Policy":       "GovernancePolicy",
+        "Create Governance Definition":   "GovernanceDefinition",
+        "Create Governance Role":         "GovernanceRole",
+        "Create Governance Driver":       "GovernanceDriver",
+        "Create Business Imperative":     "GovernanceDriver",
+        "Create Certification Type":      "CertificationType",
+        "Create Regulation":              "Regulation",
+        "Create Regulation Article":      "RegulationArticle",
+        "Create License Type":            "LicenseType",
+        "Create Digital Product":         "DigitalProduct",
+        "Create Agreement":               "Agreement",
+        "Create Data Sharing Agreement":  "Agreement",
+        "Create Solution Blueprint":      "SolutionBlueprint",
+        "Create Solution Component":      "SolutionComponent",
+        "Create Information Supply Chain":"InformationSupplyChain",
+        "Create Solution Role":           "SolutionRole",
+        "Create External Reference":      "ExternalReference",
+        "Create Subject Area":            "Collection",
+        "Create Informal Tag":            "InformalTag",
+        "Create Comment":                 "Comment",
+    }
+
     _ENTITY_TO_ACTION: Dict[str, str] = {
         "campaign":          "Create Campaign",
         "project":           "Create Project",
@@ -946,16 +989,27 @@ JSON:"""
         catalog = get_action_catalog()
         commands: List[Dict] = []
         existing_names = {c.get("display_name", "").lower() for c in existing_commands}
+        _ACTION_TO_EGERIA_TYPE = self._ACTION_TO_EGERIA_TYPE
 
         def _make_cmd(action: str, display_name: str, pre_filled: Optional[Dict] = None,
                       narrative: str = "") -> Dict:
+            pf = dict(pre_filled) if pre_filled else {}
+            # Auto-generate Qualified Name using the same convention as pyegeria's
+            # __create_qualified_name__(type_name, display_name) → "Type::display-name"
+            egeria_type = _ACTION_TO_EGERIA_TYPE.get(action)
+            if egeria_type and display_name and "Qualified Name" not in pf:
+                dn_slug = re.sub(r'\s+', '-', display_name.strip())
+                pf["Qualified Name"] = f"{egeria_type}::{dn_slug}"
             return {
                 "action":       action,
                 "display_name": display_name,
+                # Unique key so multiple commands of the same action type each get
+                # their own slot in the answers dict (fixes display of repeated actions)
+                "_answers_key": f"{action}:{display_name}" if display_name else action,
                 "description":  "",
                 "rationale":    "",
                 "narrative":    narrative or catalog.narrative_template(action),
-                "pre_filled":   pre_filled or {},
+                "pre_filled":   pf,
                 "placeholders": {},
             }
 
@@ -975,20 +1029,30 @@ JSON:"""
                     top_level_name = ec.get("display_name", "")
                     break
 
-        # Identify the solution blueprint name (from extracted objects or existing commands)
-        # so solution_components can pre-fill "In Solution Blueprints" at creation time.
-        # This is the canonical Dr.Egeria pattern: children declare their parent via a
-        # Reference Name List field — no separate Link command needed.
+        # Identify the solution blueprint qualified name (from extracted objects or existing
+        # commands) so solution_components can pre-fill "In Solution Blueprints" at creation.
+        # Using the qualified name (not just display name) ensures Dr.Egeria resolves the
+        # reference unambiguously.  Falls back to display name if QN not yet computed.
+        blueprint_qname = ""
         blueprint_name = ""
         for obj in entities.get("objects", []):
             otype = (obj.get("type") or "").lower().replace("-", "_").replace(" ", "_")
             if otype in ("solution_blueprint", "blueprint"):
                 blueprint_name = (obj.get("name") or "").strip()
+                if blueprint_name:
+                    slug = re.sub(r'\s+', '-', blueprint_name.strip())
+                    blueprint_qname = f"SolutionBlueprint::{slug}"
                 break
         if not blueprint_name:
             for ec in existing_commands:
                 if ec.get("action") == "Create Solution Blueprint":
                     blueprint_name = ec.get("display_name", "")
+                    # Try to read QN from already-computed pre_filled
+                    blueprint_qname = (
+                        (ec.get("pre_filled") or {}).get("Qualified Name")
+                        or (f"SolutionBlueprint::{re.sub(r'\s+', '-', blueprint_name)}"
+                            if blueprint_name else "")
+                    )
                     break
 
         for obj in entities.get("objects", []):
@@ -1018,10 +1082,12 @@ JSON:"""
                 pre_filled["Parent Relationship Type Name"] = "ProjectHierarchy"
 
             # Pre-fill the parent-reference field on children when the container is known.
-            # This avoids a separate Link command — the child declares its parent at creation.
-            bp = obj.get("blueprint_parent") or blueprint_name
-            if action == "Create Solution Component" and bp:
-                pre_filled["In Solution Blueprints"] = bp
+            # Use the qualified name so Dr.Egeria resolves the cross-reference unambiguously.
+            bp_ref = (obj.get("blueprint_parent") and
+                      (f"SolutionBlueprint::{re.sub(r'\s+', '-', obj['blueprint_parent'])}"
+                       if obj.get("blueprint_parent") else "")) or blueprint_qname
+            if action == "Create Solution Component" and bp_ref:
+                pre_filled["In Solution Blueprints"] = bp_ref
 
             commands.append(_make_cmd(action, name, pre_filled))
 

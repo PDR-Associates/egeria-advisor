@@ -170,7 +170,9 @@ class ArtifactCanvas {
         <span class="text-slate-600 text-xs w-5 shrink-0 text-right">${idx + 1}.</span>
         <span class="ac-type text-violet-300 text-xs font-semibold flex-1 truncate">${_acEsc(type)}</span>
         <span class="w-2 h-2 rounded-full shrink-0 ${statusColor}" title="${statusTitle}"></span>
-        <button class="expand-btn text-slate-500 hover:text-slate-200 text-xs px-1 transition-colors" title="Expand fields">▾</button>
+        <button class="expand-btn flex items-center gap-1 text-slate-400 hover:text-violet-300 text-sm px-2 py-0.5 rounded hover:bg-slate-700/50 transition-colors" title="Expand / collapse fields">
+          <span class="expand-arrow">▾</span><span class="text-xs">Fields</span>
+        </button>
         <button class="remove-btn text-slate-700 hover:text-red-400 text-xs px-1 transition-colors" title="Remove">✕</button>
       </div>
       <div class="px-2.5 pb-1.5 flex flex-col gap-0.5">
@@ -231,7 +233,8 @@ class ArtifactCanvas {
       const btn = card.querySelector('.expand-btn');
       const open = !fs.classList.contains('hidden');
       fs.classList.toggle('hidden', open);
-      btn.textContent = open ? '▾' : '▴';
+      const arrow = btn.querySelector('.expand-arrow');
+      if (arrow) arrow.textContent = open ? '▾' : '▴';
       if (!open) this._loadFields(card, item, idx);
     });
 

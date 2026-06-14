@@ -1355,6 +1355,48 @@ actions:
       - link media
     requires: [Create Related Media]
 
+  - name: Link Term as Context
+    family: External Reference
+    intent_entity: term_context_link
+    aliases:
+      - link term as context
+      - add term context
+      - glossary term context
+
+  - name: Set Glossary as Taxonomy
+    family: External Reference
+    intent_entity: glossary_taxonomy
+    aliases:
+      - set glossary as taxonomy
+      - classify as taxonomy
+
+  # ── Report family ──────────────────────────────────────────────────────────
+  # View Report is a read-only command that runs a named pyegeria report spec.
+  # Not a create command — used as a final verification/visualization step.
+
+  - name: View Report
+    family: Report
+    intent_entity: view_report
+    aliases:
+      - view report
+      - run report
+      - show report
+      - display report
+      - view mermaid
+      - mermaid diagram
+      - mermaid graph
+      - mermaid chart
+      - architecture diagram
+      - blueprint report
+      - solution blueprint report
+      - blueprint mermaid
+      - view solution blueprint
+    creates: null
+    requires: []
+    narrative_template: >
+      Runs the {Report Spec} report spec to view results — for example as a
+      Mermaid architecture diagram or formatted table.
+
 
 # ── Ordering rules ────────────────────────────────────────────────────────────
 #
@@ -1625,3 +1667,5 @@ ordering_priority:
     priority: 40
   - pattern: "link project hierarchy"
     priority: 999   # sentinel — should never appear after validation
+  - pattern: "view report"
+    priority: 900   # always last — read-only verification/visualization step

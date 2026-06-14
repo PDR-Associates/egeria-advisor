@@ -596,7 +596,35 @@ class GovernancePlanAgent:
         "information_supply_chain": "Create Information Supply Chain",
         "supply_chain":           "Create Information Supply Chain",
         "solution_role":          "Create Solution Role",
+        "view_report":            "View Report",
+        "report":                 "View Report",
     }
+
+    # Maps entity type → View Report "Report Spec" field value
+    _ENTITY_TO_REPORT_SPEC: Dict[str, str] = {
+        "solution_blueprint":  "Solution-Blueprint",
+        "solution_component":  "Solution-Blueprint",
+        "glossary":            "Glossaries",
+        "glossary_term":       "Glossary-Terms",
+        "collection":          "Collections",
+        "project":             "Projects",
+        "campaign":            "Projects",
+        "digital_product":     "Digital-Products",
+        "data_dictionary":     "Data-Dictionaries",
+        "governance_zone":     "Governance-Zones",
+    }
+
+    # Detects "view/run/show report for X", "mermaid diagram/graph of X",
+    # "view X as mermaid", "architecture diagram for X".
+    # _VR_STOP terminates the name capture at common clause boundaries.
+    _VR_STOP = r'(?=\s*(?:as\s+a\s+mermaid|as\s+mermaid|\.\s|\s*$))'
+    _VIEW_REPORT_PATTERN = re.compile(
+        r'\b(?:view|run|show|display|get)\s+(?:a\s+)?(?:the\s+)?report\s+(?:for|on|of)\s+"?(.+?)' + _VR_STOP
+        + r'|\bmermaid\s+(?:diagram|graph|chart)\s+(?:of|for)\s+"?(.+?)' + _VR_STOP
+        + r'|\bview\s+"?(.+?)"?\s+as\s+(?:a\s+)?mermaid'
+        + r'|\b(?:architecture|system)\s+diagram\s+(?:of|for)\s+"?(.+?)' + _VR_STOP,
+        re.IGNORECASE,
+    )
 
     def _decompose_intent(
         self,
@@ -677,12 +705,24 @@ class GovernancePlanAgent:
         for obj in entities.get("objects", []):
             keyword_suggestions.extend(obj.pop("low_confidence_suggestions", []))
 
+        # Collect auto-appended steps (e.g. View Report added for SA plans)
+        auto_appended: list[str] = []
+        for cmd in commands:
+            if cmd.pop("_auto_appended", False):
+                spec = (cmd.get("pre_filled") or {}).get("Report Spec", "")
+                fmt  = (cmd.get("pre_filled") or {}).get("Output Format", "")
+                auto_appended.append(
+                    f"Added **View Report** ({spec}, {fmt}) — visualizes the result. "
+                    "Remove it in the canvas if not needed."
+                )
+
         return {
             "title":              entities.get("title", query[:50]).strip(),
             "purpose":            entities.get("purpose", query),
             "commands":           commands,
             "validator_warnings": warnings + context_warnings,
             "keyword_suggestions": keyword_suggestions,
+            "auto_appended":      auto_appended,
         }
 
     # Name stops at these words (sentence-level boundaries)
@@ -754,6 +794,45 @@ class GovernancePlanAgent:
         roles   = []
 
         ql = q.lower()
+
+        # ── View Report / Mermaid diagram detection ────────────────────────
+        # Handles "view report for Solution Blueprint", "mermaid graph of X", etc.
+        vr_m = self._VIEW_REPORT_PATTERN.search(q)
+        if vr_m:
+            target_name = next((g.strip() for g in vr_m.groups() if g), "")
+            # Strip leading articles ("the", "a", "an")
+            target_name = re.sub(r'^(?:the|a|an)\s+', '', target_name, flags=re.IGNORECASE)
+            output_fmt = "MERMAID" if re.search(r'\bmermaid\b', ql) else "TABLE"
+            # Infer report spec from entity type keywords in query
+            report_spec = "Solution-Blueprint"  # default
+            for kw, spec in [
+                ("glossary term", "Glossary-Terms"),
+                ("glossary",      "Glossaries"),
+                ("collection",    "Collections"),
+                ("project",       "Projects"),
+                ("campaign",      "Projects"),
+                ("digital product", "Digital-Products"),
+                ("data dictionary", "Data-Dictionaries"),
+                ("governance zone", "Governance-Zones"),
+                ("blueprint",     "Solution-Blueprint"),
+                ("solution",      "Solution-Blueprint"),
+            ]:
+                if kw in ql:
+                    report_spec = spec
+                    break
+            return {
+                "title": f"View {report_spec} Report",
+                "purpose": q[:120],
+                "objects": [{
+                    "type": "view_report",
+                    "name": target_name or report_spec,
+                    "report_spec": report_spec,
+                    "output_format": output_fmt,
+                    "search_string": target_name,
+                    "low_confidence_suggestions": [],
+                }],
+                "roles": [],
+            }
 
         # keyword → entity_type map for fast inline matching
         _KW_MAP = {
@@ -1061,6 +1140,32 @@ JSON:"""
             if not name or name.lower() in existing_names:
                 continue
 
+            # ── View Report: read-only command, pre-fill from extracted attrs ──
+            if entity_type in ("view_report", "report"):
+                report_spec   = obj.get("report_spec", "Solution-Blueprint")
+                output_format = obj.get("output_format", "TABLE")
+                search_string = obj.get("search_string", name)
+                pf: Dict[str, str] = {
+                    "Report Spec":   report_spec,
+                    "Output Format": output_format,
+                }
+                if search_string:
+                    pf["Search String"] = search_string
+                # No Qualified Name for View Report — it's not creating an Egeria object
+                cmd = {
+                    "action":       "View Report",
+                    "display_name": search_string or report_spec,
+                    "_answers_key": f"View Report:{search_string or report_spec}",
+                    "description":  "",
+                    "rationale":    "",
+                    "narrative":    catalog.narrative_template("View Report")
+                        or f"Runs the {report_spec} report to view results.",
+                    "pre_filled":   pf,
+                    "placeholders": {},
+                }
+                commands.append(cmd)
+                continue
+
             # A "project" with a parent field is implicitly a sub-project
             parent = (obj.get("parent") or "").strip()
             if parent and entity_type == "project":
@@ -1114,6 +1219,32 @@ JSON:"""
                     "Link Person Role Appointment", "",
                     appt_pre_filled,
                 ))
+
+        # ── Auto-append visualization report for Solution Architect plans ──
+        # When the plan creates a Solution Blueprint and no View Report step
+        # already exists (new or existing commands), add one automatically so
+        # the user gets a Mermaid diagram of the result after execution.
+        all_cmds = commands + existing_commands
+        has_view_report = any(c.get("action") == "View Report" for c in all_cmds)
+        if blueprint_name and not has_view_report:
+            commands.append({
+                "action":       "View Report",
+                "display_name": blueprint_name,
+                "_answers_key": f"View Report:{blueprint_name}",
+                "description":  "",
+                "rationale":    "",
+                "narrative":    (
+                    f"Visualizes the completed '{blueprint_name}' solution blueprint "
+                    "as a Mermaid architecture diagram."
+                ),
+                "pre_filled": {
+                    "Report Spec":   "Solution-Blueprint",
+                    "Output Format": "MERMAID",
+                    "Search String": blueprint_name,
+                },
+                "placeholders": {},
+                "_auto_appended": True,  # flag for elicitor to surface a note
+            })
 
         return commands
 

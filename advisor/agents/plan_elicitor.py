@@ -78,6 +78,8 @@ class PlanElicitor:
 
         # --- Decompose intent ------------------------------------------
         _val_warnings: List[str] = []
+        _keyword_suggestions: List[dict] = []
+        _auto_appended: List[str] = []
         if template_name:
             commands = get_template_manager().template_to_commands(template_name)
             title = template_name
@@ -90,10 +92,12 @@ class PlanElicitor:
             _keyword_suggestions = decomp.get("keyword_suggestions") or []
             from advisor.action_catalog import get_action_catalog
             catalog = get_action_catalog()
+            _auto_appended = decomp.get("auto_appended") or []
             commands = [
                 {
                     "action":       c.get("action", ""),
                     "display_name": c.get("display_name", ""),
+                    "_answers_key": c.get("_answers_key", ""),
                     "description":  c.get("description", ""),
                     "rationale":    c.get("rationale", ""),
                     # narrative: prefer LLM-generated, fall back to catalog template
@@ -101,7 +105,9 @@ class PlanElicitor:
                         c.get("narrative", "")
                         or catalog.narrative_template(c.get("action", ""))
                     ),
-                    "pre_filled":   dict(c.get("params") or {}),
+                    # pre_filled from _make_cmd (keyed "pre_filled"); fall back to
+                    # legacy "params" key for any older code paths
+                    "pre_filled":   dict(c.get("pre_filled") or c.get("params") or {}),
                     "placeholders": {},
                 }
                 for c in decomp.get("commands", [])
@@ -125,11 +131,14 @@ class PlanElicitor:
                 cmd["pre_filled"]["Display Name"] = cmd["display_name"]
 
         # Build initial answers from pre_filled (pending_questions deferred
-        # until after the user confirms the command set)
+        # until after the user confirms the command set).
+        # Use _answers_key (action:display_name) when present so multiple commands
+        # of the same action type each get their own slot in the answers dict.
         answers: Dict[str, Dict[str, str]] = {}
         for cmd in commands:
             if cmd["pre_filled"]:
-                answers[cmd["action"]] = dict(cmd["pre_filled"])
+                key = cmd.get("_answers_key") or cmd["action"]
+                answers[key] = dict(cmd["pre_filled"])
 
         dm = get_draft_manager()
         spec = dm.create(
@@ -165,10 +174,12 @@ class PlanElicitor:
         except Exception:
             pass
 
-        # Surface auto-corrections and low-confidence keyword suggestions
+        # Surface auto-corrections, auto-appended steps, and keyword suggestions
         init_note_parts: list[str] = []
         if _val_warnings:
             init_note_parts.append("Auto-corrected: " + "; ".join(_val_warnings))
+        for note in _auto_appended:
+            init_note_parts.append(f"ℹ️ {note}")
         if _keyword_suggestions:
             for s in _keyword_suggestions:
                 init_note_parts.append(
@@ -507,17 +518,17 @@ class PlanElicitor:
             for c in new_decomp.get("commands", []):
                 if not c.get("action"):
                     continue
-                pre_filled = dict(c.get("params") or {})
                 new_commands.append({
                     "action":       c["action"],
                     "display_name": c.get("display_name", ""),
+                    "_answers_key": c.get("_answers_key", ""),
                     "description":  c.get("description", ""),
                     "rationale":    c.get("rationale", ""),
                     "narrative":    (
                         c.get("narrative", "")
                         or catalog.narrative_template(c["action"])
                     ),
-                    "pre_filled":   pre_filled,
+                    "pre_filled":   dict(c.get("pre_filled") or c.get("params") or {}),
                     "placeholders": {},
                 })
 

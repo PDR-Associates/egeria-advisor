@@ -846,9 +846,11 @@ async function submitQuery(query, extra = {}) {
     const nav = document.createElement('div');
     nav.className = 'mt-2 flex gap-2 flex-wrap';
     const navDefs = {
-      back:      { label: '← Back',        cls: 'bg-slate-700 hover:bg-slate-600 text-slate-200' },
-      save_exit: { label: '💾 Save & Exit', cls: 'bg-indigo-800 hover:bg-indigo-700 text-white' },
-      cancel:    { label: '✕ Cancel',       cls: 'bg-red-900/60 hover:bg-red-800 text-red-300' },
+      back:            { label: '← Back',             cls: 'bg-slate-700 hover:bg-slate-600 text-slate-200' },
+      save_exit:       { label: '💾 Save & Exit',      cls: 'bg-indigo-800 hover:bg-indigo-700 text-white' },
+      cancel:          { label: '✕ Cancel',            cls: 'bg-red-900/60 hover:bg-red-800 text-red-300' },
+      generate_now:    { label: '⚡ Generate Now',      cls: 'bg-violet-800 hover:bg-violet-700 text-white' },
+      completely_wrong:{ label: '✗ Completely Wrong',  cls: 'bg-amber-900/70 hover:bg-amber-800 text-amber-200' },
     };
     result.navigation.forEach(key => {
       const def = navDefs[key];
@@ -857,7 +859,10 @@ async function submitQuery(query, extra = {}) {
       btn.className = `px-3 py-1.5 rounded text-xs font-semibold transition-colors ${def.cls}`;
       btn.textContent = def.label;
       btn.onclick = () => {
-        const commands = { back: 'back', save_exit: 'save and exit', cancel: 'cancel' };
+        const commands = {
+          back: 'back', save_exit: 'save and exit', cancel: 'cancel',
+          generate_now: 'generate now', completely_wrong: 'completely wrong',
+        };
         const cmd = commands[key] || key;
         appendMessage('you', def.label);
         submitQuery(cmd, { intent_override: 'plan' });

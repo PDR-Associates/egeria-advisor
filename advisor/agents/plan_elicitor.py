@@ -28,9 +28,10 @@ from advisor.governance_draft import DraftManager, get_draft_manager
 from advisor.plan_templates import get_template_manager
 
 # Navigation button sets per phase
-_NAV_FIRST  = ["save_exit", "cancel"]          # first step — no Back
-_NAV_MIDDLE = ["back", "save_exit", "cancel"]  # mid-flow
-_NAV_FINAL  = ["back", "cancel"]               # last step — no Save & Exit (plan already in inbox)
+_NAV_FIRST   = ["save_exit", "cancel"]                               # first step — no Back
+_NAV_MIDDLE  = ["back", "save_exit", "cancel"]                       # mid-flow
+_NAV_FINAL   = ["back", "cancel"]                                    # last step
+_NAV_CONFIRM = ["generate_now", "completely_wrong", "save_exit", "cancel"]  # confirm_commands step
 
 _PHASE_LABELS = {
     "confirm_commands": "Confirming plan steps",
@@ -445,22 +446,16 @@ class PlanElicitor:
             spec["commands_identified"] = []
             spec["answers"] = {}
             dm.save(spec)
-            return {
-                "query": user_response,
-                "response": (
-                    "No problem — let's start fresh. "
-                    "Describe what you want to accomplish and I'll build a new plan.\n\n"
-                    "For example: *\"Create a campaign called X with sub-projects for A, B, C, "
-                    "led by [name] as project leader\"*"
-                ),
-                "query_type": "plan_clarification",
-                "draft_id": spec["draft_id"],
-                "routing_agent": "governance_plan_agent",
-                "sources": [], "num_sources": 0,
-                "retrieval_time": 0.0, "generation_time": 0.0,
-                "avg_relevance_score": 0.0, "context_length": 0,
-                "nav": _NAV_FIRST, "can_go_back": True,
-            }
+            return _clarification_result(
+                spec,
+                "No problem — let's start fresh. "
+                "Describe what you want to accomplish and I'll build a new plan.\n\n"
+                "For example: *\"Create a campaign called X with sub-projects for A, B, C, "
+                "led by [name] as project leader\"*",
+                phase_override="confirm_commands",
+                can_go_back=True,
+                nav=["back", "cancel"],
+            )
 
         correction_signals = (
             "that's wrong", "that is wrong", "incorrect", "not right",
@@ -971,7 +966,7 @@ class PlanElicitor:
             spec, "\n".join(lines),
             phase_override="confirm_commands",
             can_go_back=bool(spec.get("history_stack")),
-            nav=_NAV_FIRST,
+            nav=_NAV_CONFIRM,
         )
 
     def _build_elicit_required_response(self, spec: Dict, partial: bool = False) -> Dict[str, Any]:

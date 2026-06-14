@@ -686,6 +686,21 @@ class GovernancePlanAgent:
         re.IGNORECASE,
     )
 
+    # Multi-item list: "[plural type keyword] for/called name1, name2, and nameN"
+    # e.g. "solution components for UK DB, EU DB and WorldWide DB"
+    _MULTI_ENTITY_PATTERN = re.compile(
+        r'\b((?:solution\s+)?components?|(?:solution\s+)?blueprints?|glossary\s+terms?'
+        r'|tasks?|data\s+structures?|data\s+fields?)\s+(?:for|called|named)\s+'
+        r'(.+?)(?=\.\s+[A-Z]|\s*\.\s*$|\s*$)',
+        re.IGNORECASE | re.DOTALL,
+    )
+    # Geographic / regional prefixes to strip when auto-naming containers
+    _GEO_PREFIX = re.compile(
+        r'^(UK|EU|EU|US|USA|EMEA|APAC|Canada|WorldWide|Worldwide|Global|LATAM|MEA'
+        r'|North\s+America|South\s+America|Asia\s+Pacific|Europe|Asia)\s+',
+        re.IGNORECASE,
+    )
+
     def _extract_entities_patterns(self, query: str) -> Dict:
         """
         Rule-based entity extraction for common phrasings.
@@ -705,6 +720,68 @@ class GovernancePlanAgent:
             "supply chain": "information_supply_chain", "solution role": "solution_role",
             "study": "study_project", "personal": "personal_project",
         }
+
+        # ── Multi-item list detection ──────────────────────────────────────
+        # Handles "solution components for UK X, EU Y and WorldWide Z"
+        multi_m = self._MULTI_ENTITY_PATTERN.search(q)
+        if multi_m:
+            kw_raw = multi_m.group(1).lower()
+            # Normalise singular: "components" → "component", "blueprints" → "blueprint"
+            kw = re.sub(r's$', '', kw_raw.strip())
+            # Map to entity type
+            etype = _KW_MAP.get(kw) or _KW_MAP.get(kw.replace("solution ", ""))
+            if etype:
+                raw_names = multi_m.group(2)
+                names = [n.strip().strip('"\'') for n in
+                         re.split(r'\s*,\s*|\s+and\s+', raw_names) if n.strip()]
+                if names:
+                    # ── Auto-name a container when query mentions "blueprint" ─
+                    container_name = ""
+                    bp_named = re.search(
+                        r'\bblueprint\s+(?:called|named)\s+"?([^",.]+?)"?(?=[,.]|$)', ql
+                    )
+                    if bp_named:
+                        container_name = bp_named.group(1).strip().title()
+                    elif "blueprint" in ql and etype == "solution_component":
+                        # Derive name from common suffix of all item names
+                        words_lists = [n.split() for n in names]
+                        min_len = min(len(w) for w in words_lists)
+                        suffix_words: list[str] = []
+                        for i in range(1, min_len + 1):
+                            candidates = [w[-i].lower() for w in words_lists]
+                            if len(set(candidates)) == 1:
+                                suffix_words.insert(0, words_lists[0][-i])
+                            else:
+                                break
+                        if suffix_words:
+                            container_name = " ".join(suffix_words).title() + " Blueprint"
+                        else:
+                            # Fallback: strip geo prefix from first name
+                            stripped = self._GEO_PREFIX.sub("", names[0]).strip()
+                            container_name = (stripped or names[0]).title() + " Blueprint"
+
+                    if container_name:
+                        objects.append({
+                            "type": "solution_blueprint",
+                            "name": container_name,
+                            "low_confidence_suggestions": [],
+                        })
+                    for name in names:
+                        objects.append({
+                            "type": etype,
+                            "name": name,
+                            "blueprint_parent": container_name,
+                            "low_confidence_suggestions": [],
+                        })
+                    # Role extraction still applies
+                    roles = self._extract_roles(q)
+                    title_base = container_name or names[0]
+                    return {
+                        "title":   f"{title_base} Plan",
+                        "purpose": q[:120],
+                        "objects": objects,
+                        "roles":   roles,
+                    }
 
         # Tracks entity-type inferences that used the keyword index (low confidence)
         # so confirm_commands can surface "Did you mean X?"
@@ -788,6 +865,19 @@ class GovernancePlanAgent:
                     objects.append({"type": "sub_project", "name": sn, "parent": main_name})
 
         # Role assignments
+        roles = self._extract_roles(q)
+
+        title = f"{main_name} {main_type.title()} Setup" if main_name else query[:50]
+        return {
+            "title":   title,
+            "purpose": f"Set up a {main_type} called {main_name}",
+            "objects": objects,
+            "roles":   roles,
+        }
+
+    def _extract_roles(self, q: str) -> list[dict]:
+        """Extract role assignments from query text using _ROLE_PATTERNS."""
+        roles = []
         for pattern in self._ROLE_PATTERNS:
             m = re.search(pattern, q, re.IGNORECASE)
             if m:
@@ -798,14 +888,7 @@ class GovernancePlanAgent:
                 if person and 1 <= len(person.split()) <= 5:
                     roles.append({"role": role, "person": person})
                     break
-
-        title = f"{main_name} {main_type.title()} Setup" if main_name else query[:50]
-        return {
-            "title":   title,
-            "purpose": f"Set up a {main_type} called {main_name}",
-            "objects": objects,
-            "roles":   roles,
-        }
+        return roles
 
     def _extract_entities_llm(
         self, query: str, perspective_hint: str, existing_hint: str, llm
@@ -893,7 +976,9 @@ JSON:"""
                     break
 
         # Identify the solution blueprint name (from extracted objects or existing commands)
-        # so solution_components can be linked to it automatically.
+        # so solution_components can pre-fill "In Solution Blueprints" at creation time.
+        # This is the canonical Dr.Egeria pattern: children declare their parent via a
+        # Reference Name List field — no separate Link command needed.
         blueprint_name = ""
         for obj in entities.get("objects", []):
             otype = (obj.get("type") or "").lower().replace("-", "_").replace(" ", "_")
@@ -905,9 +990,6 @@ JSON:"""
                 if ec.get("action") == "Create Solution Blueprint":
                     blueprint_name = ec.get("display_name", "")
                     break
-
-        # Deferred link-to-blueprint commands (emitted after all Create Solution Component cmds)
-        _blueprint_links: List[Dict] = []
 
         for obj in entities.get("objects", []):
             entity_type = (obj.get("type") or "").lower().replace("-", "_").replace(" ", "_")
@@ -935,18 +1017,13 @@ JSON:"""
                 pre_filled["Parent ID"] = parent
                 pre_filled["Parent Relationship Type Name"] = "ProjectHierarchy"
 
+            # Pre-fill the parent-reference field on children when the container is known.
+            # This avoids a separate Link command — the child declares its parent at creation.
+            bp = obj.get("blueprint_parent") or blueprint_name
+            if action == "Create Solution Component" and bp:
+                pre_filled["In Solution Blueprints"] = bp
+
             commands.append(_make_cmd(action, name, pre_filled))
-
-            # For each solution component, queue a link-to-blueprint command
-            if action == "Create Solution Component" and blueprint_name:
-                _blueprint_links.append(_make_cmd(
-                    "Link Solution Component to Blueprint",
-                    f"{name} → {blueprint_name}",
-                    {"Solution Blueprint": blueprint_name, "Solution Component": name},
-                ))
-
-        # Append blueprint link commands after all component Creates
-        commands.extend(_blueprint_links)
 
         for role in entities.get("roles", []):
             # Accept both "role" and "role_name" as field names

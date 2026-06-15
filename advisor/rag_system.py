@@ -4,8 +4,10 @@ Complete RAG system integrating retrieval, query processing, and LLM generation.
 This module provides the main interface for the RAG-based code advisor.
 """
 
+import json
+import queue
 import re
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Iterator
 from loguru import logger
 import threading
 import time
@@ -42,6 +44,27 @@ def _egeria_required_response(user_query: str) -> Dict[str, Any]:
         "avg_relevance_score": 0.0,
         "context_length": 0,
     }
+
+
+def _serialise_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a JSON-serialisable copy of a result dict (normalises source objects)."""
+    sources = []
+    for s in result.get("sources", []):
+        if isinstance(s, dict):
+            sources.append(s)
+        else:
+            # SearchResult or similar object
+            entry: Dict[str, Any] = {}
+            if hasattr(s, "score"):
+                entry["score"] = s.score
+            if hasattr(s, "metadata"):
+                entry.update(s.metadata)
+            if hasattr(s, "content"):
+                entry["content"] = s.content[:200]
+            sources.append(entry)
+    out = dict(result)
+    out["sources"] = sources
+    return out
 
 
 class RAGSystem:
@@ -641,14 +664,25 @@ class RAGSystem:
             except Exception as exc:
                 logger.warning(f"DocAgent failed ({exc}), falling back to RAG")
 
-        # Get search strategy
-        search_strategy = query_analysis["search_strategy"]
-        
-        # Check if we should prioritize documentation
-        prioritize_docs = query_analysis.get("prioritize_docs", False)
-        offer_examples = query_analysis.get("offer_examples", False)
+        return self._run_rag_fallback(user_query, query_analysis, include_context, perspective)
 
-        # Retrieve relevant context with timing
+    # ---------------------------------------------------------------------- #
+    # RAG fallback — retrieve context, build prompt, generate response        #
+    # ---------------------------------------------------------------------- #
+
+    def _run_rag_fallback(
+        self,
+        user_query: str,
+        query_analysis: Dict[str, Any],
+        include_context: bool,
+        perspective: Optional[str],
+    ) -> Dict[str, Any]:
+        """Retrieve context, build prompt, and generate a response (blocking)."""
+        search_strategy = query_analysis["search_strategy"]
+        prioritize_docs = query_analysis.get("prioritize_docs", False)
+        offer_examples  = query_analysis.get("offer_examples", False)
+
+        # Retrieve
         retrieval_start = time.time()
         if include_context:
             context, sources = self.retriever.retrieve_and_build_context(
@@ -656,78 +690,53 @@ class RAGSystem:
                 top_k=search_strategy["top_k"],
                 min_score=search_strategy["min_score"],
                 format_style=search_strategy["format_style"],
-                prioritize_docs=prioritize_docs  # NEW: Pass documentation priority flag
+                prioritize_docs=prioritize_docs,
             )
         else:
-            context = ""
-            sources = []
+            context, sources = "", []
         retrieval_time = time.time() - retrieval_start
 
-        # Get collections that were searched (from retrieval metadata)
-        collections_searched = []
-        if hasattr(self.retriever, 'multi_store') and self.retriever.multi_store:
-            # Try to get from last search (this is a simplification)
-            collections_searched = getattr(self.retriever, '_last_collections_searched', [])
-        
-        # Build prompt using template manager
+        collections_searched = getattr(self.retriever, "_last_collections_searched", [])
+
+        # Build prompt
         prompt_manager = get_prompt_manager()
-
-        # Convert query_type string to QueryType enum if needed
-        if isinstance(query_analysis["query_type"], str):
-            query_type_enum = QueryType(query_analysis["query_type"])
-        else:
-            query_type_enum = query_analysis["query_type"]
-
-        # Prepend perspective so the LLM tailors depth and terminology
-        effective_query = user_query
-        if perspective:
-            perspective_labels = {
-                "developer": "Software Developer",
-                "data_engineer": "Data Engineer",
-                "data_steward": "Data Steward",
-                "governance_officer": "Governance Officer",
-            }
-            role_label = perspective_labels.get(perspective, perspective.replace("_", " ").title())
-            effective_query = f"[User role: {role_label}]\n{user_query}"
-
+        query_type_enum = (
+            QueryType(query_analysis["query_type"])
+            if isinstance(query_analysis["query_type"], str)
+            else query_analysis["query_type"]
+        )
+        effective_query = self._add_perspective_prefix(user_query, perspective)
         prompt = prompt_manager.build_prompt(
             user_query=effective_query,
             context=context,
             query_type=query_type_enum,
             collections_searched=collections_searched,
-            offer_examples=offer_examples
+            offer_examples=offer_examples,
         )
-
-        # Get appropriate system prompt based on collections, optionally tailored to perspective
         primary_collection = collections_searched[0] if collections_searched else None
         system_prompt = prompt_manager.get_system_prompt(
             primary_collection=primary_collection,
             perspective=perspective,
         )
 
-        # Generate response with timing
+        # Generate (thread-local streaming hook fires automatically if set)
         generation_start = time.time()
         response = self.llm_client.generate(
             prompt=prompt,
             system=system_prompt,
             temperature=self.rag_config.generation.temperature,
-            max_tokens=self.rag_config.generation.max_tokens
+            max_tokens=self.rag_config.generation.max_tokens,
         )
         generation_time = time.time() - generation_start
 
-        # Calculate average relevance score
         avg_relevance_score = 0.0
         if sources:
-            # Handle both SearchResult objects and dictionaries
-            scores = []
-            for s in sources:
-                if hasattr(s, 'score'):
-                    scores.append(s.score)
-                elif isinstance(s, dict):
-                    scores.append(s.get("score", 0.0))
+            scores = [
+                s.score if hasattr(s, "score") else s.get("score", 0.0)
+                for s in sources
+            ]
             avg_relevance_score = sum(scores) / len(scores) if scores else 0.0
 
-        # Build result with enhanced metrics
         result = {
             "query": user_query,
             "response": response,
@@ -738,12 +747,115 @@ class RAGSystem:
             "retrieval_time": retrieval_time,
             "generation_time": generation_time,
             "avg_relevance_score": avg_relevance_score,
-            "context_length": len(context)
+            "context_length": len(context),
         }
-
         logger.info(f"Generated response: {len(response)} chars from {len(sources)} sources")
-
         return result
+
+    @staticmethod
+    def _add_perspective_prefix(query: str, perspective: Optional[str]) -> str:
+        if not perspective:
+            return query
+        labels = {
+            "developer": "Software Developer",
+            "data_engineer": "Data Engineer",
+            "data_steward": "Data Steward",
+            "governance_officer": "Governance Officer",
+        }
+        label = labels.get(perspective, perspective.replace("_", " ").title())
+        return f"[User role: {label}]\n{query}"
+
+    # ---------------------------------------------------------------------- #
+    # Streaming query                                                          #
+    # ---------------------------------------------------------------------- #
+
+    def query_stream(
+        self,
+        user_query: str,
+        include_context: bool = True,
+        query_type_override: Optional[str] = None,
+        perspective: Optional[str] = None,
+        page_size: Optional[int] = None,
+        draft_id: Optional[str] = None,
+        egeria_authenticated: bool = True,
+    ) -> Iterator[str]:
+        """
+        Run the full pipeline and yield SSE-formatted strings.
+
+        Event sequence:
+          data: {"type":"start","query":"..."}          (immediately)
+          data: {"type":"token","text":"..."}           (per LLM token — only for streamable paths)
+          data: {"type":"done","result":{...}}          (when complete)
+
+        Non-streamable paths (report, plan generation, MCP commands) skip the
+        token events and emit start → done with no intermediate events.
+        """
+        from advisor.llm_client import _stream_local
+
+        token_q: "queue.Queue[Optional[str]]" = queue.Queue()
+        result_holder: List[Dict[str, Any]] = []
+        error_holder:  List[Exception] = []
+
+        def _on_token(t: str) -> None:
+            token_q.put(t)
+
+        def _worker() -> None:
+            _stream_local.on_token = _on_token
+            try:
+                result = self._process_query(
+                    user_query=user_query,
+                    include_context=include_context,
+                    dry_run=False,
+                    query_type_override=query_type_override,
+                    perspective=perspective,
+                    page_size=page_size,
+                    draft_id=draft_id,
+                    egeria_authenticated=egeria_authenticated,
+                )
+                result_holder.append(result)
+            except Exception as exc:
+                logger.error(f"query_stream worker error: {exc}", exc_info=True)
+                error_holder.append(exc)
+            finally:
+                _stream_local.on_token = None
+                token_q.put(None)  # sentinel
+
+        # Emit start immediately so the UI can show a spinner
+        yield f"data: {json.dumps({'type': 'start', 'query': user_query})}\n\n"
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+
+        # Forward tokens as they arrive
+        while True:
+            token = token_q.get()
+            if token is None:
+                break
+            yield f"data: {json.dumps({'type': 'token', 'text': token})}\n\n"
+
+        t.join()
+
+        if error_holder:
+            err_result = {
+                "query": user_query,
+                "response": f"An error occurred: {error_holder[0]}",
+                "query_type": "general",
+                "routing_agent": "error",
+                "sources": [], "num_sources": 0,
+                "retrieval_time": 0.0, "generation_time": 0.0,
+                "avg_relevance_score": 0.0, "context_length": 0,
+            }
+            yield f"data: {json.dumps({'type': 'done', 'result': err_result})}\n\n"
+        elif result_holder:
+            result = result_holder[0]
+            # Sources may contain non-serialisable SearchResult objects — normalise them
+            result = _serialise_result(result)
+            # Add intent metadata (mirrors what /api/query does synchronously)
+            from advisor.web.app import _intent_meta  # lazy import avoids circular dep
+            result.setdefault("intent", _intent_meta(result.get("query_type", "general")))
+            yield f"data: {json.dumps({'type': 'done', 'result': result})}\n\n"
+
+        yield "data: [DONE]\n\n"
 
     def _record_local_metrics(self, result: Dict[str, Any]):
         """Record metrics in local terminal dashboard database."""

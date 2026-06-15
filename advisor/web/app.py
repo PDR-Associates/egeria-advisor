@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pydantic import BaseModel
@@ -313,6 +313,77 @@ async def query_endpoint(request: Request, req: QueryRequest) -> Dict[str, Any]:
     query_type = result.get("query_type", "general")
     result["intent"] = _intent_meta(query_type)
     return result
+
+
+@app.post("/api/query/stream")
+async def query_stream_endpoint(request: Request, req: QueryRequest) -> StreamingResponse:
+    """
+    Streaming variant of /api/query — returns Server-Sent Events.
+
+    Event sequence:
+      data: {"type":"start","query":"..."}
+      data: {"type":"token","text":"..."}   (repeated, only for LLM-generation paths)
+      data: {"type":"done","result":{...}}
+      data: [DONE]
+    """
+    from advisor.auth import get_current_user
+    current_user = get_current_user(request)
+    egeria_authenticated = current_user is not None
+
+    user_query = req.query.strip()
+    if req.search_string and req.search_string.strip() not in ("", "*"):
+        user_query += f" filter:'{req.search_string.strip()}'"
+    if req.output_format:
+        user_query += f" fmt:'{req.output_format.strip()}'"
+
+    loop = asyncio.get_event_loop()
+    rag  = _get_rag()
+
+    async def event_gen():
+        # Bridge sync generator → async generator via asyncio.Queue so the
+        # event loop stays unblocked while the worker thread produces tokens.
+        q: asyncio.Queue[Optional[str]] = asyncio.Queue(maxsize=256)
+
+        def producer() -> None:
+            try:
+                for chunk in rag.query_stream(
+                    user_query=user_query,
+                    include_context=True,
+                    query_type_override=req.intent_override or None,
+                    perspective=req.perspective or None,
+                    page_size=req.page_size or None,
+                    draft_id=req.draft_id or None,
+                    egeria_authenticated=egeria_authenticated,
+                ):
+                    loop.call_soon_threadsafe(q.put_nowait, chunk)
+            except Exception as exc:
+                logger.error(f"query_stream producer error: {exc}", exc_info=True)
+                err = json.dumps({"type": "error", "message": str(exc)})
+                loop.call_soon_threadsafe(q.put_nowait, f"data: {err}\n\n")
+            finally:
+                loop.call_soon_threadsafe(q.put_nowait, None)  # sentinel
+
+        import concurrent.futures
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = loop.run_in_executor(executor, producer)
+
+        while True:
+            item = await q.get()
+            if item is None:
+                break
+            yield item
+
+        await future
+        executor.shutdown(wait=False)
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",   # disable nginx buffering
+        },
+    )
 
 
 @app.get("/api/reports")

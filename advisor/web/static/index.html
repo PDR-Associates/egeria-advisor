@@ -777,6 +777,102 @@ async function submitQuery(query, extra = {}) {
     ...extra,
   };
 
+  // ── Streaming path ────────────────────────────────────────────────────────
+  try {
+    const r = await fetch('/api/query/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      body: JSON.stringify(body),
+    });
+    if (r.status === 401) { Auth.handle401(); setThinking(false); return; }
+    if (!r.ok || !r.body) throw new Error(`HTTP ${r.status}`);
+
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+
+    // Streaming message container — created on first token
+    let streamWrap = null;
+    let streamBody = null;
+    let tokenBuf   = '';
+    let gotResult  = false;
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+
+      // SSE messages are separated by double-newline
+      const parts = buf.split('\n\n');
+      buf = parts.pop(); // last part may be incomplete
+
+      for (const part of parts) {
+        const line = part.trim();
+        if (!line.startsWith('data:')) continue;
+        const raw = line.slice(5).trim();
+        if (raw === '[DONE]') break;
+
+        let evt;
+        try { evt = JSON.parse(raw); } catch { continue; }
+
+        if (evt.type === 'start') {
+          setThinking(false); // stop spinner once server acknowledged
+        } else if (evt.type === 'token') {
+          if (!streamWrap) {
+            // Create the message bubble on first token
+            streamWrap = document.createElement('div');
+            streamWrap.className = 'msg-assistant pl-3 pr-2 py-2 rounded-r-lg bg-slate-800/60';
+            const hdr = document.createElement('div');
+            hdr.className = 'text-xs font-semibold mb-1 text-emerald-400';
+            hdr.textContent = 'Assistant';
+            streamWrap.appendChild(hdr);
+            streamBody = document.createElement('div');
+            streamBody.className = 'prose prose-invert text-sm text-slate-200 max-w-none whitespace-pre-wrap';
+            streamWrap.appendChild(streamBody);
+            document.getElementById('messages').appendChild(streamWrap);
+          }
+          tokenBuf += evt.text;
+          // Show raw tokens; markdown rendered after stream completes
+          streamBody.textContent = tokenBuf;
+          const msgs = document.getElementById('messages');
+          msgs.scrollTop = msgs.scrollHeight;
+        } else if (evt.type === 'done' || evt.type === 'complete') {
+          gotResult = true;
+          const result = evt.result;
+          // Re-render the streamed content as markdown
+          if (streamBody && result.response) {
+            streamBody.className = 'prose prose-invert text-sm text-slate-200 max-w-none';
+            streamBody.innerHTML = marked.parse(preprocessMarkdown(result.response));
+            streamBody.querySelectorAll('code.language-mermaid').forEach(el => {
+              const c = document.createElement('div');
+              c.className = 'mermaid my-2';
+              c.textContent = el.textContent;
+              el.closest('pre').replaceWith(c);
+            });
+            mermaid.run({ nodes: streamBody.querySelectorAll('.mermaid') });
+          }
+          const wrap = streamWrap || appendMessage('assistant', result.response || '', {});
+          _applyQueryResult(query, result, wrap);
+        } else if (evt.type === 'error') {
+          appendMessage('assistant', `**Error:** ${evt.message || 'Unknown error'}`);
+          gotResult = true;
+        }
+      }
+    }
+
+    if (!gotResult) {
+      // Stream closed without a done event — fall through to non-streaming below
+      throw new Error('stream ended without result');
+    }
+    setThinking(false);
+    return;
+
+  } catch (streamErr) {
+    // Stream failed or not supported — fall back to non-streaming /api/query
+    logger.debug?.('Streaming failed, falling back:', streamErr);
+  }
+
+  // ── Non-streaming fallback ────────────────────────────────────────────────
   let result;
   try {
     const r = await fetch('/api/query', {
@@ -795,25 +891,44 @@ async function submitQuery(query, extra = {}) {
   }
 
   const qtype = result.query_type || 'general';
+  const isClarify = qtype === 'clarification';
+  const candidates = result.candidates || [];
+
+  if (isClarify && candidates.length) {
+    renderClarification(result.response, candidates);
+    pendingClarification = { candidates };
+    document.getElementById('clarify-hint').classList.remove('hidden');
+    return;
+  }
+
+  const wrap = appendMessage('assistant', result.response, {
+    isClarify: false,
+    isPlan: qtype === 'plan' || qtype === 'plan_clarification',
+    isExecuted: qtype === 'plan_executed',
+  });
+  _applyQueryResult(query, result, wrap);
+}
+
+// ── Shared result post-processing (called by both streaming and non-streaming) ──
+function _applyQueryResult(query, result, wrap) {
+  const qtype = result.query_type || 'general';
   const routingAgentFromResult = result.routing_agent || qtype;
   const intent = result.intent || {};
   const isClarify = qtype === 'clarification';
   const isPlanQA = qtype === 'plan_clarification';
   const candidates = result.candidates || [];
 
-  // Track active draft ID — persisted to sessionStorage so editor navigation doesn't lose it
+  // Track active draft ID
   if (isPlanQA) {
     if (result.draft_id) {
       _activeDraftId = result.draft_id;
     } else {
-      // Phase is done or session cancelled
       _activeDraftId = null;
       loadDrafts();
     }
   } else if (qtype === 'plan') {
     _activeDraftId = null;
   } else if (qtype === 'plan_executed') {
-    // Keep canvas open so user can see what was executed; just clear the draft pointer
     _activeDraftId = null;
   }
   if (_activeDraftId) {
@@ -821,7 +936,8 @@ async function submitQuery(query, extra = {}) {
     PlanCanvas.open(_activeDraftId);
   } else {
     sessionStorage.removeItem('ea_active_draft');
-    PlanCanvas.close();
+    // Don't close canvas on plan_executed — user may want to see what was executed
+    if (qtype !== 'plan_executed') PlanCanvas.close();
   }
 
   // Badge
@@ -831,7 +947,7 @@ async function submitQuery(query, extra = {}) {
     badge.style.color = intent.color || '#64748b';
   }
 
-  // If disambiguation, render as buttons instead of plain markdown
+  // If disambiguation, render as buttons
   if (isClarify && candidates.length) {
     renderClarification(result.response, candidates);
     pendingClarification = { candidates };
@@ -842,14 +958,6 @@ async function submitQuery(query, extra = {}) {
   // Refresh plan sidebar after any plan lifecycle event
   if (qtype === 'plan' || qtype === 'plan_executed') loadPlans();
   if (isPlanQA) { loadDrafts(); if (_activeDraftId) PlanCanvas.refresh(_activeDraftId); }
-
-  // Normal response
-  const wrap = appendMessage('assistant', result.response, {
-    isClarify: false,
-    isPlan: qtype === 'plan' || isPlanQA,
-    isExecuted: qtype === 'plan_executed',
-    color: intent.color,
-  });
 
   // Plan Document banner — shown when the agent saved a new plan to inbox/
   if (qtype === 'plan' && result.doc_id) {

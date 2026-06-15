@@ -542,7 +542,11 @@ class RAGSystem:
                 result.setdefault("routing_agent", "governance_plan_agent")
                 return result
             except Exception as exc:
-                logger.warning(f"GovernancePlanAgent.execute failed ({exc}), continuing")
+                logger.error(f"GovernancePlanAgent.execute failed: {exc}", exc_info=True)
+                return _error_result(
+                    user_query,
+                    f"Plan execution failed: {exc}\n\nCheck the server logs for details.",
+                )
 
         # Handle plan queries: generate a full Governance Plan Document.
         if query_analysis['query_type'] == 'plan':

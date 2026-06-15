@@ -151,7 +151,7 @@
 <div class="flex flex-1 overflow-hidden">
 
   <!-- ── Sidebar ─────────────────────────────────────────────────────────── -->
-  <aside class="w-72 shrink-0 flex flex-col bg-slate-800 border-r border-slate-700 overflow-hidden">
+  <aside id="left-sidebar" class="flex flex-col bg-slate-800 border-r border-slate-700 overflow-hidden" style="flex:0 0 288px;min-width:160px">
 
     <!-- Top pane: Available Reports -->
     <div id="sidebar-reports" class="flex flex-col flex-1 sidebar-pane min-h-0">
@@ -189,6 +189,9 @@
       <div id="recent-queries" class="px-2 pb-2 flex flex-col gap-0.5 text-xs"></div>
     </div>
   </aside>
+
+  <!-- ── Left sidebar resize handle ────────────────────────────────────── -->
+  <div id="resize-sidebar-chat" class="resize-handle-v"></div>
 
   <!-- ── Chat panel ──────────────────────────────────────────────────────── -->
   <main class="flex flex-col flex-1 overflow-hidden">
@@ -272,7 +275,7 @@
     </div>
 
     <!-- Command cards -->
-    <div id="pcanvas-cards" class="flex-1 overflow-y-auto px-3 py-2 flex flex-col gap-2"></div>
+    <div id="pcanvas-cards" class="flex-1 min-h-0 overflow-y-auto px-3 py-2 flex flex-col gap-2"></div>
 
     <!-- Add step footer -->
     <div class="px-3 py-2 border-t border-slate-700 shrink-0 flex gap-2">
@@ -398,6 +401,7 @@ let _activeDraftId = sessionStorage.getItem('ea_active_draft') || null;
 
 // ── Init ───────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
+  initLeftSidebarResize();
   initSidebarResize();
   initCanvasResize();
   initCanvasButtons();
@@ -806,7 +810,10 @@ async function submitQuery(query, extra = {}) {
       _activeDraftId = null;
       loadDrafts();
     }
-  } else if (qtype === 'plan' || qtype === 'plan_executed') {
+  } else if (qtype === 'plan') {
+    _activeDraftId = null;
+  } else if (qtype === 'plan_executed') {
+    // Keep canvas open so user can see what was executed; just clear the draft pointer
     _activeDraftId = null;
   }
   if (_activeDraftId) {
@@ -1141,6 +1148,42 @@ function initSidebarResize() {
 
   document.getElementById('resize-reports-plans').addEventListener('mousedown', e => startDrag(e, document.getElementById('resize-reports-plans')));
   document.getElementById('resize-plans-recent').addEventListener('mousedown',  e => startDrag(e, document.getElementById('resize-plans-recent')));
+}
+
+// ── Left sidebar resize (horizontal, ew-resize) ────────────────────────────────
+function initLeftSidebarResize() {
+  const handle  = document.getElementById('resize-sidebar-chat');
+  const sidebar = document.getElementById('left-sidebar');
+  const wrapper = handle.closest('.flex');
+
+  const MIN_W  = 160;
+  const MAX_W  = 480;
+  const STOR_K = 'ea_sidebar_w';
+
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+  const saved = parseInt(localStorage.getItem(STOR_K));
+  if (!isNaN(saved)) sidebar.style.flexBasis = clamp(saved, MIN_W, MAX_W) + 'px';
+
+  handle.addEventListener('mousedown', e => {
+    e.preventDefault();
+    handle.classList.add('dragging');
+    const startX = e.clientX;
+    const startW = sidebar.getBoundingClientRect().width;
+
+    function onMove(ev) {
+      const newW = clamp(startW + (ev.clientX - startX), MIN_W, MAX_W);
+      sidebar.style.flexBasis = newW + 'px';
+    }
+    function onUp() {
+      handle.classList.remove('dragging');
+      localStorage.setItem(STOR_K, Math.round(sidebar.getBoundingClientRect().width));
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
+  });
 }
 
 // ── Canvas resize (horizontal, ew-resize) ──────────────────────────────────────

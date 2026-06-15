@@ -207,7 +207,11 @@ class DocumentManager:
         for line in content.splitlines():
             line = line.strip()
             if line.startswith("# "):
-                return line[2:].strip()
+                title = line[2:].strip()
+                # Strip legacy "Data Management Plan: " prefix from older documents
+                if title.lower().startswith("data management plan:"):
+                    title = title[len("data management plan:"):].strip()
+                return title
         return "(untitled)"
 
     @staticmethod

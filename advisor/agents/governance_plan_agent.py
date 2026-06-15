@@ -410,6 +410,10 @@ class GovernancePlanAgent:
 
         # Execute via Dr.Egeria MCP
         action_agent = DrEgeriaActionAgent()
+        logger.info(
+            f"GovernancePlanAgent.execute: sending {len(command_section)} chars to Dr.Egeria\n"
+            f"--- command section (first 400 chars) ---\n{command_section[:400]}\n---"
+        )
         try:
             execution_output = action_agent.execute(
                 command_section,
@@ -423,8 +427,12 @@ class GovernancePlanAgent:
                 f"Ensure Dr.Egeria is running, then try again.\n\nDetails: {exc}",
             )
         except Exception as exc:
-            execution_output = f"Execution error: {exc}"
-            logger.error(f"GovernancePlanAgent.execute: MCP call failed: {exc}")
+            execution_output = (
+                f"Execution error: {exc}\n\n"
+                f"This usually means the Egeria REST API returned an unexpected response. "
+                f"Check that Egeria is running at the configured URL and that credentials are valid."
+            )
+            logger.error(f"GovernancePlanAgent.execute: MCP call failed: {exc}", exc_info=True)
 
         if dry_run:
             return {
@@ -1499,7 +1507,7 @@ GOAL:"""
         creator = created_by or os.environ.get("USER") or os.environ.get("USERNAME") or "unknown"
 
         parts: List[str] = [
-            f"# Data Management Plan: {title}",
+            f"# {title}",
             f"**Created:** {now}   **Last edited:** {now}   **Status:** Draft",
             f"**Created by:** {creator}   **Perspective:** {perspective}",
             f"**Purpose:** {purpose}",

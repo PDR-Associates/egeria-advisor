@@ -2,9 +2,21 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Context for new conversations:** See `docs/PROJECT_SUMMARY.md` for a complete
+> phase history, capabilities overview, lessons learned, and next steps.
+> See `docs/literate-governance-plan.md` for full LGCI design documentation.
+
 ## Project Overview
 
 Egeria Advisor is a RAG (Retrieval-Augmented Generation) system providing intelligent assistance for [Egeria](https://egeria-project.org/) and pyegeria users. It uses local LLMs (Ollama), sentence-transformer embeddings, and a pgvector (PostgreSQL) vector store across 9 specialized collections (~88,900 entities total).
+
+**Current state (June 2026):** Phases 1–11 complete. Core RAG, multi-agent routing, Web UI with Plan Canvas, LGCI plan generation and execution are all operational. Primary active work: LGCI quality improvements and Egeria integration for planning.
+
+**Models in use:**
+- `llama3.1:8b` — RAG Q&A (speed)
+- `qwen2.5-coder:32b` — LGCI planning: narrative, refinement, complex extraction (quality)
+- `codellama:13b` — code generation
+- `sentence-transformers/all-MiniLM-L6-v2` — embeddings
 
 ## Setup
 
@@ -18,13 +30,17 @@ pip install -e ".[dev]"
 
 Requires Python 3.12+. External services must be running locally:
 - **pgvector** at `localhost:5442` (PostgreSQL with pgvector extension — database: `egeria_advisor`, user: `egeria_advisor`)
-- **Ollama** at `localhost:11434` (LLM inference — llama3.1:8b, codellama:13b)
+- **Ollama** at `localhost:11434` (LLM inference — pull `llama3.1:8b` and `qwen2.5-coder:32b`)
 - **MLflow** at `localhost:5025` (optional, for experiment tracking)
 
 ## Commands
 
 ```bash
-# Query (one-shot)
+# Start the web UI (primary interface)
+python -m advisor.web.app          # → http://localhost:8880
+# or: uvicorn advisor.web.app:app --reload --port 8880
+
+# Query (one-shot CLI)
 egeria-advisor "What is a glossary term in Egeria?"
 
 # Interactive multi-turn session
@@ -195,25 +211,39 @@ The `CollectionRouter` selects 1–N collections per query based on classified i
 The **Literate Governance with Context Intelligence (LGCI)** feature allows users to describe a governance task in plain language and receive a complete, executable Plan Document.
 
 **Key files:**
-- `advisor/agents/governance_plan_agent.py` — orchestrator: `_decompose_intent` (two-stage) → `_entities_to_commands` → validator → `_compose_document` → `execute()`
-- `advisor/agents/plan_elicitor.py` — multi-phase conversational Q&A (`confirm_commands` → `elicit_required` → `generate` → `refine` → `template_offer`)
-- `advisor/governance_draft.py` — `DraftManager`: persists in-progress sessions to `~/egeria-plans/drafts/`
+- `advisor/agents/governance_plan_agent.py` — orchestrator: `_decompose_intent` (two-stage + keyword index) → `_entities_to_commands` → validator → `_compose_document` → `execute()`
+- `advisor/agents/plan_elicitor.py` — multi-phase conversational Q&A (`confirm_commands` → `elicit_required` → `generate` → `refine` → `template_offer`); includes restart path ("completely wrong") and confidence-gated "Did you mean X?" suggestions
+- `advisor/governance_draft.py` — `DraftManager`: persists in-progress sessions to `~/egeria-plans/drafts/`; `builder_mode` flag for Plan Editor drafts
 - `advisor/governance_docs.py` — `DocumentManager`: inbox/outbox lifecycle for completed plans
 - `advisor/plan_templates.py` — `PlanTemplateManager`: save/load reusable `{{placeholder}}` templates
-- `advisor/action_catalog.py` — `ActionCatalog`: loads `config/dr_egeria_actions.yaml` (42 actions with ordering, supersedes, narrative templates)
+- `advisor/action_catalog.py` — `ActionCatalog`: loads `config/dr_egeria_actions.yaml` (55 actions across 10 families, with ordering, supersedes, narrative templates)
+- `advisor/command_keyword_index.py` — `CommandKeywordIndex`: all ~126 Dr.Egeria commands (55 catalogued + ~71 from template filesystem); 4-tier confidence scoring; used by `_infer_type_from_context()` and `/api/actions`
 - `advisor/plan_validator.py` — `validate_commands()`: deterministic post-processing rules applied after every decomposition
 - `advisor/session_logger.py` — `SessionLogger`: JSONL transcript per session to `~/egeria-plans/sessions/`
-- `advisor/web/static/artifact_canvas.js` — `ArtifactCanvas`: generic split-view canvas base
+- `advisor/egeria_context.py` — `EgeriaContext`: lazy-loaded pyegeria clients; actor profile lookup, governance zone listing, project/glossary existence check
+- `advisor/web/static/artifact_canvas.js` — `ArtifactCanvas`: generic split-view canvas base; `addItem()` opens command picker modal
 - `advisor/web/static/plan_canvas.js` — `PlanCanvas`: thin adapter over ArtifactCanvas (drag-reorder, add/remove, per-card narrative, field editing, Basic/Advanced toggle)
+
+**Dr.Egeria template library:** ~126 unique commands in 253 files (basic/advanced pairs) across 12 families. The action catalog covers 55 of these. The remaining ~71 are accessible via the Plan Editor (command picker modal uses `GET /api/actions` which scans the template filesystem). **Always check the actual template files for field names before adding catalog entries** — mismatches silently drop values at execution time.
 
 **Design rules:**
 13. **Sub-projects use `Create Project` with `Parent ID`** — never emit `Link Project Hierarchy`. The validator converts any `Link Project Hierarchy` commands to `Create Project` with `Parent ID` + `Parent Relationship Type Name = ProjectHierarchy`.
 14. **`validate_commands()` runs after every decomposition and after canvas additions** — deduplicate, remove superseded, clear self-referential/orphaned Parent IDs, insert missing containers, role-before-appointment, topological sort. Always call it; never skip. Warnings surface to the user as "Auto-corrected: …".
-15. **Two-stage decomposition** — `_decompose_intent` keeps the LLM away from command structure. Stage 1 extracts entities/roles (pattern-based `_extract_entities_patterns` first, LLM `_extract_entities_llm` fallback); Stage 2 `_entities_to_commands` maps entities → commands deterministically. Never ask the LLM to emit Dr.Egeria command JSON directly — local 8B models hallucinate example values and duplicate commands. Add new phrasings to the pattern library and new object types to the action catalog.
+15. **Two-stage decomposition** — `_decompose_intent` keeps the LLM away from command structure. Stage 1 extracts entities/roles (pattern-based `_extract_entities_patterns` first, LLM `_extract_entities_llm` fallback); Stage 2 `_entities_to_commands` maps entities → commands deterministically. Never ask the LLM to emit Dr.Egeria command JSON directly — local 8B models hallucinate example values and duplicate commands. Add new phrasings to the pattern library and new object types to the action catalog and keyword index.
 16. **Planning uses `get_planning_llm()` not `get_ollama_client()`** — returns a client pinned to `llm.models.planning` (`qwen2.5-coder:32b`) for narrative, refinement, answer parsing, and the LLM extraction fallback. RAG Q&A stays on `llama3.1:8b`.
 17. **Draft routing in `_process_query`** fires when `draft_id` is set in the request — all messages forwarded to `PlanElicitor.process()` regardless of intent. Navigation commands (`back`, `cancel`, `save and exit`) matched by regex before forwarding.
 18. **`plan_clarification` vs `plan` query types** — `plan_clarification` is the active Q&A phase (canvas shows nav buttons); `plan` means a document was saved to inbox; `plan_executed` means execution complete and plan moved to outbox.
 19. **The action catalog** (`config/dr_egeria_actions.yaml`) is the authoritative source for ordering priorities, supersedes relationships, container dependencies, and narrative templates. Update it when Dr.Egeria templates change — do not embed these rules in LLM prompts.
+20. **Interrogative routing guard** — `_is_interrogative()` in `rag_system.py` fires before any intent override is applied. Queries beginning with "what is", "how does", "explain", "define", "why", "who", "where", etc. are redirected to `explanation` intent regardless of the user's intent selector. Only active when no `draft_id` is set (draft-active queries go through PlanElicitor regardless).
+21. **Plan Editor (builder mode)** — `POST /api/drafts/builder` creates a blank draft with `builder_mode: True`. The command picker modal (opened by `addItem()`) fetches `GET /api/actions` which returns all ~126 commands grouped by family from `CommandKeywordIndex.all_commands()`. The `builder_mode` flag is stored in the draft but not yet read by `_process_query` to reroute chat queries — that is the next planned implementation step.
+
+22. **Execute-in-chat intercept** — in `rag_system._process_query`, before forwarding to `PlanElicitor.continue_draft()`, detect execute-intent words ("execute", "run the plan", "go ahead", "do it", "execute it", "run it"). Load the draft spec to get `doc_id`, then call `GovernancePlanAgent.execute(doc_id)` directly. This prevents "execute" from being treated as a plan modification instruction which would corrupt/truncate the plan.
+
+23. **Outbox plan structure** — after execution the outbox plan contains three appended sections in order: (a) `## Outcome` — structured outcome with status, narrative, error tables, Command Results table (GUID + QN + message), filtered Execution Results (Mermaid diagrams and report tables extracted by `_extract_report_sections`), Verification Reports; (b) `## Dr.Egeria Execution Output` — full raw augmented plan markdown in a `<details>` collapsible, always preserved, contains View Report output and Mermaid diagrams. The Plan Editor `<details toggle>` listener re-runs Mermaid when the section is expanded.
+
+24. **`commands_detail` in MCP response** — `_build_structured_response` in `mcp_server.py` emits a `commands_detail` list alongside `validation_errors`/`execution_errors`. Each entry: `{step, command, status, guid, qualified_name, display_name, message}`. `OutcomeReporter.generate()` uses it directly when available. When `guid` is empty (auto-derived QN), the GUID is parsed from the processor's message string `"Executed Verb Object (GUID: …)"` via `_GUID_IN_MSG_RE`.
+
+25. **`_ACTION_TO_EGERIA_TYPE` completeness** — every `Create X` command that makes a new Egeria element must be in this dict so `_make_cmd()` auto-generates Qualified Name. Currently missing entries are the commonest source of empty QN in Command Results. When adding a new Create command to the action catalog, always add the corresponding entry here. Current gaps known: none for commands in catalog as of Jun 15 2026 — `PersonRole`, `Community`, `ActorProfile`, `UserIdentity` added.
 
 ### Data Pipeline (`advisor/data_prep/`)
 

@@ -11,7 +11,7 @@
 
 const _planAdapter = {
   async fetch(draftId) {
-    const r = await fetch(`/api/drafts/${encodeURIComponent(draftId)}`);
+    const r = await fetch(`/api/drafts/${encodeURIComponent(draftId)}`, { headers: Auth.getHeaders() });
     if (!r.ok) throw new Error(`draft ${draftId} not found`);
     const spec = await r.json();
     // Normalise to ArtifactCanvas shape
@@ -25,7 +25,7 @@ const _planAdapter = {
   async patch(draftId, items) {
     await fetch(`/api/drafts/${encodeURIComponent(draftId)}/commands`, {
       method:  'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
       body:    JSON.stringify({ commands: items }),
     });
   },
@@ -71,6 +71,17 @@ const _planItemAdapter = {
       placeholders: {},
     };
   },
+  makeNote() {
+    return {
+      action:       '_note',
+      display_name: '',
+      description:  '',
+      rationale:    '',
+      narrative:    '',
+      pre_filled:   {},
+      placeholders: {},
+    };
+  },
 };
 
 // ── PlanCanvas singleton ──────────────────────────────────────────────────────
@@ -90,14 +101,12 @@ const PlanCanvas = (() => {
       adapter:      _planAdapter,
       itemAdapter:  _planItemAdapter,
       onRender(data) {
-        // Show Execute button when plan document has been generated
-        const execBtn = document.getElementById('pcanvas-execute-btn');
-        if (execBtn) {
-          const docId = data?.meta?.doc_id;
-          execBtn.classList.toggle('hidden', !docId);
-          const titleEl = document.getElementById('pcanvas-title');
-          if (titleEl) titleEl.dataset.docId = docId || '';
-        }
+        // Show Validate + Execute buttons when plan document has been generated
+        const docId = data?.meta?.doc_id;
+        const titleEl = document.getElementById('pcanvas-title');
+        if (titleEl) titleEl.dataset.docId = docId || '';
+        document.getElementById('pcanvas-validate-btn')?.classList.toggle('hidden', !docId);
+        document.getElementById('pcanvas-execute-btn')?.classList.toggle('hidden', !docId);
       },
     });
     return _canvas;
@@ -121,9 +130,20 @@ const PlanCanvas = (() => {
     await _ensureCanvas().addItem();
   }
 
+  async function addNote() {
+    const canvas = _ensureCanvas();
+    const note = _planItemAdapter.makeNote();
+    canvas._items.push(note);
+    await canvas._sync();
+    canvas._render();
+    // Scroll to the new note card
+    const cardsEl = document.getElementById('pcanvas-cards');
+    if (cardsEl) setTimeout(() => cardsEl.scrollTop = cardsEl.scrollHeight, 50);
+  }
+
   function toggleMode() {
     _ensureCanvas().toggleMode();
   }
 
-  return { open, close, refresh, addStep, toggleMode };
+  return { open, close, refresh, addStep, addNote, toggleMode };
 })();

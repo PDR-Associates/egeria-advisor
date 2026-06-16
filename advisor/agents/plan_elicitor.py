@@ -28,9 +28,10 @@ from advisor.governance_draft import DraftManager, get_draft_manager
 from advisor.plan_templates import get_template_manager
 
 # Navigation button sets per phase
-_NAV_FIRST  = ["save_exit", "cancel"]          # first step — no Back
-_NAV_MIDDLE = ["back", "save_exit", "cancel"]  # mid-flow
-_NAV_FINAL  = ["back", "cancel"]               # last step — no Save & Exit (plan already in inbox)
+_NAV_FIRST   = ["save_exit", "cancel"]                               # first step — no Back
+_NAV_MIDDLE  = ["back", "save_exit", "cancel"]                       # mid-flow
+_NAV_FINAL   = ["back", "cancel"]                                    # last step
+_NAV_CONFIRM = ["generate_now", "completely_wrong", "save_exit", "cancel"]  # confirm_commands step
 
 _PHASE_LABELS = {
     "confirm_commands": "Confirming plan steps",
@@ -77,6 +78,8 @@ class PlanElicitor:
 
         # --- Decompose intent ------------------------------------------
         _val_warnings: List[str] = []
+        _keyword_suggestions: List[dict] = []
+        _auto_appended: List[str] = []
         if template_name:
             commands = get_template_manager().template_to_commands(template_name)
             title = template_name
@@ -86,12 +89,15 @@ class PlanElicitor:
             title = decomp.get("title", query[:50])
             purpose = decomp.get("purpose", query)
             _val_warnings = decomp.get("validator_warnings") or []
+            _keyword_suggestions = decomp.get("keyword_suggestions") or []
             from advisor.action_catalog import get_action_catalog
             catalog = get_action_catalog()
+            _auto_appended = decomp.get("auto_appended") or []
             commands = [
                 {
                     "action":       c.get("action", ""),
                     "display_name": c.get("display_name", ""),
+                    "_answers_key": c.get("_answers_key", ""),
                     "description":  c.get("description", ""),
                     "rationale":    c.get("rationale", ""),
                     # narrative: prefer LLM-generated, fall back to catalog template
@@ -99,7 +105,9 @@ class PlanElicitor:
                         c.get("narrative", "")
                         or catalog.narrative_template(c.get("action", ""))
                     ),
-                    "pre_filled":   dict(c.get("params") or {}),
+                    # pre_filled from _make_cmd (keyed "pre_filled"); fall back to
+                    # legacy "params" key for any older code paths
+                    "pre_filled":   dict(c.get("pre_filled") or c.get("params") or {}),
                     "placeholders": {},
                 }
                 for c in decomp.get("commands", [])
@@ -123,11 +131,14 @@ class PlanElicitor:
                 cmd["pre_filled"]["Display Name"] = cmd["display_name"]
 
         # Build initial answers from pre_filled (pending_questions deferred
-        # until after the user confirms the command set)
+        # until after the user confirms the command set).
+        # Use _answers_key (action:display_name) when present so multiple commands
+        # of the same action type each get their own slot in the answers dict.
         answers: Dict[str, Dict[str, str]] = {}
         for cmd in commands:
             if cmd["pre_filled"]:
-                answers[cmd["action"]] = dict(cmd["pre_filled"])
+                key = cmd.get("_answers_key") or cmd["action"]
+                answers[key] = dict(cmd["pre_filled"])
 
         dm = get_draft_manager()
         spec = dm.create(
@@ -163,11 +174,23 @@ class PlanElicitor:
         except Exception:
             pass
 
-        # Surface any auto-corrections made by the validator
-        init_note = None
+        # Surface auto-corrections, auto-appended steps, and keyword suggestions
+        init_note_parts: list[str] = []
         if _val_warnings:
-            init_note = "Auto-corrected: " + "; ".join(_val_warnings)
+            init_note_parts.append("Auto-corrected: " + "; ".join(_val_warnings))
+        for note in _auto_appended:
+            init_note_parts.append(f"ℹ️ {note}")
+        if _keyword_suggestions:
+            for s in _keyword_suggestions:
+                init_note_parts.append(
+                    f"⚠️ I interpreted **\"{s['phrase']}\"** as "
+                    f"**{s['suggested_command']}** — if that's not right, "
+                    f"say *\"change it to [command name]\"* or describe what you meant."
+                )
+        # Store suggestions in spec so re-shown if user loops back
+        spec["keyword_suggestions"] = _keyword_suggestions
 
+        init_note = "\n\n".join(init_note_parts) if init_note_parts else None
         return self._build_confirm_commands_response(spec, note=init_note)
 
     # ------------------------------------------------------------------
@@ -420,6 +443,31 @@ class PlanElicitor:
                     ),
                 )
 
+        # "Completely wrong" — user wants to describe their intent from scratch
+        restart_signals = (
+            "completely wrong", "totally wrong", "not what i wanted",
+            "not what i asked", "all wrong", "got it wrong", "missed the point",
+            "that's not what i", "that is not what i", "misunderstood",
+            "start over", "start again", "redo this", "try again",
+            "nothing like what", "nothing like i asked",
+        )
+        if any(w in low for w in restart_signals):
+            dm.push_history(spec)
+            spec["phase"] = "confirm_commands"
+            spec["commands_identified"] = []
+            spec["answers"] = {}
+            dm.save(spec)
+            return _clarification_result(
+                spec,
+                "No problem — let's start fresh. "
+                "Describe what you want to accomplish and I'll build a new plan.\n\n"
+                "For example: *\"Create a campaign called X with sub-projects for A, B, C, "
+                "led by [name] as project leader\"*",
+                phase_override="confirm_commands",
+                can_go_back=True,
+                nav=["back", "cancel"],
+            )
+
         correction_signals = (
             "that's wrong", "that is wrong", "incorrect", "not right",
             "shouldn't have", "should not have", "didn't ask", "i didn't ask",
@@ -432,7 +480,8 @@ class PlanElicitor:
                     "Which step is wrong? You can:\n"
                     "- Say **\"remove step N\"** to delete a specific step\n"
                     "- Say **\"remove the [command name]\"** to remove by name\n"
-                    "- Describe what should change instead"
+                    "- Describe what should change instead\n"
+                    "- Say **\"completely wrong\"** to describe your intent from scratch"
                 ),
             )
 
@@ -469,17 +518,17 @@ class PlanElicitor:
             for c in new_decomp.get("commands", []):
                 if not c.get("action"):
                     continue
-                pre_filled = dict(c.get("params") or {})
                 new_commands.append({
                     "action":       c["action"],
                     "display_name": c.get("display_name", ""),
+                    "_answers_key": c.get("_answers_key", ""),
                     "description":  c.get("description", ""),
                     "rationale":    c.get("rationale", ""),
                     "narrative":    (
                         c.get("narrative", "")
                         or catalog.narrative_template(c["action"])
                     ),
-                    "pre_filled":   pre_filled,
+                    "pre_filled":   dict(c.get("pre_filled") or c.get("params") or {}),
                     "placeholders": {},
                 })
 
@@ -715,6 +764,26 @@ class PlanElicitor:
             dm.save(spec)
             return self._build_template_offer_response(spec)
 
+        # Guard: if the request looks like a single-word command or an affirmation
+        # with no structural change verb, don't send it to the LLM — it would
+        # interpret "execute" / "run" / "go" as modification instructions and
+        # produce a truncated, corrupted plan document.
+        _CHANGE_VERBS = ("add", "remove", "delete", "change", "update", "rename",
+                         "replace", "move", "insert", "modify", "set", "create",
+                         "put", "make", "use", "include", "exclude", "link")
+        words = low.split()
+        has_change_verb = any(w in _CHANGE_VERBS for w in words)
+        if not has_change_verb and len(words) <= 4:
+            return _clarification_result(
+                spec,
+                "I didn't recognise that as a plan change. Describe what you'd like "
+                "to change — for example: *\"Rename the blueprint to X\"* or "
+                "*\"Add a component for data quality\"*.\n\n"
+                "Use **Validate** or **Execute** on the canvas when you're ready to proceed.",
+                can_go_back=False, nav=[],
+                extra={"doc_id": doc_id},
+            )
+
         # Use LLM to apply the change
         llm = get_planning_llm()
         updated_content = self._apply_change(current_content, user_response, llm)
@@ -727,12 +796,10 @@ class PlanElicitor:
             nc = len(re.findall(r"^## [^#]", updated_content, re.MULTILINE))
             return _clarification_result(
                 spec,
-                f"Done — I've updated the plan. Here's the revised version:\n\n"
-                f"---\n\n{updated_content}\n\n---\n\n"
-                f"Any other changes? Or say **\"looks good\"** to proceed.\n\n"
-                f"You can also **open the editor** to make changes directly.",
-                can_go_back=True,
-                nav=_NAV_FINAL,
+                "Done — the canvas has been updated. Describe another change, "
+                "or use **Validate** / **Execute** on the canvas when ready.",
+                can_go_back=False,
+                nav=[],
                 extra={"doc_id": doc_id},
             )
         else:
@@ -740,10 +807,9 @@ class PlanElicitor:
                 spec,
                 "I wasn't able to identify a specific change from that — could you be more specific?\n\n"
                 "For example: *\"Change the glossary name to Finance Terminology\"* or "
-                "*\"Add a sub-project called Data Quality\"*.\n\n"
-                "Or say **\"looks good\"** if you're happy with the plan as-is.",
-                can_go_back=True,
-                nav=_NAV_FINAL,
+                "*\"Add a sub-project called Data Quality\"*.",
+                can_go_back=False,
+                nav=[],
                 extra={"doc_id": doc_id},
             )
 
@@ -920,14 +986,15 @@ class PlanElicitor:
             "- Say **\"yes\"** or **\"continue\"** to fill in any missing details\n"
             "- Say **\"generate now\"** to create the plan immediately (missing fields become placeholders)\n"
             "- Describe anything to **add**: *\"also create a sub-project for data collection\"*\n"
-            "- Describe anything to **remove**: *\"remove the governance zone\"*"
+            "- Describe anything to **remove**: *\"remove the governance zone\"*\n"
+            "- Say **\"completely wrong\"** to describe your intent from scratch"
         )
 
         return _clarification_result(
             spec, "\n".join(lines),
             phase_override="confirm_commands",
             can_go_back=bool(spec.get("history_stack")),
-            nav=_NAV_FIRST,
+            nav=_NAV_CONFIRM,
         )
 
     def _build_elicit_required_response(self, spec: Dict, partial: bool = False) -> Dict[str, Any]:
@@ -1013,20 +1080,16 @@ class PlanElicitor:
             doc_content = get_doc_manager().load(doc_id) or ""
 
         nc = len(re.findall(r"^<!-- Step \d+", doc_content, re.MULTILINE))
-        lines = [
-            f"I've created your plan: **{spec['title']}**\n",
-            f"Saved as `{doc_id}.md` in your inbox ({nc} command{'s' if nc != 1 else ''}).\n",
-            "---\n",
-            doc_content,
-            "\n---\n",
-            "**What would you like to do?**\n",
-            "- Say what you'd like to change (e.g. *\"Change the project name to X\"*, *\"Add a sub-project for Data Quality\"*)",
-            "- Or **open the editor** to make changes directly",
-            "- Say **\"looks good\"** when you're happy and ready to proceed",
-        ]
+        msg = (
+            f"Plan ready: **{spec['title']}** — {nc} command{'s' if nc != 1 else ''}, "
+            f"saved to Inbox as `{doc_id}.md`.\n\n"
+            "Review and edit commands in the canvas on the right, then use "
+            "**Validate** or **Execute** when ready.\n\n"
+            "*Describe any changes here and I'll update the plan.*"
+        )
         return _clarification_result(
-            spec, "\n".join(lines),
-            can_go_back=True, nav=_NAV_FINAL,
+            spec, msg,
+            can_go_back=False, nav=[],
             extra={"doc_id": doc_id, "query_type_override": "plan"},
         )
 
@@ -1224,17 +1287,25 @@ class PlanElicitor:
 
     def _apply_change(self, doc_content: str, change_request: str, llm) -> str:
         """Use the LLM to apply a natural-language change to a plan document."""
+        # Output budget must be at least as large as the input document to avoid
+        # truncation.  Add 20% headroom for structural changes, cap at model max.
+        input_chars = len(doc_content)
+        # Rough char→token ratio ~3.5; ask for input_len/3 tokens with 20% headroom
+        output_tokens = max(4000, int(input_chars / 3.5 * 1.2))
+        output_tokens = min(output_tokens, 16000)  # stay within typical model ctx
+
         prompt = (
             f"You are editing a Dr.Egeria governance plan document.\n"
             f"Apply the following change to the document:\n\n"
             f"Change request: \"{change_request}\"\n\n"
-            f"Current document:\n```markdown\n{doc_content[:4000]}\n```\n\n"
+            f"Current document:\n```markdown\n{doc_content}\n```\n\n"
             f"Return ONLY the complete updated document (no commentary, no code fences).\n"
-            f"Preserve all existing structure. Only change what was requested.\n"
+            f"Preserve all existing sections and commands. Only change what was requested.\n"
+            f"IMPORTANT: output the entire document — do not truncate or summarise.\n"
             f"Updated document:"
         )
         try:
-            updated = llm.generate(prompt, temperature=0.1, max_tokens=4000)
+            updated = llm.generate(prompt, temperature=0.1, max_tokens=output_tokens)
             # Strip accidental code fences
             updated = re.sub(r"^```(?:markdown)?\n?", "", updated.strip())
             updated = re.sub(r"\n?```$", "", updated.strip())

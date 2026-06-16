@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Egeria Advisor</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/static/auth.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
   <script>mermaid.initialize({ startOnLoad: false, theme: 'dark' });</script>
@@ -132,6 +133,17 @@
     </label>
     <span>·</span>
     <span>Enter=send &nbsp; Shift+Enter=newline</span>
+    <span>·</span>
+    <span id="current-user" class="hidden text-cyan-400 font-medium"></span>
+    <button id="logout-btn"
+      class="hidden px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors">
+      Sign out
+    </button>
+    <button id="login-header-btn"
+      onclick="Auth.showLogin()"
+      class="hidden px-2 py-0.5 rounded bg-cyan-800 hover:bg-cyan-700 text-cyan-100 transition-colors">
+      Sign in
+    </button>
   </div>
 </header>
 
@@ -139,7 +151,7 @@
 <div class="flex flex-1 overflow-hidden">
 
   <!-- ── Sidebar ─────────────────────────────────────────────────────────── -->
-  <aside class="w-72 shrink-0 flex flex-col bg-slate-800 border-r border-slate-700 overflow-hidden">
+  <aside id="left-sidebar" class="flex flex-col bg-slate-800 border-r border-slate-700 overflow-hidden" style="flex:0 0 288px;min-width:160px">
 
     <!-- Top pane: Available Reports -->
     <div id="sidebar-reports" class="flex flex-col flex-1 sidebar-pane min-h-0">
@@ -156,7 +168,10 @@
     <div id="sidebar-plans" class="flex flex-col sidebar-pane shrink-0">
       <div class="px-3 pt-2 pb-1 shrink-0 flex items-center justify-between">
         <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Plans</span>
-        <button onclick="loadPlans();loadDrafts();" class="text-xs text-slate-600 hover:text-slate-400 transition-colors" title="Refresh plans and drafts">↺</button>
+        <div class="flex items-center gap-2">
+          <button onclick="openBuilderModal()" class="text-xs text-violet-400 hover:text-violet-200 transition-colors font-medium" title="New Plan (Builder) — browse and select Dr.Egeria commands directly">+ Builder</button>
+          <button onclick="loadPlans();loadDrafts();" class="text-xs text-slate-600 hover:text-slate-400 transition-colors" title="Refresh plans and drafts">↺</button>
+        </div>
       </div>
       <!-- Active drafts sub-section -->
       <div id="draft-list-section" class="px-2 pb-1 flex flex-col gap-0.5 text-xs"></div>
@@ -174,6 +189,9 @@
       <div id="recent-queries" class="px-2 pb-2 flex flex-col gap-0.5 text-xs"></div>
     </div>
   </aside>
+
+  <!-- ── Left sidebar resize handle ────────────────────────────────────── -->
+  <div id="resize-sidebar-chat" class="resize-handle-v"></div>
 
   <!-- ── Chat panel ──────────────────────────────────────────────────────── -->
   <main class="flex flex-col flex-1 overflow-hidden">
@@ -249,6 +267,9 @@
       <button id="pcanvas-generate-btn"
         class="px-2 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition-colors"
         title="Generate full Plan Document">Generate Plan</button>
+      <button id="pcanvas-validate-btn"
+        class="hidden px-2 py-1 rounded bg-sky-800 hover:bg-sky-700 text-white text-xs font-semibold transition-colors"
+        title="Validate the plan without executing it">✓ Validate</button>
       <button id="pcanvas-execute-btn"
         class="hidden px-2 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold transition-colors"
         title="Execute the approved plan">▶ Execute</button>
@@ -257,18 +278,61 @@
     </div>
 
     <!-- Command cards -->
-    <div id="pcanvas-cards" class="flex-1 overflow-y-auto px-3 py-2 flex flex-col gap-2"></div>
+    <div id="pcanvas-cards" class="flex-1 min-h-0 overflow-y-auto px-3 py-2 flex flex-col gap-2"></div>
 
     <!-- Add step footer -->
-    <div class="px-3 py-2 border-t border-slate-700 shrink-0">
+    <div class="px-3 py-2 border-t border-slate-700 shrink-0 flex gap-2">
       <button onclick="PlanCanvas.addStep()"
-        class="w-full text-xs text-slate-500 hover:text-violet-300 border border-dashed border-slate-700
+        class="flex-1 text-xs text-slate-500 hover:text-violet-300 border border-dashed border-slate-700
                hover:border-violet-500/50 rounded py-1.5 transition-colors">
         + Add step
+      </button>
+      <button onclick="PlanCanvas.addNote()"
+        class="flex-1 text-xs text-slate-500 hover:text-amber-300 border border-dashed border-slate-700
+               hover:border-amber-500/50 rounded py-1.5 transition-colors"
+        title="Insert a free-form text note between steps">
+        📝 Add note
       </button>
     </div>
   </section>
 
+</div>
+
+<!-- ── Builder: New Plan title modal ──────────────────────────────────────── -->
+<div id="builder-title-modal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50" onclick="if(event.target===this)closeBuilderModal()">
+  <div class="bg-slate-800 border border-slate-600 rounded-xl p-5 w-96 shadow-2xl">
+    <h3 class="text-sm font-semibold text-slate-200 mb-3">New Plan (Builder)</h3>
+    <p class="text-xs text-slate-400 mb-3">Give your plan a title, then browse and add Dr.Egeria commands directly from the canvas.</p>
+    <input id="builder-title-input" type="text" placeholder="e.g. Sales Forecasting Architecture"
+      class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-slate-200
+             focus:outline-none focus:border-violet-500 mb-4"
+      onkeydown="if(event.key==='Enter')createBuilderPlan()" />
+    <div class="flex gap-2 justify-end">
+      <button onclick="closeBuilderModal()" class="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>
+      <button onclick="createBuilderPlan()" class="px-4 py-1.5 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition-colors">Create Plan</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Command picker modal ────────────────────────────────────────────────── -->
+<div id="cmd-picker-modal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50" onclick="if(event.target===this)closeCmdPicker()">
+  <div class="bg-slate-800 border border-slate-600 rounded-xl shadow-2xl flex flex-col" style="width:680px;max-height:80vh">
+    <!-- Header -->
+    <div class="px-4 pt-4 pb-3 border-b border-slate-700 shrink-0">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-sm font-semibold text-slate-200">Add Command</h3>
+        <button onclick="closeCmdPicker()" class="text-slate-500 hover:text-slate-200 text-sm transition-colors">✕</button>
+      </div>
+      <input id="cmd-picker-search" type="text" placeholder="Search commands…"
+        class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-xs text-slate-200
+               focus:outline-none focus:border-violet-500 transition-colors"
+        oninput="filterCmdPicker(this.value)" />
+    </div>
+    <!-- Family tabs -->
+    <div id="cmd-picker-tabs" class="flex gap-1 px-4 pt-2 pb-1 flex-wrap shrink-0 border-b border-slate-700/50"></div>
+    <!-- Command list -->
+    <div id="cmd-picker-list" class="flex-1 overflow-y-auto px-3 py-2 flex flex-col gap-1"></div>
+  </div>
 </div>
 
 <!-- ── Search-string modal ─────────────────────────────────────────────────── -->
@@ -283,6 +347,20 @@
     <input id="search-string-input" type="text" placeholder="e.g. finance  or  *"
       class="w-full bg-slate-700 text-slate-100 rounded-lg px-3 py-1.5 text-sm
              border border-slate-600 focus:outline-none focus:border-cyan-500 mb-3">
+    <label class="text-xs text-slate-400 block mb-1">
+      Output format
+      <span class="text-slate-600 ml-1">(how to render the results)</span>
+    </label>
+    <select id="output-format-select"
+      class="w-full bg-slate-700 text-slate-100 rounded-lg px-3 py-1.5 text-sm
+             border border-slate-600 focus:outline-none focus:border-cyan-500 mb-3">
+      <option value="LIST">LIST — concise summary list (default)</option>
+      <option value="TABLE">TABLE — structured data table</option>
+      <option value="MERMAID">MERMAID — diagram / mind map</option>
+      <option value="MD">MD — full Markdown narrative report</option>
+      <option value="JSON">JSON — raw JSON</option>
+      <option value="DICT">DICT — property dictionary</option>
+    </select>
     <label class="text-xs text-slate-400 block mb-1">
       Max results
       <span class="text-slate-600 ml-1">(limits graph nodes queried; default 100)</span>
@@ -326,30 +404,37 @@ let _activeDraftId = sessionStorage.getItem('ea_active_draft') || null;
 
 // ── Init ───────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  loadStatus();
-  loadReports();
-  loadPlans();
-  loadDrafts();
-  loadPerspectives();
-  renderRecent();
+  initLeftSidebarResize();
   initSidebarResize();
   initCanvasResize();
   initCanvasButtons();
-  if (_activeDraftId) PlanCanvas.open(_activeDraftId);
-  appendMessage('assistant',
-    'Welcome to **Egeria Advisor**.\n\n' +
-    'Ask me about Egeria concepts, how to use pyegeria or Dr.Egeria, run a report to see live metadata, or ask me to create/update something.'
-  );
+
   const inp = document.getElementById('query-input');
   inp.addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendQuery(); }
+  });
+
+  // Auth.init fires onReady once the user is authenticated (or immediately if
+  // anonymous_rag_mode allows skipping login — the backend controls that).
+  Auth.init(() => {
+    loadStatus();
+    loadReports();
+    loadPlans();
+    loadDrafts();
+    loadPerspectives();
+    renderRecent();
+    if (_activeDraftId) PlanCanvas.open(_activeDraftId);
+    appendMessage('assistant',
+      'Welcome to **Egeria Advisor**.\n\n' +
+      'Ask me about Egeria concepts, how to use pyegeria or Dr.Egeria, run a report to see live metadata, or ask me to create/update something.'
+    );
   });
 });
 
 // ── Status dot ─────────────────────────────────────────────────────────────────
 async function loadStatus() {
   try {
-    const r = await fetch('/api/status');
+    const r = await fetch('/api/status', { headers: Auth.getHeaders() });
     const data = await r.json();
     const dot = document.getElementById('status-dot');
     const enabled = (data.mcp_servers || []).filter(s => s.enabled).length;
@@ -363,7 +448,7 @@ async function loadStatus() {
 // ── Report catalog ─────────────────────────────────────────────────────────────
 async function loadReports() {
   const dre = document.getElementById('dre-toggle').checked;
-  const r = await fetch(`/api/reports?include_dre=${dre}`);
+  const r = await fetch(`/api/reports?include_dre=${dre}`, { headers: Auth.getHeaders() });
   const data = await r.json();
   document.getElementById('report-count').textContent = `${data.total}`;
   const el = document.getElementById('report-catalog');
@@ -397,6 +482,7 @@ function runReport(name) {
   document.getElementById('modal-report-name').textContent = name;
   document.getElementById('search-string-input').value = '';
   document.getElementById('page-size-input').value = '';
+  document.getElementById('output-format-select').value = 'LIST';
   document.getElementById('search-modal').classList.remove('hidden');
   setTimeout(() => document.getElementById('search-string-input').focus(), 50);
 }
@@ -411,11 +497,15 @@ function confirmRunReport() {
   const filter = document.getElementById('search-string-input').value.trim();
   const pageSizeRaw = document.getElementById('page-size-input').value.trim();
   const pageSize = pageSizeRaw ? parseInt(pageSizeRaw, 10) : null;
+  const outputFmt = document.getElementById('output-format-select').value || 'LIST';
   closeSearchModal();
   if (!name) return;
-  const label = filter ? `Run report: **${name}** — filter: *${filter}*` : `Run report: **${name}**`;
+  const fmtLabel = outputFmt !== 'LIST' ? ` (${outputFmt})` : '';
+  const label = filter
+    ? `Run report: **${name}** — filter: *${filter}*${fmtLabel}`
+    : `Run report: **${name}**${fmtLabel}`;
   appendMessage('you', label);
-  const extra = { search_string: filter || null, intent_override: 'report' };
+  const extra = { search_string: filter || null, intent_override: 'report', output_format: outputFmt };
   if (pageSize && pageSize > 0) extra.page_size = pageSize;
   submitQuery(`run report ${name}`, extra);
 }
@@ -464,7 +554,7 @@ function pushRecent(q) {
 async function loadPerspectives() {
   let data;
   try {
-    const r = await fetch('/api/perspectives');
+    const r = await fetch('/api/perspectives', { headers: Auth.getHeaders() });
     data = await r.json();
   } catch { return; }
 
@@ -492,7 +582,7 @@ async function loadPerspectives() {
 async function loadPlans() {
   let data;
   try {
-    const r = await fetch('/api/plans');
+    const r = await fetch('/api/plans', { headers: Auth.getHeaders() });
     data = await r.json();
   } catch { return; }
   const el = document.getElementById('plan-list');
@@ -530,7 +620,50 @@ async function loadPlans() {
           submitQuery(`execute the plan ${plan.doc_id}`, {});
         };
         row.appendChild(execBtn);
+      } else {
+        const retryBtn = document.createElement('button');
+        retryBtn.className = 'shrink-0 px-1.5 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs transition-colors';
+        retryBtn.title = 'Re-run or edit this plan';
+        retryBtn.textContent = '↺';
+        retryBtn.onclick = async e => {
+          e.stopPropagation();
+          if (!confirm(`Move "${plan.title || plan.doc_id}" back to Inbox to edit and re-run?`)) return;
+          retryBtn.disabled = true; retryBtn.textContent = '…';
+          try {
+            const r = await fetch(`/api/plans/${encodeURIComponent(plan.doc_id)}/recover`, { method: 'POST', headers: Auth.getHeaders() });
+            if (!r.ok) {
+              const err = await r.json().catch(() => ({}));
+              throw new Error(err.detail || `Server error ${r.status}`);
+            }
+            await loadPlans();
+            openPlanEditor(plan.doc_id, null);
+          } catch (err) {
+            alert(`Could not recover plan: ${err.message}`);
+            retryBtn.disabled = false; retryBtn.textContent = '↺';
+          }
+        };
+        row.appendChild(retryBtn);
       }
+      // Delete button — both inbox and outbox
+      const delBtn = document.createElement('button');
+      delBtn.className = 'shrink-0 px-1 py-0.5 rounded text-slate-600 hover:text-red-400 hover:bg-red-950/40 text-xs transition-colors';
+      delBtn.title = 'Delete this plan (a version backup is saved first)';
+      delBtn.textContent = '×';
+      delBtn.onclick = async e => {
+        e.stopPropagation();
+        const label = plan.title && plan.title !== '(untitled)' ? plan.title : plan.doc_id;
+        if (!confirm(`Delete "${label}"?\n\nA backup version will be saved first.`)) return;
+        delBtn.disabled = true;
+        try {
+          await fetch(`/api/plans/${encodeURIComponent(plan.doc_id)}`, {
+            method: 'DELETE', headers: Auth.getHeaders(),
+          });
+          loadPlans();
+        } catch (err) {
+          delBtn.disabled = false;
+        }
+      };
+      row.appendChild(delBtn);
       el.appendChild(row);
     });
   };
@@ -540,7 +673,7 @@ async function loadPlans() {
 
 async function restorePlan(doc_id, folder, title) {
   // Check if there's an active draft for this plan and pass it along
-  const plans = await fetch('/api/plans').then(r => r.json()).catch(() => ({}));
+  const plans = await fetch('/api/plans', { headers: Auth.getHeaders() }).then(r => r.json()).catch(() => ({}));
   const entry = (plans.inbox || []).find(p => p.doc_id === doc_id);
   openPlanEditor(doc_id, entry?.draft_id || null);
 }
@@ -570,7 +703,7 @@ function discussPlanChanges() {
 async function loadDrafts() {
   let data;
   try {
-    const r = await fetch('/api/drafts');
+    const r = await fetch('/api/drafts', { headers: Auth.getHeaders() });
     data = await r.json();
   } catch { return; }
   const el = document.getElementById('draft-list-section');
@@ -622,7 +755,7 @@ async function loadDrafts() {
         _activeDraftId = null;
         sessionStorage.removeItem('ea_active_draft');
       }
-      await fetch(`/api/drafts/${d.draft_id}`, { method: 'DELETE' }).catch(() => {});
+      await fetch(`/api/drafts/${d.draft_id}`, { method: 'DELETE', headers: Auth.getHeaders() }).catch(() => {});
       loadDrafts();
     };
     row.appendChild(del);
@@ -690,13 +823,110 @@ async function submitQuery(query, extra = {}) {
     ...extra,
   };
 
+  // ── Streaming path ────────────────────────────────────────────────────────
+  try {
+    const r = await fetch('/api/query/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      body: JSON.stringify(body),
+    });
+    if (r.status === 401) { Auth.handle401(); setThinking(false); return; }
+    if (!r.ok || !r.body) throw new Error(`HTTP ${r.status}`);
+
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+
+    // Streaming message container — created on first token
+    let streamWrap = null;
+    let streamBody = null;
+    let tokenBuf   = '';
+    let gotResult  = false;
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+
+      // SSE messages are separated by double-newline
+      const parts = buf.split('\n\n');
+      buf = parts.pop(); // last part may be incomplete
+
+      for (const part of parts) {
+        const line = part.trim();
+        if (!line.startsWith('data:')) continue;
+        const raw = line.slice(5).trim();
+        if (raw === '[DONE]') break;
+
+        let evt;
+        try { evt = JSON.parse(raw); } catch { continue; }
+
+        if (evt.type === 'start') {
+          setThinking(false); // stop spinner once server acknowledged
+        } else if (evt.type === 'token') {
+          if (!streamWrap) {
+            // Create the message bubble on first token
+            streamWrap = document.createElement('div');
+            streamWrap.className = 'msg-assistant pl-3 pr-2 py-2 rounded-r-lg bg-slate-800/60';
+            const hdr = document.createElement('div');
+            hdr.className = 'text-xs font-semibold mb-1 text-emerald-400';
+            hdr.textContent = 'Assistant';
+            streamWrap.appendChild(hdr);
+            streamBody = document.createElement('div');
+            streamBody.className = 'prose prose-invert text-sm text-slate-200 max-w-none whitespace-pre-wrap';
+            streamWrap.appendChild(streamBody);
+            document.getElementById('messages').appendChild(streamWrap);
+          }
+          tokenBuf += evt.text;
+          // Show raw tokens; markdown rendered after stream completes
+          streamBody.textContent = tokenBuf;
+          const msgs = document.getElementById('messages');
+          msgs.scrollTop = msgs.scrollHeight;
+        } else if (evt.type === 'done' || evt.type === 'complete') {
+          gotResult = true;
+          const result = evt.result;
+          // Re-render the streamed content as markdown
+          if (streamBody && result.response) {
+            streamBody.className = 'prose prose-invert text-sm text-slate-200 max-w-none';
+            streamBody.innerHTML = marked.parse(preprocessMarkdown(result.response));
+            streamBody.querySelectorAll('code.language-mermaid').forEach(el => {
+              const c = document.createElement('div');
+              c.className = 'mermaid my-2';
+              c.textContent = el.textContent;
+              el.closest('pre').replaceWith(c);
+            });
+            mermaid.run({ nodes: streamBody.querySelectorAll('.mermaid') });
+          }
+          const wrap = streamWrap || appendMessage('assistant', result.response || '', {});
+          _applyQueryResult(query, result, wrap);
+        } else if (evt.type === 'error') {
+          appendMessage('assistant', `**Error:** ${evt.message || 'Unknown error'}`);
+          gotResult = true;
+        }
+      }
+    }
+
+    if (!gotResult) {
+      // Stream closed without a done event — fall through to non-streaming below
+      throw new Error('stream ended without result');
+    }
+    setThinking(false);
+    return;
+
+  } catch (streamErr) {
+    // Stream failed or not supported — fall back to non-streaming /api/query
+    logger.debug?.('Streaming failed, falling back:', streamErr);
+  }
+
+  // ── Non-streaming fallback ────────────────────────────────────────────────
   let result;
   try {
     const r = await fetch('/api/query', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
       body: JSON.stringify(body),
     });
+    if (r.status === 401) { Auth.handle401(); setThinking(false); return; }
     result = await r.json();
   } catch (e) {
     appendMessage('assistant', `**Error:** ${e.message}`);
@@ -707,22 +937,44 @@ async function submitQuery(query, extra = {}) {
   }
 
   const qtype = result.query_type || 'general';
+  const isClarify = qtype === 'clarification';
+  const candidates = result.candidates || [];
+
+  if (isClarify && candidates.length) {
+    renderClarification(result.response, candidates);
+    pendingClarification = { candidates };
+    document.getElementById('clarify-hint').classList.remove('hidden');
+    return;
+  }
+
+  const wrap = appendMessage('assistant', result.response, {
+    isClarify: false,
+    isPlan: qtype === 'plan' || qtype === 'plan_clarification',
+    isExecuted: qtype === 'plan_executed',
+  });
+  _applyQueryResult(query, result, wrap);
+}
+
+// ── Shared result post-processing (called by both streaming and non-streaming) ──
+function _applyQueryResult(query, result, wrap) {
+  const qtype = result.query_type || 'general';
   const routingAgentFromResult = result.routing_agent || qtype;
   const intent = result.intent || {};
   const isClarify = qtype === 'clarification';
   const isPlanQA = qtype === 'plan_clarification';
   const candidates = result.candidates || [];
 
-  // Track active draft ID — persisted to sessionStorage so editor navigation doesn't lose it
+  // Track active draft ID
   if (isPlanQA) {
     if (result.draft_id) {
       _activeDraftId = result.draft_id;
     } else {
-      // Phase is done or session cancelled
       _activeDraftId = null;
       loadDrafts();
     }
-  } else if (qtype === 'plan' || qtype === 'plan_executed') {
+  } else if (qtype === 'plan') {
+    _activeDraftId = null;
+  } else if (qtype === 'plan_executed') {
     _activeDraftId = null;
   }
   if (_activeDraftId) {
@@ -730,7 +982,8 @@ async function submitQuery(query, extra = {}) {
     PlanCanvas.open(_activeDraftId);
   } else {
     sessionStorage.removeItem('ea_active_draft');
-    PlanCanvas.close();
+    // Don't close canvas on plan_executed — user may want to see what was executed
+    if (qtype !== 'plan_executed') PlanCanvas.close();
   }
 
   // Badge
@@ -740,7 +993,7 @@ async function submitQuery(query, extra = {}) {
     badge.style.color = intent.color || '#64748b';
   }
 
-  // If disambiguation, render as buttons instead of plain markdown
+  // If disambiguation, render as buttons
   if (isClarify && candidates.length) {
     renderClarification(result.response, candidates);
     pendingClarification = { candidates };
@@ -749,16 +1002,8 @@ async function submitQuery(query, extra = {}) {
   }
 
   // Refresh plan sidebar after any plan lifecycle event
-  if (qtype === 'plan' || qtype === 'plan_executed') loadPlans();
+  if (qtype === 'plan' || qtype === 'plan_executed' || qtype === 'plan_validated') loadPlans();
   if (isPlanQA) { loadDrafts(); if (_activeDraftId) PlanCanvas.refresh(_activeDraftId); }
-
-  // Normal response
-  const wrap = appendMessage('assistant', result.response, {
-    isClarify: false,
-    isPlan: qtype === 'plan' || isPlanQA,
-    isExecuted: qtype === 'plan_executed',
-    color: intent.color,
-  });
 
   // Plan Document banner — shown when the agent saved a new plan to inbox/
   if (qtype === 'plan' && result.doc_id) {
@@ -787,9 +1032,11 @@ async function submitQuery(query, extra = {}) {
     const nav = document.createElement('div');
     nav.className = 'mt-2 flex gap-2 flex-wrap';
     const navDefs = {
-      back:      { label: '← Back',        cls: 'bg-slate-700 hover:bg-slate-600 text-slate-200' },
-      save_exit: { label: '💾 Save & Exit', cls: 'bg-indigo-800 hover:bg-indigo-700 text-white' },
-      cancel:    { label: '✕ Cancel',       cls: 'bg-red-900/60 hover:bg-red-800 text-red-300' },
+      back:            { label: '← Back',             cls: 'bg-slate-700 hover:bg-slate-600 text-slate-200' },
+      save_exit:       { label: '💾 Save & Exit',      cls: 'bg-indigo-800 hover:bg-indigo-700 text-white' },
+      cancel:          { label: '✕ Cancel',            cls: 'bg-red-900/60 hover:bg-red-800 text-red-300' },
+      generate_now:    { label: '⚡ Generate Now',      cls: 'bg-violet-800 hover:bg-violet-700 text-white' },
+      completely_wrong:{ label: '✗ Completely Wrong',  cls: 'bg-amber-900/70 hover:bg-amber-800 text-amber-200' },
     };
     result.navigation.forEach(key => {
       const def = navDefs[key];
@@ -798,7 +1045,10 @@ async function submitQuery(query, extra = {}) {
       btn.className = `px-3 py-1.5 rounded text-xs font-semibold transition-colors ${def.cls}`;
       btn.textContent = def.label;
       btn.onclick = () => {
-        const commands = { back: 'back', save_exit: 'save and exit', cancel: 'cancel' };
+        const commands = {
+          back: 'back', save_exit: 'save and exit', cancel: 'cancel',
+          generate_now: 'generate now', completely_wrong: 'completely wrong',
+        };
         const cmd = commands[key] || key;
         appendMessage('you', def.label);
         submitQuery(cmd, { intent_override: 'plan' });
@@ -842,11 +1092,14 @@ async function submitQuery(query, extra = {}) {
   const btnUp = document.createElement('button');
   btnUp.className = 'text-xs text-slate-500 hover:text-green-400 transition-colors';
   btnUp.textContent = '👍';
+  const responseText = wrap.querySelector('.msg-body')?.textContent || '';
   btnUp.dataset.q = query;
   btnUp.dataset.qt = qtype;
   btnUp.dataset.vote = '1';
   btnUp.dataset.perspective = selectedPerspective || '';
   btnUp.dataset.routingAgent = routingAgentFromResult;
+  btnUp.dataset.intentOverride = document.getElementById('intent-select')?.value || 'auto';
+  btnUp.dataset.responseText = responseText.slice(0, 2000);
   btnUp.addEventListener('click', feedbackClick);
   const btnDown = document.createElement('button');
   btnDown.className = 'text-xs text-slate-500 hover:text-red-400 transition-colors';
@@ -856,6 +1109,8 @@ async function submitQuery(query, extra = {}) {
   btnDown.dataset.vote = '-1';
   btnDown.dataset.perspective = selectedPerspective || '';
   btnDown.dataset.routingAgent = routingAgentFromResult;
+  btnDown.dataset.intentOverride = document.getElementById('intent-select')?.value || 'auto';
+  btnDown.dataset.responseText = responseText.slice(0, 2000);
   btnDown.addEventListener('click', feedbackClick);
   fb.appendChild(btnUp);
   fb.appendChild(btnDown);
@@ -964,10 +1219,12 @@ async function feedbackClick(e) {
   const queryType = btn.dataset.qt;
   const perspective = btn.dataset.perspective || null;
   const routingAgent = btn.dataset.routingAgent || null;
+  const intentOverride = btn.dataset.intentOverride || null;
+  const responseText = btn.dataset.responseText || null;
   await fetch('/api/feedback', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, query_type: queryType, vote, perspective, routing_agent: routingAgent }),
+    headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+    body: JSON.stringify({ query, query_type: queryType, vote, perspective, routing_agent: routingAgent, intent_override: intentOverride, response_text: responseText }),
   }).catch(() => {});
   const fb = btn.parentElement;
   fb.innerHTML = vote > 0
@@ -1054,12 +1311,83 @@ function initSidebarResize() {
   document.getElementById('resize-plans-recent').addEventListener('mousedown',  e => startDrag(e, document.getElementById('resize-plans-recent')));
 }
 
+// ── Left sidebar resize (horizontal, ew-resize) ────────────────────────────────
+function initLeftSidebarResize() {
+  const handle  = document.getElementById('resize-sidebar-chat');
+  const sidebar = document.getElementById('left-sidebar');
+  const wrapper = handle.closest('.flex');
+
+  const MIN_W  = 160;
+  const MAX_W  = 480;
+  const STOR_K = 'ea_sidebar_w';
+
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+  const saved = parseInt(localStorage.getItem(STOR_K));
+  if (!isNaN(saved)) sidebar.style.flexBasis = clamp(saved, MIN_W, MAX_W) + 'px';
+
+  handle.addEventListener('mousedown', e => {
+    e.preventDefault();
+    handle.classList.add('dragging');
+    const startX = e.clientX;
+    const startW = sidebar.getBoundingClientRect().width;
+
+    function onMove(ev) {
+      const newW = clamp(startW + (ev.clientX - startX), MIN_W, MAX_W);
+      sidebar.style.flexBasis = newW + 'px';
+    }
+    function onUp() {
+      handle.classList.remove('dragging');
+      localStorage.setItem(STOR_K, Math.round(sidebar.getBoundingClientRect().width));
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
+  });
+}
+
 // ── Canvas resize (horizontal, ew-resize) ──────────────────────────────────────
 function initCanvasButtons() {
   document.getElementById('pcanvas-generate-btn').addEventListener('click', () => {
     if (!_activeDraftId) return;
     appendMessage('you', 'generate now');
     submitQuery('generate now', { intent_override: 'plan' });
+  });
+  document.getElementById('pcanvas-validate-btn').addEventListener('click', async () => {
+    const docId = document.getElementById('pcanvas-title')?.dataset?.docId;
+    if (!docId) return;
+    const btn = document.getElementById('pcanvas-validate-btn');
+    btn.disabled = true;
+    btn.textContent = '⏳ Validating…';
+    try {
+      const r = await fetch(`/api/plans/${docId}/validate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      });
+      const data = await r.json();
+      const valErrs  = data.validation_errors || [];
+      const execErrs = data.execution_errors  || [];
+      const allErrors = [...valErrs, ...execErrs];
+      const ok = data.success !== false && allErrors.length === 0;
+      let msg = ok
+        ? `✓ **Validation passed** — plan \`${docId}\` is ready to execute.`
+        : `⚠ **Validation found ${allErrors.length} issue${allErrors.length !== 1 ? 's' : ''}** in \`${docId}\`.`;
+      if (allErrors.length) {
+        msg += '\n\n' + allErrors.map(e => {
+          const step = e.step || e.index || '';
+          const cmd  = e.command || e.name || '';
+          const txt  = e.message || e.error || String(e);
+          return `- **${cmd}**${step ? ` (step ${step})` : ''}: ${txt}`;
+        }).join('\n');
+      }
+      appendMessage('advisor', msg, { query_type: 'explanation' });
+    } catch (e) {
+      appendMessage('advisor', `Validation request failed: ${e.message}`, { query_type: 'explanation' });
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '✓ Validate';
+    }
   });
   document.getElementById('pcanvas-execute-btn').addEventListener('click', () => {
     const docId = document.getElementById('pcanvas-title')?.dataset?.docId;
@@ -1112,6 +1440,145 @@ function initCanvasResize() {
     document.addEventListener('mouseup',   onUp);
   });
 }
+
+// ── Builder modal ──────────────────────────────────────────────────────────────
+function openBuilderModal() {
+  document.getElementById('builder-title-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('builder-title-input').focus(), 50);
+}
+function closeBuilderModal() {
+  document.getElementById('builder-title-modal').classList.add('hidden');
+  document.getElementById('builder-title-input').value = '';
+}
+async function createBuilderPlan() {
+  const title = document.getElementById('builder-title-input').value.trim();
+  if (!title) return;
+  closeBuilderModal();
+  try {
+    const r = await fetch('/api/drafts/builder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      body: JSON.stringify({ title, perspective: _currentPerspective }),
+    });
+    const spec = await r.json();
+    _activeDraftId = spec.draft_id;
+    sessionStorage.setItem('ea_active_draft', _activeDraftId);
+    PlanCanvas.open(_activeDraftId);
+    loadDrafts();
+    appendMessage('assistant',
+      `**${title}** — plan canvas is open. Use **+ Add step** to browse and add ` +
+      `Dr.Egeria commands, or ask me questions in chat.`
+    );
+  } catch (e) {
+    appendMessage('assistant', 'Could not create builder plan: ' + e.message);
+  }
+}
+
+// ── Command picker ──────────────────────────────────────────────────────────────
+let _cmdPickerData = null;   // { family: [{name, family, aliases, in_catalog}] }
+let _cmdPickerFamily = null; // currently selected family filter
+let _cmdPickerCallback = null; // called with command name when user picks one
+
+async function openCmdPicker(onSelect) {
+  _cmdPickerCallback = onSelect;
+  document.getElementById('cmd-picker-modal').classList.remove('hidden');
+  document.getElementById('cmd-picker-search').value = '';
+  if (!_cmdPickerData) {
+    document.getElementById('cmd-picker-list').innerHTML =
+      '<p class="text-xs text-slate-500 p-2">Loading commands…</p>';
+    try {
+      const r = await fetch('/api/actions', { headers: Auth.getHeaders() });
+      const data = await r.json();
+      _cmdPickerData = data.families || {};
+    } catch {
+      document.getElementById('cmd-picker-list').innerHTML =
+        '<p class="text-xs text-red-400 p-2">Could not load command catalog.</p>';
+      return;
+    }
+  }
+  _cmdPickerFamily = null;
+  _renderCmdPickerTabs();
+  _renderCmdPickerList('');
+  setTimeout(() => document.getElementById('cmd-picker-search').focus(), 50);
+}
+
+function closeCmdPicker() {
+  document.getElementById('cmd-picker-modal').classList.add('hidden');
+  _cmdPickerCallback = null;
+}
+
+function _renderCmdPickerTabs() {
+  const el = document.getElementById('cmd-picker-tabs');
+  el.innerHTML = '';
+  const families = Object.keys(_cmdPickerData || {});
+  // "All" tab
+  const allBtn = document.createElement('button');
+  allBtn.textContent = 'All';
+  allBtn.className = `px-2 py-0.5 rounded text-xs transition-colors ${
+    !_cmdPickerFamily ? 'bg-violet-700 text-white' : 'text-slate-400 hover:text-slate-200'
+  }`;
+  allBtn.onclick = () => { _cmdPickerFamily = null; _renderCmdPickerTabs(); _renderCmdPickerList(document.getElementById('cmd-picker-search').value); };
+  el.appendChild(allBtn);
+  families.forEach(fam => {
+    const btn = document.createElement('button');
+    btn.textContent = fam;
+    btn.className = `px-2 py-0.5 rounded text-xs transition-colors ${
+      _cmdPickerFamily === fam ? 'bg-violet-700 text-white' : 'text-slate-400 hover:text-slate-200'
+    }`;
+    btn.onclick = () => { _cmdPickerFamily = fam; _renderCmdPickerTabs(); _renderCmdPickerList(document.getElementById('cmd-picker-search').value); };
+    el.appendChild(btn);
+  });
+}
+
+function filterCmdPicker(q) { _renderCmdPickerList(q); }
+
+function _renderCmdPickerList(searchQ) {
+  const el = document.getElementById('cmd-picker-list');
+  el.innerHTML = '';
+  const q = searchQ.toLowerCase().trim();
+  const families = _cmdPickerData || {};
+  let total = 0;
+
+  const famKeys = _cmdPickerFamily ? [_cmdPickerFamily] : Object.keys(families);
+  famKeys.forEach(fam => {
+    const cmds = (families[fam] || []).filter(c => {
+      if (!q) return true;
+      return c.name.toLowerCase().includes(q) ||
+             (c.aliases || []).some(a => a.includes(q));
+    });
+    if (!cmds.length) return;
+    total += cmds.length;
+    if (!_cmdPickerFamily) {
+      const hdr = document.createElement('p');
+      hdr.className = 'text-xs font-semibold text-slate-500 uppercase tracking-wider px-1 pt-2 pb-0.5';
+      hdr.textContent = fam;
+      el.appendChild(hdr);
+    }
+    cmds.forEach(cmd => {
+      const row = document.createElement('div');
+      row.className = 'flex items-center justify-between gap-2 px-2 py-1.5 rounded hover:bg-slate-700/60 cursor-pointer group';
+      row.innerHTML = `
+        <div class="flex flex-col min-w-0">
+          <span class="text-xs text-slate-200 font-medium truncate">${_esc(cmd.name)}</span>
+          ${cmd.aliases?.length ? `<span class="text-[10px] text-slate-500 truncate">${_esc(cmd.aliases.slice(0,3).join(', '))}</span>` : ''}
+        </div>
+        <button class="shrink-0 px-2 py-0.5 rounded bg-violet-800 hover:bg-violet-600 text-white text-xs opacity-0 group-hover:opacity-100 transition-all">Add</button>
+      `;
+      row.onclick = () => {
+        if (_cmdPickerCallback) _cmdPickerCallback(cmd.name);
+        closeCmdPicker();
+      };
+      el.appendChild(row);
+    });
+  });
+  if (!total) {
+    el.innerHTML = '<p class="text-xs text-slate-500 p-3 text-center">No commands match.</p>';
+  }
+}
+
+function _esc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
 </script>
 
 <!-- ── Plan Editor Overlay ─────────────────────────────────────────────────── -->
@@ -1155,6 +1622,29 @@ function initCanvasResize() {
   <!-- Status bar -->
   <div id="ped-status-bar" class="px-4 py-1 text-xs text-slate-500 bg-slate-900 border-b border-slate-800 shrink-0"></div>
 
+  <!-- Recovery bar — only visible for outbox plans -->
+  <div id="ped-recovery-bar" class="hidden shrink-0 px-4 py-2 bg-amber-950/60 border-b border-amber-800/50 flex items-center gap-3 text-xs text-amber-200">
+    <span class="font-semibold">⚠ This plan is in the Outbox (read-only).</span>
+    <span class="text-amber-400/70">Edit &amp; re-run, or restore an earlier version:</span>
+    <button onclick="pedRecoverForEditing()"
+      class="px-3 py-1 rounded bg-amber-700 hover:bg-amber-600 text-white font-semibold transition-colors">
+      Recover for Editing
+    </button>
+    <button onclick="pedShowVersionHistory()"
+      class="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 font-semibold transition-colors">
+      Version History
+    </button>
+  </div>
+
+  <!-- Version history panel — hidden by default -->
+  <div id="ped-version-panel" class="hidden shrink-0 px-4 py-3 bg-slate-900 border-b border-slate-700 max-h-48 overflow-y-auto text-xs">
+    <div class="font-semibold text-slate-300 mb-2">Version History
+      <button onclick="document.getElementById('ped-version-panel').classList.add('hidden')"
+        class="float-right text-slate-500 hover:text-slate-200">✕</button>
+    </div>
+    <div id="ped-version-list" class="flex flex-col gap-1 text-slate-400">Loading…</div>
+  </div>
+
   <!-- Main scrollable content -->
   <div class="flex-1 overflow-y-auto px-6 py-5 flex flex-col gap-5">
 
@@ -1191,8 +1681,66 @@ function initCanvasResize() {
 
 </div>
 
-<script src="/static/artifact_canvas.js"></script>
-<script src="/static/plan_canvas.js"></script>
-<script src="/static/plan_editor.js"></script>
+<!-- ── Login overlay ───────────────────────────────────────────────────────── -->
+<div id="login-overlay"
+  class="hidden fixed inset-0 bg-slate-950/90 backdrop-blur-sm flex items-center justify-center z-[100]"
+  onclick="if(event.target===this)Auth.hideLogin()">
+  <div class="bg-slate-800 border border-slate-600 rounded-2xl p-8 w-96 shadow-2xl">
+    <div class="flex items-center gap-3 mb-6">
+      <img src="/static/egeria-logo.png" alt="Egeria" class="h-8 w-auto">
+      <div>
+        <div class="text-slate-100 font-bold text-lg">Sign in to Egeria Advisor</div>
+        <div class="text-slate-400 text-xs mt-0.5">Use your Egeria username and password</div>
+      </div>
+    </div>
+
+    <!-- Session expired / portal message -->
+    <div id="login-message"
+      class="hidden mb-4 px-3 py-2 rounded-lg bg-amber-900/40 border border-amber-700/50 text-amber-300 text-xs">
+    </div>
+
+    <div class="flex flex-col gap-3">
+      <div>
+        <label class="text-xs text-slate-400 block mb-1">Username</label>
+        <input id="login-username" type="text" autocomplete="username"
+          placeholder="e.g. erinoverview"
+          class="w-full bg-slate-700 text-slate-100 rounded-lg px-3 py-2 text-sm
+                 border border-slate-600 focus:outline-none focus:border-cyan-500 transition-colors">
+      </div>
+      <div>
+        <label class="text-xs text-slate-400 block mb-1">Password</label>
+        <input id="login-password" type="password" autocomplete="current-password"
+          placeholder="••••••••"
+          class="w-full bg-slate-700 text-slate-100 rounded-lg px-3 py-2 text-sm
+                 border border-slate-600 focus:outline-none focus:border-cyan-500 transition-colors">
+      </div>
+
+      <!-- Error message -->
+      <div id="login-error"
+        class="hidden px-3 py-2 rounded-lg bg-red-900/40 border border-red-700/50 text-red-300 text-xs">
+      </div>
+
+      <button id="login-submit-btn"
+        class="w-full py-2 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white font-semibold
+               text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed mt-1">
+        Sign in
+      </button>
+    </div>
+
+    <div class="mt-5 pt-4 border-t border-slate-700 text-xs text-slate-500 text-center">
+      Knowledge questions and code examples are available without signing in.<br>
+      Reports and command execution require an active Egeria session.
+      <br><br>
+      <button onclick="Auth.hideLogin()"
+        class="text-slate-400 hover:text-slate-200 underline transition-colors">
+        Continue without signing in
+      </button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/artifact_canvas.js?v=20260615f"></script>
+<script src="/static/plan_canvas.js?v=20260615f"></script>
+<script src="/static/plan_editor.js?v=20260615f"></script>
 </body>
 </html>

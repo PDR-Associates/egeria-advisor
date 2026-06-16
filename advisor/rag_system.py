@@ -4,8 +4,10 @@ Complete RAG system integrating retrieval, query processing, and LLM generation.
 This module provides the main interface for the RAG-based code advisor.
 """
 
+import json
+import queue
 import re
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Iterator
 from loguru import logger
 import threading
 import time
@@ -20,6 +22,49 @@ from advisor.relationships import get_relationship_query_handler
 from advisor.config import get_full_config
 from advisor.prompt_templates import get_prompt_manager
 from advisor.query_patterns import QueryType
+
+
+def _egeria_required_response(user_query: str) -> Dict[str, Any]:
+    """Return a graceful degradation response when the user is not authenticated."""
+    return {
+        "query": user_query,
+        "response": (
+            "This action requires an active Egeria session.\n\n"
+            "**Sign in** using the login button in the header to access live reports, "
+            "execute Dr. Egeria commands, and run governance plans against Egeria.\n\n"
+            "Knowledge questions, code examples, plan *generation*, and explanations "
+            "are all available without logging in."
+        ),
+        "query_type": "general",
+        "routing_agent": "auth_gate",
+        "sources": [],
+        "num_sources": 0,
+        "retrieval_time": 0.0,
+        "generation_time": 0.0,
+        "avg_relevance_score": 0.0,
+        "context_length": 0,
+    }
+
+
+def _serialise_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a JSON-serialisable copy of a result dict (normalises source objects)."""
+    sources = []
+    for s in result.get("sources", []):
+        if isinstance(s, dict):
+            sources.append(s)
+        else:
+            # SearchResult or similar object
+            entry: Dict[str, Any] = {}
+            if hasattr(s, "score"):
+                entry["score"] = s.score
+            if hasattr(s, "metadata"):
+                entry.update(s.metadata)
+            if hasattr(s, "content"):
+                entry["content"] = s.content[:200]
+            sources.append(entry)
+    out = dict(result)
+    out["sources"] = sources
+    return out
 
 
 class RAGSystem:
@@ -60,6 +105,7 @@ class RAGSystem:
         perspective: Optional[str] = None,
         page_size: Optional[int] = None,
         draft_id: Optional[str] = None,
+        egeria_authenticated: bool = True,
     ) -> Dict[str, Any]:
         """
         Process a user query and generate a response.
@@ -69,6 +115,8 @@ class RAGSystem:
             include_context: Whether to include retrieved context
             track_metrics: Whether to track with MLflow
             dry_run: If True, compose Dr.Egeria commands but do not execute them
+            egeria_authenticated: False blocks MCP-dependent paths (report, command execution,
+                plan execution) and returns a friendly degradation message instead.
 
         Returns:
             Dictionary with response and metadata
@@ -82,6 +130,7 @@ class RAGSystem:
             perspective=perspective,
             page_size=page_size,
             draft_id=draft_id,
+            egeria_authenticated=egeria_authenticated,
         )
         
         # Always record metrics in local database (for dashboard)
@@ -141,10 +190,105 @@ class RAGSystem:
         "can you explain", "give me an overview",
     )
 
+    # Interrogative forms that must NEVER reach action agents regardless of intent.
+    # These indicate the user wants an explanation, not to create/execute anything.
+    _INTERROGATIVE_PREFIXES = (
+        "what is ", "what are ", "what's a ", "what's the ", "what's an ",
+        "what does ", "what do ",
+        "how does ", "how do ", "how is ", "how are ", "how would ",
+        "explain ", "define ", "describe ",
+        "tell me about ", "tell me what ",
+        "can you explain", "could you explain",
+        "give me an overview", "give me a summary",
+        "what exactly is", "what exactly are",
+        "why is ", "why are ", "why does ", "why do ",
+        "who is ", "who are ",
+        "when is ", "when are ", "when does ",
+        "where is ", "where are ", "where does ",
+    )
+
+    def _is_interrogative(self, query: str) -> bool:
+        """Return True if this query is an informational question that must
+        route to DocAgent regardless of intent setting."""
+        q = query.strip().lower()
+        return any(q.startswith(p) for p in self._INTERROGATIVE_PREFIXES)
+
+    # Patterns that indicate "what dr.egeria commands handle X" — answer from catalog.
+    _COMMAND_DISCOVERY_RE = re.compile(
+        r'\b(?:what|which|list|show)\s+(?:dr\.?\s*egeria\s+)?commands?\b',
+        re.IGNORECASE,
+    )
+
+    def _is_command_discovery(self, query: str) -> bool:
+        return bool(self._COMMAND_DISCOVERY_RE.search(query))
+
+    def _handle_command_discovery(self, query: str) -> Optional[Dict[str, Any]]:
+        """Answer a command-discovery question directly from CommandKeywordIndex."""
+        from advisor.command_keyword_index import get_command_keyword_index
+        idx = get_command_keyword_index()
+
+        # Extract the topic keyword after "about", "for", "related to", etc.
+        topic_m = re.search(
+            r'\b(?:about|for|related\s+to|regarding|on)\s+(.+?)[\?\.]*$',
+            query, re.IGNORECASE,
+        )
+        topic = topic_m.group(1).strip() if topic_m else None
+
+        if topic:
+            groups = idx.search_by_keyword(topic)
+        else:
+            groups = idx.all_commands()
+
+        if not groups:
+            if topic:
+                return {
+                    "query": query,
+                    "response": (
+                        f"No Dr. Egeria commands found matching **{topic}**. "
+                        "Try a broader term, or ask \"what dr.egeria commands are available?\" "
+                        "to browse all command families."
+                    ),
+                    "query_type": "explanation",
+                    "sources": [],
+                    "routing_agent": "command_keyword_index",
+                }
+            return None  # no topic and no commands — fall through to DocAgent
+
+        lines = []
+        if topic:
+            lines.append(f"Dr. Egeria commands related to **{topic}**:\n")
+        else:
+            lines.append("Available Dr. Egeria command families:\n")
+
+        for family, cmds in groups.items():
+            lines.append(f"### {family}")
+            for cmd in cmds:
+                tag = " *(catalog)*" if cmd["in_catalog"] else ""
+                lines.append(f"- **{cmd['name']}**{tag}")
+            lines.append("")
+
+        return {
+            "query": query,
+            "response": "\n".join(lines),
+            "query_type": "explanation",
+            "sources": [],
+            "routing_agent": "command_keyword_index",
+        }
+
     # Keywords that signal the user wants Python code, not live Egeria data.
     _CODE_EXAMPLE_SIGNALS = (
         "python", "code example", "code sample", "write python",
         "python code", "pyegeria example", "python snippet",
+        # Any mention of Dr.Egeria belongs to the command/template path, never a data report
+        "dr.egeria", "dr egeria", "dr. egeria",
+    )
+
+    # Phrases that explicitly request a Dr.Egeria template/command, used to
+    # redirect "Show Me" (code_search) intent away from ExamplesAgent.
+    _DRE_TEMPLATE_SIGNALS = (
+        "dr egeria template", "dr. egeria template", "dr.egeria template", "dre template",
+        "dr egeria command", "dr. egeria command", "dr.egeria command", "dre command",
+        "egeria template", "egeria markdown template", "markdown command",
     )
 
     def _is_report_query(self, query: str) -> bool:
@@ -234,6 +378,7 @@ class RAGSystem:
         perspective: Optional[str] = None,
         page_size: Optional[int] = None,
         draft_id: Optional[str] = None,
+        egeria_authenticated: bool = True,
     ) -> Dict[str, Any]:
         """Internal query processing."""
 
@@ -260,6 +405,53 @@ class RAGSystem:
             _tmpl_m = re.match(r'^save\s+(?:as\s+)?template\s+(.+)', q)
             if _tmpl_m:
                 return agent.save_as_template(draft_id, _tmpl_m.group(1).strip())
+            # "Open the editor" / "open editor" — UI navigation hint, not a plan edit
+            if re.match(r'^open\s+(the\s+)?editor\b', q):
+                return {
+                    "query": user_query,
+                    "response": (
+                        "To open the Plan Editor, click the **pencil icon** (✏️) next to "
+                        "the plan in the Inbox sidebar, or use the **Edit** button that "
+                        "appears on the plan canvas.\n\n"
+                        "You can also make changes by describing what you want here — "
+                        "for example: *\"Change the project name to X\"* or "
+                        "*\"Add a sub-project for Data Quality\"*."
+                    ),
+                    "query_type": "plan_clarification",
+                    "draft_id": draft_id,
+                    "can_go_back": True,
+                    "navigation": ["back", "cancel"],
+                    "sources": [],
+                }
+
+            # "execute" / "run" typed in chat while a draft is active — route to
+            # actual plan execution rather than letting the LLM treat it as a
+            # plan-modification instruction (which produces a truncated document).
+            _exec_pattern = re.compile(
+                r'^(?:execute|run|run\s+(?:the\s+)?plan|go\s+ahead|proceed(?:\s+with\s+execution)?'
+                r'|run\s+it|execute\s+(?:the\s+)?plan|execute\s+it)\b',
+                re.IGNORECASE,
+            )
+            if _exec_pattern.match(q):
+                from advisor.governance_draft import get_draft_manager as _gdm
+                spec = _gdm().load(draft_id)
+                doc_id = spec.get("doc_id") if spec else None
+                if doc_id:
+                    logger.info(f"Draft execute command detected — executing plan {doc_id}")
+                    return agent.execute(doc_id)
+                else:
+                    return {
+                        "query": user_query,
+                        "response": (
+                            "The plan hasn't been generated yet — use **Generate Plan** "
+                            "on the canvas first, then **Execute** when ready."
+                        ),
+                        "query_type": "plan_clarification",
+                        "draft_id": draft_id,
+                        "can_go_back": False,
+                        "navigation": [],
+                        "sources": [],
+                    }
 
             # Default: forward user response to active Q&A phase
             return agent.continue_draft(draft_id, user_query)
@@ -297,6 +489,33 @@ class RAGSystem:
                 return result
             except Exception as exc:
                 logger.warning(f"Template start failed ({exc}), continuing normal routing")
+
+        # ------------------------------------------------------------------ #
+        # Negative routing guard: interrogative forms bypass action agents   #
+        # regardless of the intent override.  "What is X" / "How does Y"    #
+        # must never reach GovernancePlanAgent, DrEgeriaActionAgent, or      #
+        # ExamplesAgent — even when intent=Plan is selected.                 #
+        # The draft_id block above already handled active drafts; this guard #
+        # fires only for new (draft-free) queries.                           #
+        # ------------------------------------------------------------------ #
+        if self._is_interrogative(user_query) and query_type_override in ('plan', 'command', 'act'):
+            logger.info(
+                f"Interrogative guard: query is informational; "
+                f"overriding intent '{query_type_override}' → explanation"
+            )
+            query_type_override = 'explanation'
+
+        # Dr.Egeria template guard: "Show me a Dr.Egeria template" must route
+        # to DrEgeriaTemplateAgent, not ExamplesAgent, regardless of intent.
+        # This fires before the intent override so 'code_search' (Show Me)
+        # cannot hijack Dr.Egeria-specific template requests.
+        if query_type_override and query_type_override != 'command':
+            _qlow = user_query.lower()
+            if any(sig in _qlow for sig in self._DRE_TEMPLATE_SIGNALS):
+                logger.info(
+                    f"Dr.Egeria template guard: redirecting '{query_type_override}' → 'command'"
+                )
+                query_type_override = 'command'
 
         # Process query to understand intent
         query_analysis = self.query_processor.process(user_query)
@@ -442,6 +661,8 @@ class RAGSystem:
             re.IGNORECASE,
         )
         if _exec_match:
+            if not egeria_authenticated:
+                return _egeria_required_response(user_query)
             _doc_id = _exec_match.group(1)
             _dry_run = "dry" in user_query.lower()
             logger.info(
@@ -455,7 +676,11 @@ class RAGSystem:
                 result.setdefault("routing_agent", "governance_plan_agent")
                 return result
             except Exception as exc:
-                logger.warning(f"GovernancePlanAgent.execute failed ({exc}), continuing")
+                logger.error(f"GovernancePlanAgent.execute failed: {exc}", exc_info=True)
+                return _error_result(
+                    user_query,
+                    f"Plan execution failed: {exc}\n\nCheck the server logs for details.",
+                )
 
         # Handle plan queries: generate a full Governance Plan Document.
         if query_analysis['query_type'] == 'plan':
@@ -479,6 +704,8 @@ class RAGSystem:
                 or self._is_report_query(user_query)
             )
         if is_report:
+            if not egeria_authenticated:
+                return _egeria_required_response(user_query)
             logger.info("Handling report query via MCP report pipeline")
             try:
                 from advisor.report_pipeline import get_report_pipeline
@@ -507,6 +734,8 @@ class RAGSystem:
                     return result
                 except Exception as e:
                     logger.warning(f"DrEgeriaTemplateAgent failed ({e}), falling back to DrEgeriaActionAgent")
+            if not egeria_authenticated:
+                return _egeria_required_response(user_query)
             logger.info("Handling command query via DrEgeriaActionAgent")
             try:
                 from advisor.agents.dr_egeria_agent import get_dr_egeria_agent
@@ -535,6 +764,14 @@ class RAGSystem:
             except Exception as exc:
                 logger.warning(f"ExamplesAgent failed ({exc}), falling back to RAG")
 
+        # ── Command-discovery shortcut ──────────────────────────────────────
+        # "what dr.egeria commands are about X" → answer from keyword index,
+        # not from docs (docs have no structured command catalog).
+        if query_analysis['query_type'] == 'explanation' and self._is_command_discovery(user_query):
+            result = self._handle_command_discovery(user_query)
+            if result:
+                return result
+
         # Route explanation/conceptual/debugging queries to DocAgent (BeeAI + fallback).
         if query_analysis['query_type'] in ('explanation', 'best_practice', 'comparison', 'debugging', 'general'):
             logger.info(f"Routing {query_analysis['query_type']} query to DocAgent")
@@ -546,14 +783,25 @@ class RAGSystem:
             except Exception as exc:
                 logger.warning(f"DocAgent failed ({exc}), falling back to RAG")
 
-        # Get search strategy
-        search_strategy = query_analysis["search_strategy"]
-        
-        # Check if we should prioritize documentation
-        prioritize_docs = query_analysis.get("prioritize_docs", False)
-        offer_examples = query_analysis.get("offer_examples", False)
+        return self._run_rag_fallback(user_query, query_analysis, include_context, perspective)
 
-        # Retrieve relevant context with timing
+    # ---------------------------------------------------------------------- #
+    # RAG fallback — retrieve context, build prompt, generate response        #
+    # ---------------------------------------------------------------------- #
+
+    def _run_rag_fallback(
+        self,
+        user_query: str,
+        query_analysis: Dict[str, Any],
+        include_context: bool,
+        perspective: Optional[str],
+    ) -> Dict[str, Any]:
+        """Retrieve context, build prompt, and generate a response (blocking)."""
+        search_strategy = query_analysis["search_strategy"]
+        prioritize_docs = query_analysis.get("prioritize_docs", False)
+        offer_examples  = query_analysis.get("offer_examples", False)
+
+        # Retrieve
         retrieval_start = time.time()
         if include_context:
             context, sources = self.retriever.retrieve_and_build_context(
@@ -561,78 +809,53 @@ class RAGSystem:
                 top_k=search_strategy["top_k"],
                 min_score=search_strategy["min_score"],
                 format_style=search_strategy["format_style"],
-                prioritize_docs=prioritize_docs  # NEW: Pass documentation priority flag
+                prioritize_docs=prioritize_docs,
             )
         else:
-            context = ""
-            sources = []
+            context, sources = "", []
         retrieval_time = time.time() - retrieval_start
 
-        # Get collections that were searched (from retrieval metadata)
-        collections_searched = []
-        if hasattr(self.retriever, 'multi_store') and self.retriever.multi_store:
-            # Try to get from last search (this is a simplification)
-            collections_searched = getattr(self.retriever, '_last_collections_searched', [])
-        
-        # Build prompt using template manager
+        collections_searched = getattr(self.retriever, "_last_collections_searched", [])
+
+        # Build prompt
         prompt_manager = get_prompt_manager()
-
-        # Convert query_type string to QueryType enum if needed
-        if isinstance(query_analysis["query_type"], str):
-            query_type_enum = QueryType(query_analysis["query_type"])
-        else:
-            query_type_enum = query_analysis["query_type"]
-
-        # Prepend perspective so the LLM tailors depth and terminology
-        effective_query = user_query
-        if perspective:
-            perspective_labels = {
-                "developer": "Software Developer",
-                "data_engineer": "Data Engineer",
-                "data_steward": "Data Steward",
-                "governance_officer": "Governance Officer",
-            }
-            role_label = perspective_labels.get(perspective, perspective.replace("_", " ").title())
-            effective_query = f"[User role: {role_label}]\n{user_query}"
-
+        query_type_enum = (
+            QueryType(query_analysis["query_type"])
+            if isinstance(query_analysis["query_type"], str)
+            else query_analysis["query_type"]
+        )
+        effective_query = self._add_perspective_prefix(user_query, perspective)
         prompt = prompt_manager.build_prompt(
             user_query=effective_query,
             context=context,
             query_type=query_type_enum,
             collections_searched=collections_searched,
-            offer_examples=offer_examples
+            offer_examples=offer_examples,
         )
-
-        # Get appropriate system prompt based on collections, optionally tailored to perspective
         primary_collection = collections_searched[0] if collections_searched else None
         system_prompt = prompt_manager.get_system_prompt(
             primary_collection=primary_collection,
             perspective=perspective,
         )
 
-        # Generate response with timing
+        # Generate (thread-local streaming hook fires automatically if set)
         generation_start = time.time()
         response = self.llm_client.generate(
             prompt=prompt,
             system=system_prompt,
             temperature=self.rag_config.generation.temperature,
-            max_tokens=self.rag_config.generation.max_tokens
+            max_tokens=self.rag_config.generation.max_tokens,
         )
         generation_time = time.time() - generation_start
 
-        # Calculate average relevance score
         avg_relevance_score = 0.0
         if sources:
-            # Handle both SearchResult objects and dictionaries
-            scores = []
-            for s in sources:
-                if hasattr(s, 'score'):
-                    scores.append(s.score)
-                elif isinstance(s, dict):
-                    scores.append(s.get("score", 0.0))
+            scores = [
+                s.score if hasattr(s, "score") else s.get("score", 0.0)
+                for s in sources
+            ]
             avg_relevance_score = sum(scores) / len(scores) if scores else 0.0
 
-        # Build result with enhanced metrics
         result = {
             "query": user_query,
             "response": response,
@@ -643,12 +866,115 @@ class RAGSystem:
             "retrieval_time": retrieval_time,
             "generation_time": generation_time,
             "avg_relevance_score": avg_relevance_score,
-            "context_length": len(context)
+            "context_length": len(context),
         }
-
         logger.info(f"Generated response: {len(response)} chars from {len(sources)} sources")
-
         return result
+
+    @staticmethod
+    def _add_perspective_prefix(query: str, perspective: Optional[str]) -> str:
+        if not perspective:
+            return query
+        labels = {
+            "developer": "Software Developer",
+            "data_engineer": "Data Engineer",
+            "data_steward": "Data Steward",
+            "governance_officer": "Governance Officer",
+        }
+        label = labels.get(perspective, perspective.replace("_", " ").title())
+        return f"[User role: {label}]\n{query}"
+
+    # ---------------------------------------------------------------------- #
+    # Streaming query                                                          #
+    # ---------------------------------------------------------------------- #
+
+    def query_stream(
+        self,
+        user_query: str,
+        include_context: bool = True,
+        query_type_override: Optional[str] = None,
+        perspective: Optional[str] = None,
+        page_size: Optional[int] = None,
+        draft_id: Optional[str] = None,
+        egeria_authenticated: bool = True,
+    ) -> Iterator[str]:
+        """
+        Run the full pipeline and yield SSE-formatted strings.
+
+        Event sequence:
+          data: {"type":"start","query":"..."}          (immediately)
+          data: {"type":"token","text":"..."}           (per LLM token — only for streamable paths)
+          data: {"type":"done","result":{...}}          (when complete)
+
+        Non-streamable paths (report, plan generation, MCP commands) skip the
+        token events and emit start → done with no intermediate events.
+        """
+        from advisor.llm_client import _stream_local
+
+        token_q: "queue.Queue[Optional[str]]" = queue.Queue()
+        result_holder: List[Dict[str, Any]] = []
+        error_holder:  List[Exception] = []
+
+        def _on_token(t: str) -> None:
+            token_q.put(t)
+
+        def _worker() -> None:
+            _stream_local.on_token = _on_token
+            try:
+                result = self._process_query(
+                    user_query=user_query,
+                    include_context=include_context,
+                    dry_run=False,
+                    query_type_override=query_type_override,
+                    perspective=perspective,
+                    page_size=page_size,
+                    draft_id=draft_id,
+                    egeria_authenticated=egeria_authenticated,
+                )
+                result_holder.append(result)
+            except Exception as exc:
+                logger.error(f"query_stream worker error: {exc}", exc_info=True)
+                error_holder.append(exc)
+            finally:
+                _stream_local.on_token = None
+                token_q.put(None)  # sentinel
+
+        # Emit start immediately so the UI can show a spinner
+        yield f"data: {json.dumps({'type': 'start', 'query': user_query})}\n\n"
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+
+        # Forward tokens as they arrive
+        while True:
+            token = token_q.get()
+            if token is None:
+                break
+            yield f"data: {json.dumps({'type': 'token', 'text': token})}\n\n"
+
+        t.join()
+
+        if error_holder:
+            err_result = {
+                "query": user_query,
+                "response": f"An error occurred: {error_holder[0]}",
+                "query_type": "general",
+                "routing_agent": "error",
+                "sources": [], "num_sources": 0,
+                "retrieval_time": 0.0, "generation_time": 0.0,
+                "avg_relevance_score": 0.0, "context_length": 0,
+            }
+            yield f"data: {json.dumps({'type': 'done', 'result': err_result})}\n\n"
+        elif result_holder:
+            result = result_holder[0]
+            # Sources may contain non-serialisable SearchResult objects — normalise them
+            result = _serialise_result(result)
+            # Add intent metadata (mirrors what /api/query does synchronously)
+            from advisor.web.app import _intent_meta  # lazy import avoids circular dep
+            result.setdefault("intent", _intent_meta(result.get("query_type", "general")))
+            yield f"data: {json.dumps({'type': 'done', 'result': result})}\n\n"
+
+        yield "data: [DONE]\n\n"
 
     def _record_local_metrics(self, result: Dict[str, Any]):
         """Record metrics in local terminal dashboard database."""

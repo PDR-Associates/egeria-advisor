@@ -85,12 +85,23 @@ class ArtifactCanvas {
   }
 
   async addItem() {
-    const typeName = prompt('Command name (e.g. "Create Project", "Create Glossary Term"):');
-    if (!typeName?.trim()) return;
-    const newItem = this._opts.itemAdapter.makeNew(typeName.trim());
-    this._items.push(newItem);
-    await this._sync();
-    this._render();
+    // Use the command picker modal if available (Plan Editor mode),
+    // otherwise fall back to a simple prompt for non-browser environments.
+    if (typeof openCmdPicker === 'function') {
+      openCmdPicker(async (commandName) => {
+        const newItem = this._opts.itemAdapter.makeNew(commandName);
+        this._items.push(newItem);
+        await this._sync();
+        this._render();
+      });
+    } else {
+      const typeName = prompt('Command name (e.g. "Create Project", "Create Glossary Term"):');
+      if (!typeName?.trim()) return;
+      const newItem = this._opts.itemAdapter.makeNew(typeName.trim());
+      this._items.push(newItem);
+      await this._sync();
+      this._render();
+    }
   }
 
   toggleMode() {
@@ -153,13 +164,51 @@ class ArtifactCanvas {
     card.dataset.acIdx = idx;
     card.draggable = true;
 
+    // ── Note card — free-form text with no command UI ──────────────────────
+    if (type === '_note') {
+      card.classList.add('border-amber-800/30');
+      card.innerHTML = `
+        <div class="card-header flex items-center gap-1.5 px-2.5 py-2 cursor-grab active:cursor-grabbing">
+          <span class="text-slate-600 text-base leading-none shrink-0 select-none">≡</span>
+          <span class="text-slate-600 text-xs w-5 shrink-0 text-right">${idx + 1}.</span>
+          <span class="text-amber-400/80 text-xs font-semibold flex-1">📝 Note</span>
+          <button class="remove-btn text-slate-700 hover:text-red-400 text-xs px-1 transition-colors" title="Remove">✕</button>
+        </div>
+        <div class="px-2.5 pb-2.5">
+          <textarea class="narrative-input w-full bg-amber-950/20 text-slate-300 text-sm rounded p-2
+                           resize-none border border-amber-800/30 focus:outline-none focus:border-amber-500/50
+                           transition-colors placeholder-slate-600"
+            rows="3" placeholder="Section heading, context, or explanatory text for the plan document…"
+            data-ac-idx="${idx}">${_acEsc(narrative)}</textarea>
+        </div>
+      `;
+      card.querySelector('.remove-btn').addEventListener('click', async e => {
+        e.stopPropagation();
+        this._items.splice(idx, 1);
+        await this._sync();
+        this._render();
+      });
+      let _noteTimer;
+      card.querySelector('.narrative-input').addEventListener('input', e => {
+        clearTimeout(_noteTimer);
+        _noteTimer = setTimeout(async () => {
+          this._opts.itemAdapter.setNarrative(this._items[idx], e.target.value);
+          await this._sync();
+        }, 800);
+      });
+      this._attachDragHandlers(card, idx);
+      return card;
+    }
+
     card.innerHTML = `
       <div class="card-header flex items-center gap-1.5 px-2.5 py-2 cursor-grab active:cursor-grabbing">
         <span class="text-slate-600 text-base leading-none shrink-0 select-none">≡</span>
         <span class="text-slate-600 text-xs w-5 shrink-0 text-right">${idx + 1}.</span>
         <span class="ac-type text-violet-300 text-xs font-semibold flex-1 truncate">${_acEsc(type)}</span>
         <span class="w-2 h-2 rounded-full shrink-0 ${statusColor}" title="${statusTitle}"></span>
-        <button class="expand-btn text-slate-500 hover:text-slate-200 text-xs px-1 transition-colors" title="Expand fields">▾</button>
+        <button class="expand-btn flex items-center gap-1.5 text-slate-400 hover:text-violet-200 px-2 py-1 rounded hover:bg-slate-700/60 transition-colors" title="Expand / collapse fields">
+          <span class="expand-arrow text-lg leading-none">▾</span><span class="text-xs font-medium">Fields</span>
+        </button>
         <button class="remove-btn text-slate-700 hover:text-red-400 text-xs px-1 transition-colors" title="Remove">✕</button>
       </div>
       <div class="px-2.5 pb-1.5 flex flex-col gap-0.5">
@@ -173,10 +222,49 @@ class ArtifactCanvas {
           rows="2" placeholder="Rationale, instructions, or notes…"
           data-ac-idx="${idx}">${_acEsc(narrative)}</textarea>
       </div>
-      <div class="fields-section hidden px-2.5 pb-2.5 flex flex-col gap-1.5 max-h-64 overflow-y-auto"></div>
+      <div class="fields-section hidden px-2.5 pb-2.5 flex flex-col gap-1.5 overflow-y-auto" style="max-height:32rem"></div>
     `;
 
     // ── Drag-and-drop ──────────────────────────────────────────────────────
+    this._attachDragHandlers(card, idx);
+
+    // ── Remove ─────────────────────────────────────────────────────────────
+    card.querySelector('.remove-btn').addEventListener('click', async e => {
+      e.stopPropagation();
+      if (!confirm(`Remove "${type}"?`)) return;
+      this._items.splice(idx, 1);
+      await this._sync();
+      this._render();
+    });
+
+    // ── Expand ─────────────────────────────────────────────────────────────
+    card.querySelector('.expand-btn').addEventListener('click', e => {
+      e.stopPropagation();
+      const fs  = card.querySelector('.fields-section');
+      const btn = card.querySelector('.expand-btn');
+      const open = !fs.classList.contains('hidden');
+      fs.classList.toggle('hidden', open);
+      const arrow = btn.querySelector('.expand-arrow');
+      if (arrow) arrow.textContent = open ? '▾' : '▴';
+      if (!open) this._loadFields(card, item, idx);
+    });
+
+    // ── Narrative autosave ──────────────────────────────────────────────────
+    let narrativeTimer;
+    card.querySelector('.narrative-input').addEventListener('input', e => {
+      clearTimeout(narrativeTimer);
+      narrativeTimer = setTimeout(async () => {
+        this._opts.itemAdapter.setNarrative(this._items[idx], e.target.value);
+        await this._sync();
+      }, 800);
+    });
+
+    return card;
+  }
+
+  // ── Drag-and-drop wiring (shared between command cards and note cards) ────
+
+  _attachDragHandlers(card, idx) {
     card.addEventListener('dragstart', e => {
       this._dragSrcIdx = idx;
       card.classList.add('drag-ghost');
@@ -203,38 +291,6 @@ class ArtifactCanvas {
       await this._sync();
       this._render();
     });
-
-    // ── Remove ─────────────────────────────────────────────────────────────
-    card.querySelector('.remove-btn').addEventListener('click', async e => {
-      e.stopPropagation();
-      if (!confirm(`Remove "${type}"?`)) return;
-      this._items.splice(idx, 1);
-      await this._sync();
-      this._render();
-    });
-
-    // ── Expand ─────────────────────────────────────────────────────────────
-    card.querySelector('.expand-btn').addEventListener('click', e => {
-      e.stopPropagation();
-      const fs  = card.querySelector('.fields-section');
-      const btn = card.querySelector('.expand-btn');
-      const open = !fs.classList.contains('hidden');
-      fs.classList.toggle('hidden', open);
-      btn.textContent = open ? '▾' : '▴';
-      if (!open) this._loadFields(card, item, idx);
-    });
-
-    // ── Narrative autosave ──────────────────────────────────────────────────
-    let narrativeTimer;
-    card.querySelector('.narrative-input').addEventListener('input', e => {
-      clearTimeout(narrativeTimer);
-      narrativeTimer = setTimeout(async () => {
-        this._opts.itemAdapter.setNarrative(this._items[idx], e.target.value);
-        await this._sync();
-      }, 800);
-    });
-
-    return card;
   }
 
   // ── Field expansion ────────────────────────────────────────────────────────
@@ -247,7 +303,7 @@ class ArtifactCanvas {
 
     let fields = [];
     try {
-      const r = await fetch(fieldUrl);
+      const r = await fetch(fieldUrl, { headers: (typeof Auth !== 'undefined' ? Auth.getHeaders() : {}) });
       if (r.ok) fields = (await r.json()).fields || [];
     } catch { /* skip */ }
 
@@ -259,18 +315,24 @@ class ArtifactCanvas {
     }
 
     fields.forEach(f => {
-      const val = existingValues[f.name] || '';
+      const val        = existingValues[f.name] || '';
+      const hasOptions = Array.isArray(f.valid_values) && f.valid_values.length > 0;
+      const listId     = hasOptions ? `dl-${Math.random().toString(36).slice(2)}` : '';
+
       const row = document.createElement('div');
       row.className = 'flex flex-col gap-0.5';
       row.innerHTML = `
         <label class="text-xs text-slate-500 flex items-center gap-1">
           ${_acEsc(f.name)}
           ${f.required ? '<span class="text-amber-400">*</span>' : ''}
+          ${hasOptions ? `<span class="text-slate-600 text-[10px]">(${f.valid_values.length} options)</span>` : ''}
         </label>
         <input type="text" value="${_acEsc(val)}"
+          ${hasOptions ? `list="${listId}"` : ''}
           class="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200
                  focus:outline-none focus:border-violet-500/60 transition-colors"
           placeholder="${_acEsc(f.description || '')}" />
+        ${hasOptions ? `<datalist id="${listId}">${f.valid_values.map(v => `<option value="${_acEsc(v)}"></option>`).join('')}</datalist>` : ''}
       `;
       let t;
       row.querySelector('input').addEventListener('input', e => {

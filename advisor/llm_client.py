@@ -6,12 +6,20 @@ for text generation with the Egeria Advisor.
 """
 
 import requests
-from typing import Optional, Dict, Any, List
+import threading
+from typing import Optional, Dict, Any, List, Iterator, Callable
 from loguru import logger
 import json
 import time
 import asyncio
 import aiohttp
+
+# Thread-local streaming hook.  When query_stream() runs _process_query in a
+# worker thread it sets _stream_local.on_token to a callable(str).  Any
+# OllamaClient.generate() call on that thread will then stream tokens via
+# stream_generate() and forward each token to the callback, returning the
+# assembled full text so callers stay unchanged.
+_stream_local: threading.local = threading.local()
 
 from advisor.config import settings, get_full_config
 from advisor.mlflow_tracking import get_mlflow_tracker
@@ -138,6 +146,27 @@ class OllamaClient:
         logger.debug(f"Prompt length: {len(prompt)} chars")
         
         try:
+            # If a thread-local streaming callback is installed (set by
+            # RAGSystem.query_stream), stream tokens to it and return the
+            # assembled text so all callers remain unchanged.
+            _on_token: Optional[Callable[[str], None]] = getattr(_stream_local, "on_token", None)
+            if _on_token is not None:
+                full_response = ""
+                for token in self.stream_generate(
+                    prompt,
+                    model=model,
+                    system=system,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    **kwargs,
+                ):
+                    _on_token(token)
+                    full_response += token
+                generated_text = full_response
+                generation_time_ms = (time.time() - start_time) * 1000
+                logger.debug(f"Streamed {len(generated_text)} chars in {generation_time_ms:.0f}ms")
+                return generated_text
+
             # MLflow tracking removed - causes context manager conflicts
             # Tracking should be done at agent/CLI layer
             response = requests.post(
@@ -146,7 +175,7 @@ class OllamaClient:
                 timeout=self.timeout
             )
             response.raise_for_status()
-            
+
             if stream:
                 # Handle streaming response
                 full_response = ""
@@ -178,6 +207,91 @@ class OllamaClient:
             raise
             # MLflow tracking and metrics_collector removed - causes redundancy and conflicts
             # Tracking should be done at RAGSystem layer
+    def stream_generate(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        system: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        **kwargs,
+    ) -> Iterator[str]:
+        """Yield response tokens one at a time from Ollama's streaming API."""
+        model = model or self.default_model
+        payload: Dict[str, Any] = {
+            "model": model,
+            "prompt": prompt,
+            "stream": True,
+            "options": {
+                "temperature": temperature or self.default_params["temperature"],
+                "top_p": self.default_params["top_p"],
+                "top_k": self.default_params["top_k"],
+                "repeat_penalty": self.default_params["repeat_penalty"],
+            },
+        }
+        if system:
+            payload["system"] = system
+        if max_tokens:
+            payload["options"]["num_predict"] = max_tokens
+        payload["options"].update(kwargs)
+
+        response = requests.post(
+            f"{self.base_url}/api/generate",
+            json=payload,
+            stream=True,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        for line in response.iter_lines():
+            if line:
+                data = json.loads(line)
+                token = data.get("response", "")
+                if token:
+                    yield token
+                if data.get("done"):
+                    break
+
+    def stream_chat(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        **kwargs,
+    ) -> Iterator[str]:
+        """Yield chat response tokens one at a time from Ollama's streaming API."""
+        model = model or self.default_model
+        payload: Dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+            "options": {
+                "temperature": temperature or self.default_params["temperature"],
+                "top_p": self.default_params["top_p"],
+                "top_k": self.default_params["top_k"],
+                "repeat_penalty": self.default_params["repeat_penalty"],
+            },
+        }
+        if max_tokens:
+            payload["options"]["num_predict"] = max_tokens
+        payload["options"].update(kwargs)
+
+        response = requests.post(
+            f"{self.base_url}/api/chat",
+            json=payload,
+            stream=True,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        for line in response.iter_lines():
+            if line:
+                data = json.loads(line)
+                token = (data.get("message") or {}).get("content", "")
+                if token:
+                    yield token
+                if data.get("done"):
+                    break
+
     async def generate_async(
         self,
         prompt: str,
@@ -384,6 +498,12 @@ class _ModelOverrideClient:
 
     def generate(self, prompt: str, model: Optional[str] = None, **kwargs) -> str:
         return self._base.generate(prompt, model=model or self._model, **kwargs)
+
+    def stream_generate(self, prompt: str, model: Optional[str] = None, **kwargs) -> Iterator[str]:
+        return self._base.stream_generate(prompt, model=model or self._model, **kwargs)
+
+    def stream_chat(self, messages: List[Dict[str, str]], model: Optional[str] = None, **kwargs) -> Iterator[str]:
+        return self._base.stream_chat(messages, model=model or self._model, **kwargs)
 
     def __getattr__(self, name: str):
         return getattr(self._base, name)

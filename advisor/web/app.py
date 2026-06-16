@@ -17,9 +17,9 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pydantic import BaseModel
@@ -31,7 +31,13 @@ _SPEC_FILES = [
 ]
 
 app = FastAPI(title="Egeria Advisor", version="0.1.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"https?://localhost(:\d+)?",
+    allow_methods=["*"],
+    allow_headers=["*"],
+    allow_credentials=True,
+)
 app.mount("/static", StaticFiles(directory=_STATIC), name="static")
 
 from advisor.web.admin import router as _admin_router
@@ -72,7 +78,7 @@ async def _startup():
 class QueryRequest(BaseModel):
     query: str
     session_id: Optional[str] = None
-    output_format: Optional[str] = None    # reserved; format is detected from query text
+    output_format: Optional[str] = None    # "LIST"|"TABLE"|"MERMAID"|"MD"|"JSON"|"DICT" — overrides auto-detect
     intent_override: Optional[str] = None  # "explanation" | "code_search" | "report" | "command" | "debugging"
     search_string: Optional[str] = None    # filter string for report queries (default "*")
     perspective: Optional[str] = None      # user role: "developer" | "data_engineer" | "data_steward" | "governance_officer"
@@ -86,6 +92,8 @@ class FeedbackRequest(BaseModel):
     vote: int                           # 1 = positive, -1 = negative
     perspective: Optional[str] = None
     routing_agent: Optional[str] = None
+    response_text: Optional[str] = None   # actual response shown to user
+    intent_override: Optional[str] = None  # intent selector value from UI ("auto", "explain", etc.)
 
 
 # ── intent → badge metadata ────────────────────────────────────────────────────
@@ -182,13 +190,90 @@ async def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
+# ── Auth endpoints ─────────────────────────────────────────────────────────────
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class PortalTokenRequest(BaseModel):
+    portal_token: str
+
+
+@app.post("/api/auth/login")
+async def auth_login(req: LoginRequest) -> Dict[str, Any]:
+    """Validate Egeria credentials and return a JWT."""
+    from advisor.auth import validate_egeria_credentials, create_access_token
+    if not req.username or not req.password:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="username and password required")
+    ok = await asyncio.get_event_loop().run_in_executor(
+        None, validate_egeria_credentials, req.username, req.password
+    )
+    if not ok:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=401, detail="Invalid credentials or Egeria is unreachable.")
+    token = create_access_token(
+        user_id=req.username,
+        egeria_user=req.username,
+        egeria_password=req.password,
+    )
+    return {"access_token": token, "token_type": "bearer", "egeria_user": req.username}
+
+
+@app.post("/api/auth/portal")
+async def auth_portal(req: PortalTokenRequest) -> Dict[str, Any]:
+    """Exchange a Portal-issued short-lived token for a local JWT."""
+    from advisor.auth import exchange_portal_token, create_access_token
+    payload = exchange_portal_token(req.portal_token)
+    egeria_user = payload.get("egeria_user", "")
+    egeria_password = payload.get("egeria_password", "")
+    if not egeria_user:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="Portal token missing egeria_user.")
+    token = create_access_token(
+        user_id=egeria_user,
+        egeria_user=egeria_user,
+        egeria_password=egeria_password,
+    )
+    return {"access_token": token, "token_type": "bearer", "egeria_user": egeria_user}
+
+
+@app.get("/api/auth/me")
+async def auth_me(request: Request) -> Dict[str, Any]:
+    """Return info about the currently authenticated user."""
+    from advisor.auth import get_current_user
+    user = get_current_user(request)
+    if user is None:
+        return {"authenticated": False}
+    return {
+        "authenticated": True,
+        "user_id": user.get("sub", ""),
+        "egeria_user": user.get("egeria_user", ""),
+    }
+
+
+@app.post("/api/auth/logout")
+async def auth_logout() -> Dict[str, str]:
+    """Client-side logout — server has no session state to clear."""
+    return {"status": "ok"}
+
+
 @app.post("/api/query")
-async def query_endpoint(req: QueryRequest) -> Dict[str, Any]:
+async def query_endpoint(request: Request, req: QueryRequest) -> Dict[str, Any]:
     """Process a natural-language query and return the response dict."""
+    from advisor.auth import get_current_user
+    current_user = get_current_user(request)
+    egeria_authenticated = current_user is not None
+
     user_query = req.query.strip()
     # Append search filter tag so the report pipeline can extract it
     if req.search_string and req.search_string.strip() not in ("", "*"):
         user_query += f" filter:'{req.search_string.strip()}'"
+    # Append output format tag when explicitly set (e.g. from the report modal dropdown)
+    if req.output_format:
+        user_query += f" fmt:'{req.output_format.strip()}'"
 
     try:
         rag = _get_rag()
@@ -209,6 +294,7 @@ async def query_endpoint(req: QueryRequest) -> Dict[str, Any]:
                 perspective=req.perspective or None,
                 page_size=req.page_size or None,
                 draft_id=req.draft_id or None,
+                egeria_authenticated=egeria_authenticated,
             ),
         )
     except Exception as exc:
@@ -229,6 +315,77 @@ async def query_endpoint(req: QueryRequest) -> Dict[str, Any]:
     query_type = result.get("query_type", "general")
     result["intent"] = _intent_meta(query_type)
     return result
+
+
+@app.post("/api/query/stream")
+async def query_stream_endpoint(request: Request, req: QueryRequest) -> StreamingResponse:
+    """
+    Streaming variant of /api/query — returns Server-Sent Events.
+
+    Event sequence:
+      data: {"type":"start","query":"..."}
+      data: {"type":"token","text":"..."}   (repeated, only for LLM-generation paths)
+      data: {"type":"done","result":{...}}
+      data: [DONE]
+    """
+    from advisor.auth import get_current_user
+    current_user = get_current_user(request)
+    egeria_authenticated = current_user is not None
+
+    user_query = req.query.strip()
+    if req.search_string and req.search_string.strip() not in ("", "*"):
+        user_query += f" filter:'{req.search_string.strip()}'"
+    if req.output_format:
+        user_query += f" fmt:'{req.output_format.strip()}'"
+
+    loop = asyncio.get_event_loop()
+    rag  = _get_rag()
+
+    async def event_gen():
+        # Bridge sync generator → async generator via asyncio.Queue so the
+        # event loop stays unblocked while the worker thread produces tokens.
+        q: asyncio.Queue[Optional[str]] = asyncio.Queue(maxsize=256)
+
+        def producer() -> None:
+            try:
+                for chunk in rag.query_stream(
+                    user_query=user_query,
+                    include_context=True,
+                    query_type_override=req.intent_override or None,
+                    perspective=req.perspective or None,
+                    page_size=req.page_size or None,
+                    draft_id=req.draft_id or None,
+                    egeria_authenticated=egeria_authenticated,
+                ):
+                    loop.call_soon_threadsafe(q.put_nowait, chunk)
+            except Exception as exc:
+                logger.error(f"query_stream producer error: {exc}", exc_info=True)
+                err = json.dumps({"type": "error", "message": str(exc)})
+                loop.call_soon_threadsafe(q.put_nowait, f"data: {err}\n\n")
+            finally:
+                loop.call_soon_threadsafe(q.put_nowait, None)  # sentinel
+
+        import concurrent.futures
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = loop.run_in_executor(executor, producer)
+
+        while True:
+            item = await q.get()
+            if item is None:
+                break
+            yield item
+
+        await future
+        executor.shutdown(wait=False)
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",   # disable nginx buffering
+        },
+    )
 
 
 @app.get("/api/reports")
@@ -314,25 +471,68 @@ async def save_plan(doc_id: str, body: Dict[str, Any]) -> Dict[str, str]:
 @app.post("/api/plans/{doc_id}/validate")
 async def validate_plan(doc_id: str) -> Dict[str, Any]:
     """Run Dr.Egeria validate directive on the plan's command section."""
-    from fastapi import HTTPException
+    from advisor.agents.governance_plan_agent import get_governance_plan_agent
+    agent = get_governance_plan_agent()
+    result = await asyncio.get_event_loop().run_in_executor(
+        None, agent.validate, doc_id
+    )
+    return result
+
+
+@app.post("/api/plans/{doc_id}/retry")
+async def retry_plan(doc_id: str) -> Dict[str, Any]:
+    """Move a failed outbox plan back to inbox and re-execute it immediately."""
+    from advisor.agents.governance_plan_agent import get_governance_plan_agent
+    agent = get_governance_plan_agent()
+    result = await asyncio.get_event_loop().run_in_executor(
+        None, agent.retry, doc_id
+    )
+    return result
+
+
+@app.post("/api/plans/{doc_id}/recover")
+async def recover_plan(doc_id: str) -> Dict[str, Any]:
+    """Move an outbox plan back to inbox for editing (does NOT re-execute)."""
     from advisor.governance_docs import get_doc_manager
-    from advisor.agents.governance_plan_agent import GovernancePlanAgent
-    from advisor.agents.dr_egeria_agent import DrEgeriaActionAgent
     dm = get_doc_manager()
-    content = dm.load(doc_id)
-    if content is None:
+    moved = dm.move_to_inbox(doc_id)
+    if not moved:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=409, detail=f"Could not recover {doc_id!r} — it may not be in the outbox, or inbox already has a copy.")
+    return {"status": "ok", "doc_id": doc_id, "folder": "inbox"}
+
+
+@app.get("/api/plans/{doc_id}/versions")
+async def list_plan_versions(doc_id: str) -> Dict[str, Any]:
+    """List available versions for a plan document."""
+    from advisor.governance_docs import get_doc_manager
+    dm = get_doc_manager()
+    versions = dm.list_versions(doc_id)
+    return {"doc_id": doc_id, "versions": versions}
+
+
+@app.post("/api/plans/{doc_id}/versions/{version_file:path}/restore")
+async def restore_plan_version(doc_id: str, version_file: str) -> Dict[str, Any]:
+    """Restore a specific version of a plan to inbox."""
+    from advisor.governance_docs import get_doc_manager
+    from fastapi import HTTPException
+    dm = get_doc_manager()
+    ok = dm.restore_version(doc_id, version_file)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Version {version_file!r} not found")
+    return {"status": "ok", "doc_id": doc_id, "restored_from": version_file}
+
+
+@app.delete("/api/plans/{doc_id}")
+async def delete_plan(doc_id: str) -> Dict[str, Any]:
+    """Delete a plan document from inbox or outbox (saves a version first)."""
+    from advisor.governance_docs import get_doc_manager
+    from fastapi import HTTPException
+    dm = get_doc_manager()
+    ok = dm.delete(doc_id)
+    if not ok:
         raise HTTPException(status_code=404, detail=f"Plan {doc_id!r} not found")
-    cmd_section = GovernancePlanAgent._extract_command_section(content)
-    if not cmd_section.strip():
-        return {"status": "ok", "result": "No commands to validate."}
-    action_agent = DrEgeriaActionAgent()
-    try:
-        result = action_agent.execute(cmd_section, directive="validate", dry_run=False)
-        return {"status": "ok", "result": result}
-    except ConnectionError as exc:
-        return {"status": "error", "result": f"MCP server not reachable: {exc}"}
-    except Exception as exc:
-        return {"status": "error", "result": f"Validation failed: {exc}"}
+    return {"status": "deleted", "doc_id": doc_id}
 
 
 @app.get("/api/drafts")
@@ -376,6 +576,44 @@ async def delete_draft(draft_id: str) -> Dict[str, str]:
     from advisor.governance_draft import get_draft_manager
     deleted = get_draft_manager().delete(draft_id)
     return {"status": "ok" if deleted else "not_found"}
+
+
+@app.get("/api/actions")
+async def list_actions() -> Dict[str, Any]:
+    """Return all known Dr.Egeria commands grouped by family.
+
+    Used by the Plan Editor command picker modal to populate the command catalog.
+    Each entry: {name, family, aliases, in_catalog}
+    """
+    from advisor.command_keyword_index import get_command_keyword_index
+    return {"families": get_command_keyword_index().all_commands()}
+
+
+@app.post("/api/drafts/builder")
+async def create_builder_draft(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Create a new blank draft in builder mode (Plan Editor entry point).
+
+    Body: {title: str, perspective?: str}
+    Returns the draft spec with builder_mode=true and an empty command list.
+    """
+    from advisor.governance_draft import get_draft_manager
+    title = (body.get("title") or "Untitled Plan").strip()
+    perspective = body.get("perspective")
+    dm = get_draft_manager()
+    spec = dm.create(
+        title=title,
+        original_query=f"[builder] {title}",
+        commands_identified=[],
+        pending_questions={"required": [], "optional": []},
+        pre_filled_answers={},
+        mode="basic",
+        perspective=perspective,
+    )
+    spec["phase"] = "confirm_commands"
+    spec["phase_label"] = "Building plan"
+    spec["builder_mode"] = True
+    dm.save(spec)
+    return spec
 
 
 @app.get("/api/plan-templates")
@@ -455,6 +693,20 @@ async def get_template_fields(command_name: str, level: str = "basic") -> Dict[s
     except Exception:
         return {"fields": [], "level": level}
 
+    # Enrich valid_values for known field patterns with live Egeria data
+    zone_values: list[str] = []
+    for a in template["attributes"]:
+        name_low = a["name"].lower()
+        if not a.get("valid_values") and "zone" in name_low:
+            if not zone_values:
+                try:
+                    from advisor.egeria_context import EgeriaContext
+                    zone_values = EgeriaContext().list_governance_zones()
+                except Exception:
+                    pass
+            if zone_values:
+                a["valid_values"] = zone_values
+
     return {
         "level": level,
         "fields": [
@@ -472,6 +724,17 @@ async def get_template_fields(command_name: str, level: str = "basic") -> Dict[s
     }
 
 
+@app.get("/api/egeria/zones")
+async def get_governance_zones() -> Dict[str, Any]:
+    """Return all governance zone names from the live Egeria instance."""
+    try:
+        from advisor.egeria_context import EgeriaContext
+        zones = EgeriaContext().list_governance_zones()
+        return {"zones": zones, "count": len(zones)}
+    except Exception as exc:
+        return {"zones": [], "count": 0, "error": str(exc)}
+
+
 @app.post("/api/feedback")
 async def record_feedback(req: FeedbackRequest) -> Dict[str, str]:
     """Record 👍/👎 feedback."""
@@ -483,11 +746,37 @@ async def record_feedback(req: FeedbackRequest) -> Dict[str, str]:
             query=req.query,
             query_type=req.query_type,
             collections_searched=[],
-            response_length=0,
+            response_length=len(req.response_text or ""),
             rating=rating,
             perspective=req.perspective or None,
             routing_agent=req.routing_agent or None,
+            feedback_text=req.intent_override or None,  # repurpose for intent label until schema expanded
+            user_comment=req.intent_override,
         )
+        # Also write the full record including response_text to an extended JSONL
+        try:
+            import json as _json
+            from pathlib import Path
+            ext_path = Path("data/feedback/feedback_extended.jsonl")
+            ext_path.parent.mkdir(parents=True, exist_ok=True)
+            from datetime import datetime as _dt
+            record = {
+                "timestamp": _dt.utcnow().isoformat(),
+                "query": req.query,
+                "query_type": req.query_type,
+                "vote": req.vote,
+                "rating": rating,
+                "perspective": req.perspective,
+                "intent_override": req.intent_override,
+                "routing_agent": req.routing_agent,
+                "response_text": req.response_text,
+                "triage_status": "new",
+                "analysis_comments": "",
+            }
+            with open(ext_path, "a") as f:
+                f.write(_json.dumps(record) + "\n")
+        except Exception as exc:
+            logger.warning(f"Extended feedback write failed: {exc}")
     except Exception as exc:
         logger.warning(f"Feedback recording failed: {exc}")
     return {"status": "ok"}
@@ -498,6 +787,47 @@ async def list_perspectives() -> Dict[str, Any]:
     """Return available perspectives (live from Egeria or CSV fallback)."""
     from advisor.perspective_manager import get_all
     return {"perspectives": get_all()}
+
+
+@app.get("/api/feedback/extended")
+async def feedback_extended() -> Dict[str, Any]:
+    """Return all extended feedback records (with response_text, triage_status, etc.)."""
+    import json as _json
+    from pathlib import Path
+    path = Path("data/feedback/feedback_extended.jsonl")
+    records = []
+    if path.exists():
+        for line in path.read_text().splitlines():
+            try:
+                records.append(_json.loads(line))
+            except Exception:
+                pass
+    return {"records": records, "total": len(records)}
+
+
+@app.patch("/api/feedback/extended/{idx}")
+async def update_feedback_record(idx: int, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Update triage_status or analysis_comments on a feedback record by line index."""
+    import json as _json
+    from pathlib import Path
+    from fastapi import HTTPException
+    path = Path("data/feedback/feedback_extended.jsonl")
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="No feedback records")
+    lines = path.read_text().splitlines()
+    if idx < 0 or idx >= len(lines):
+        raise HTTPException(status_code=404, detail=f"Record {idx} not found")
+    try:
+        record = _json.loads(lines[idx])
+    except Exception:
+        raise HTTPException(status_code=500, detail="Corrupt record")
+    allowed = {"triage_status", "analysis_comments"}
+    for k, v in body.items():
+        if k in allowed:
+            record[k] = v
+    lines[idx] = _json.dumps(record)
+    path.write_text("\n".join(lines) + "\n")
+    return {"status": "ok", "record": record}
 
 
 @app.get("/api/feedback/analysis")

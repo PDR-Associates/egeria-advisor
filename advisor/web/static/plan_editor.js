@@ -24,7 +24,7 @@ let _ped = {
 async function openPlanEditor(doc_id, draft_id) {
   let data;
   try {
-    const r = await fetch(`/api/plans/${encodeURIComponent(doc_id)}`);
+    const r = await fetch(`/api/plans/${encodeURIComponent(doc_id)}`, { headers: Auth.getHeaders() });
     if (!r.ok) { alert(`Could not load plan ${doc_id}`); return; }
     data = await r.json();
   } catch (e) { alert(`Error loading plan: ${e.message}`); return; }
@@ -178,7 +178,7 @@ async function _fetchTemplateFields(action, level = 'basic') {
 
   try {
     const url = `/api/templates/${encodeURIComponent(action)}/fields?level=${encodeURIComponent(level)}`;
-    const r   = await fetch(url);
+    const r   = await fetch(url, { headers: Auth.getHeaders() });
     if (r.ok) {
       const data = await r.json();
       _ped.templateCache[cacheKey] = data.fields || [];
@@ -238,12 +238,22 @@ function _renderEditor() {
     modeBtn.onclick     = _toggleMode;
   }
 
-  // Disable editing for outbox plans
+  // Toolbar state depends on whether the plan is in inbox (editable) or outbox (read-only)
   const editable = _ped.isInbox;
   overlay.querySelector('#ped-save-btn').disabled     = !editable;
-  overlay.querySelector('#ped-validate-btn').disabled = !editable;
-  overlay.querySelector('#ped-execute-btn').disabled  = !editable;
-  overlay.querySelector('#ped-execute-btn').textContent = editable ? '▶ Execute' : '(Executed)';
+  overlay.querySelector('#ped-validate-btn').disabled = false;   // validate works on inbox + outbox
+  overlay.querySelector('#ped-validate-btn').title    = 'Validate commands against Egeria';
+  const execBtn = overlay.querySelector('#ped-execute-btn');
+  execBtn.textContent = editable ? '▶ Execute' : '▶ Execute';
+  execBtn.disabled    = !editable;
+  execBtn.onclick     = _executePlanDoc;
+  // Reset button colour (may have been changed in a previous outbox load)
+  execBtn.className   = execBtn.className
+    .replace('bg-amber-700 hover:bg-amber-600', 'bg-violet-700 hover:bg-violet-600');
+
+  // For outbox plans, show/hide the recovery toolbar
+  const recoveryBar = overlay.querySelector('#ped-recovery-bar');
+  if (recoveryBar) recoveryBar.classList.toggle('hidden', editable);
 
   // Narrative textarea
   const narrativeEl = overlay.querySelector('#ped-narrative');
@@ -255,8 +265,33 @@ function _renderEditor() {
   const outcomeEl = overlay.querySelector('#ped-outcome');
   if (_ped.outcome) {
     outcomeEl.classList.remove('hidden');
-    outcomeEl.querySelector('.ped-outcome-body').innerHTML =
+    const outcomeBody = outcomeEl.querySelector('.ped-outcome-body');
+    outcomeBody.innerHTML =
       typeof marked !== 'undefined' ? marked.parse(_ped.outcome) : _ped.outcome.replace(/\n/g, '<br>');
+    // Activate Mermaid diagrams in the outcome (e.g. from View Report)
+    outcomeBody.querySelectorAll('code.language-mermaid').forEach(el => {
+      const c = document.createElement('div');
+      c.className = 'mermaid my-2';
+      c.textContent = el.textContent;
+      el.parentElement.replaceWith(c);
+    });
+    if (typeof mermaid !== 'undefined') mermaid.run({ nodes: outcomeBody.querySelectorAll('.mermaid') });
+    // Re-run Mermaid when a <details> section is expanded (e.g. Dr.Egeria Execution Output)
+    outcomeBody.querySelectorAll('details').forEach(det => {
+      det.addEventListener('toggle', () => {
+        if (det.open && typeof mermaid !== 'undefined') {
+          det.querySelectorAll('code.language-mermaid').forEach(el => {
+            if (!el.parentElement.classList.contains('mermaid-done')) {
+              const c = document.createElement('div');
+              c.className = 'mermaid my-2 mermaid-done';
+              c.textContent = el.textContent;
+              el.parentElement.replaceWith(c);
+            }
+          });
+          mermaid.run({ nodes: det.querySelectorAll('.mermaid') });
+        }
+      });
+    });
   } else {
     outcomeEl.classList.add('hidden');
   }
@@ -587,7 +622,7 @@ async function _savePlanEdits() {
   try {
     const r = await fetch(`/api/plans/${encodeURIComponent(_ped.doc_id)}`, {
       method:  'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
       body:    JSON.stringify({ content }),
     });
     if (!r.ok) throw new Error(await r.text());
@@ -608,21 +643,92 @@ async function _validatePlanDoc() {
 
   const btn    = document.getElementById('ped-validate-btn');
   const panel  = document.getElementById('ped-validate-result');
+  if (!panel) { console.error('ped-validate-result panel not found'); return; }
   btn.disabled = true; btn.textContent = 'Validating…';
-  panel.innerHTML = '<span class="text-slate-400">Running Dr.Egeria validate…</span>';
   panel.classList.remove('hidden');
+  panel.innerHTML = '<span class="text-slate-400">Running Dr.Egeria validate…</span>';
+
+  let data;
+  try {
+    const r = await fetch(`/api/plans/${encodeURIComponent(_ped.doc_id)}/validate`, { method: 'POST', headers: Auth.getHeaders() });
+    data = await r.json();
+    console.log('[validate] API response:', JSON.stringify(data).slice(0, 500));
+  } catch (fetchErr) {
+    panel.innerHTML = `<span class="text-red-400">Request failed: ${_esc(fetchErr.message)}</span>`;
+    btn.textContent = '✅ Validate'; btn.disabled = false;
+    return;
+  }
 
   try {
-    const r    = await fetch(`/api/plans/${encodeURIComponent(_ped.doc_id)}/validate`, { method: 'POST' });
-    const data = await r.json();
-    const ok   = data.status === 'ok';
+
+    // success: boolean field from Dr.Egeria (when available); fall back to query_type check
+    const success   = ('success' in data) ? data.success : (data.query_type === 'plan_validated');
+    const valErrs   = data.validation_errors || [];
+    const execErrs  = data.execution_errors  || [];
+    const allErrors = [...valErrs, ...execErrs];
+
+    const passed    = success && allErrors.length === 0;
+    const headerCls = passed ? 'text-emerald-400' : allErrors.length ? 'text-amber-400' : 'text-red-400';
+    const headerTxt = passed
+      ? '✓ Validation passed'
+      : allErrors.length
+        ? `⚠ ${allErrors.length} issue${allErrors.length !== 1 ? 's' : ''} found`
+        : '✗ Validation failed';
+
+    let html = `<div class="flex items-center justify-between mb-2">` +
+      `<span class="font-semibold ${headerCls}">${headerTxt}</span>` +
+      `<button onclick="document.getElementById('ped-validate-result').classList.add('hidden')" ` +
+      `class="text-slate-500 hover:text-slate-200 text-xs">✕ close</button></div>`;
+
+    // Structured errors table
+    if (allErrors.length) {
+      html += `<table class="w-full text-xs mb-2 border-collapse">` +
+        `<thead><tr class="border-b border-slate-600">` +
+        `<th class="text-left text-slate-500 pb-1 pr-3 font-normal">Step</th>` +
+        `<th class="text-left text-slate-500 pb-1 pr-3 font-normal">Command</th>` +
+        `<th class="text-left text-slate-500 pb-1 font-normal">Issue</th>` +
+        `</tr></thead><tbody>`;
+      for (const e of allErrors) {
+        const step = (e.step != null) ? e.step : (e.index != null ? e.index : '—');
+        const cmd  = e.command || e.name  || '—';
+        const msg  = e.message || e.error || (typeof e === 'string' ? e : JSON.stringify(e));
+        html += `<tr class="border-t border-slate-700/50">` +
+          `<td class="py-1 pr-3 text-slate-400 align-top">${_esc(String(step))}</td>` +
+          `<td class="py-1 pr-3 text-slate-300 align-top">${_esc(String(cmd))}</td>` +
+          `<td class="py-1 text-red-300 align-top">${_esc(String(msg))}</td></tr>`;
+      }
+      html += `</tbody></table>`;
+    }
+
+    // Always show raw Dr.Egeria output when validation didn't pass —
+    // error details may be in the output text even if structured errors weren't parsed.
+    const rawOutput = String(data.output || data.response || data.result || '').trim();
+    if (!passed && rawOutput) {
+      const lines   = rawOutput.split('\n');
+      const preview = lines.slice(0, 14).join('\n');
+      const rest    = lines.slice(14).join('\n');
+      html += `<div class="mt-2 mb-1 text-xs text-slate-500 font-semibold">Dr.Egeria output:</div>`;
+      html += `<pre class="text-xs text-slate-300 whitespace-pre-wrap bg-slate-900/60 rounded p-2 max-h-52 overflow-y-auto">${_esc(preview)}</pre>`;
+      if (rest) {
+        html += `<details class="mt-1"><summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-300">` +
+          `Show more (${lines.length} lines total)</summary>` +
+          `<pre class="text-xs text-slate-400 whitespace-pre-wrap mt-1">${_esc(rest)}</pre></details>`;
+      }
+    } else if (passed) {
+      html += `<p class="text-xs text-slate-500 mt-1">All commands passed pre-flight checks. Use Execute to apply them to Egeria.</p>`;
+    }
+
+    panel.innerHTML = html;
+    panel.scrollTop = 0;
+  } catch (renderErr) {
+    console.error('[validate] render error:', renderErr);
+    // Absolute fallback — dump the raw API response so something useful is visible
+    const raw = data ? JSON.stringify(data, null, 2) : '(no data)';
     panel.innerHTML =
-      `<div class="font-semibold mb-2 ${ok ? 'text-emerald-400' : 'text-red-400'}">${ok ? '✓ Validation passed' : '✗ Validation errors'}</div>` +
-      `<pre class="text-xs text-slate-300 whitespace-pre-wrap">${_esc(String(data.result || ''))}</pre>`;
-  } catch (e) {
-    panel.innerHTML = `<span class="text-red-400">Validation request failed: ${_esc(e.message)}</span>`;
+      `<div class="text-red-400 text-xs mb-1">Render error: ${_esc(String(renderErr))}</div>` +
+      `<pre class="text-xs text-slate-400 whitespace-pre-wrap max-h-48 overflow-y-auto">${_esc(raw.slice(0, 3000))}</pre>`;
   } finally {
-    btn.textContent = 'Validate'; btn.disabled = false;
+    btn.textContent = '✅ Validate'; btn.disabled = false;
   }
 }
 
@@ -634,6 +740,76 @@ async function _executePlanDoc() {
   closePlanEditor();
   if (typeof appendMessage === 'function') appendMessage('you', `execute the plan ${_ped.doc_id}`);
   if (typeof submitQuery   === 'function') submitQuery(`execute the plan ${_ped.doc_id}`, { intent_override: 'command' });
+}
+
+// Kept for sidebar retry button compatibility (plan_editor.js is not the caller there)
+async function _retryPlanDoc() {
+  // Retry without editing — sidebar button is the primary way to do this.
+  // From the editor, use "Recover for Editing" instead.
+  await pedRecoverForEditing();
+}
+
+// ── Recovery (outbox → inbox for editing, no immediate re-execution) ──────────
+
+async function pedRecoverForEditing() {
+  if (!confirm(`Recover "${_ped.doc_id}" for editing?\nThis moves it back to inbox so you can edit, validate, and re-execute.`)) return;
+  const bar = document.getElementById('ped-recovery-bar');
+  if (bar) bar.innerHTML = '<span class="text-amber-300">Recovering…</span>';
+  try {
+    const r = await fetch(`/api/plans/${encodeURIComponent(_ped.doc_id)}/recover`, { method: 'POST', headers: Auth.getHeaders() });
+    if (!r.ok) { const e = await r.json(); throw new Error(e.detail || r.statusText); }
+    // Reload editor with the now-inbox version
+    const draft_id = _ped.draft_id;
+    await openPlanEditor(_ped.doc_id, draft_id);
+    if (typeof loadPlans === 'function') loadPlans();
+    _showToast('Plan recovered — you can now edit, validate, and execute.');
+  } catch (e) {
+    if (bar) bar.innerHTML = `<span class="text-red-400">Recovery failed: ${_esc(e.message)}</span>`;
+  }
+}
+
+async function pedShowVersionHistory() {
+  const panel = document.getElementById('ped-version-panel');
+  const list  = document.getElementById('ped-version-list');
+  panel.classList.remove('hidden');
+  list.textContent = 'Loading…';
+  try {
+    const r    = await fetch(`/api/plans/${encodeURIComponent(_ped.doc_id)}/versions`, { headers: Auth.getHeaders() });
+    const data = await r.json();
+    const vers = data.versions || [];
+    if (!vers.length) { list.textContent = 'No saved versions.'; return; }
+    list.innerHTML = '';
+    vers.forEach(v => {
+      const row = document.createElement('div');
+      row.className = 'flex items-center gap-2 py-0.5';
+      // Format timestamp "20260614_170122" → "2026-06-14 17:01:22"
+      const ts = v.timestamp.replace(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$/, '$1-$2-$3 $4:$5:$6');
+      row.innerHTML =
+        `<span class="flex-1 text-slate-300">${ts || v.version_file}</span>` +
+        `<button class="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 transition-colors" ` +
+        `onclick="pedRestoreVersion('${_esc(v.version_file)}')">Restore</button>`;
+      list.appendChild(row);
+    });
+  } catch (e) {
+    list.innerHTML = `<span class="text-red-400">Failed to load versions: ${_esc(e.message)}</span>`;
+  }
+}
+
+async function pedRestoreVersion(version_file) {
+  if (!confirm(`Restore this version of "${_ped.doc_id}"?\nThe current version will be saved before restoring.`)) return;
+  try {
+    const r = await fetch(
+      `/api/plans/${encodeURIComponent(_ped.doc_id)}/versions/${encodeURIComponent(version_file)}/restore`,
+      { method: 'POST', headers: Auth.getHeaders() }
+    );
+    if (!r.ok) { const e = await r.json(); throw new Error(e.detail || r.statusText); }
+    document.getElementById('ped-version-panel').classList.add('hidden');
+    await openPlanEditor(_ped.doc_id, _ped.draft_id);
+    if (typeof loadPlans === 'function') loadPlans();
+    _showToast('Version restored to inbox — ready to edit and execute.');
+  } catch (e) {
+    _showToast(`Restore failed: ${e.message}`);
+  }
 }
 
 // ── Toast notifications ───────────────────────────────────────────────────────

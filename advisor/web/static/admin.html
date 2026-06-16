@@ -102,6 +102,56 @@
     </div>
   </section>
 
+  <!-- ── Feedback Review ──────────────────────────────────────────────── -->
+  <section id="feedback-review-section">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-wider">Feedback Review</h2>
+      <div class="flex items-center gap-2">
+        <label class="text-xs text-slate-500">Filter:</label>
+        <select id="fb-filter-vote" onchange="loadFeedbackReview()" class="text-xs bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200">
+          <option value="all">All votes</option>
+          <option value="-1">👎 Negative</option>
+          <option value="1">👍 Positive</option>
+        </select>
+        <select id="fb-filter-triage" onchange="loadFeedbackReview()" class="text-xs bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200">
+          <option value="all">All statuses</option>
+          <option value="new">New</option>
+          <option value="known_issue">Known issue</option>
+          <option value="actioned">Actioned</option>
+          <option value="deferred">Deferred</option>
+          <option value="not_an_issue">Not an issue</option>
+        </select>
+      </div>
+    </div>
+    <div class="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden">
+      <div id="fb-review-body">
+        <div class="p-4 text-center text-slate-500 text-xs">Loading…</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Plan Sessions ─────────────────────────────────────────────────── -->
+  <section id="sessions-section">
+    <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">Plan Sessions</h2>
+    <div class="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-slate-700 text-xs text-slate-500 uppercase tracking-wider">
+            <th class="text-left px-4 py-2">Session</th>
+            <th class="text-left px-4 py-2 hidden md:table-cell">Started</th>
+            <th class="text-left px-4 py-2 hidden lg:table-cell">User</th>
+            <th class="text-center px-4 py-2">Turns</th>
+            <th class="text-center px-4 py-2">Outcome</th>
+            <th class="text-right px-4 py-2">View</th>
+          </tr>
+        </thead>
+        <tbody id="sessions-body">
+          <tr><td colspan="6" class="px-4 py-6 text-center text-slate-500">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
   <!-- ── Maintenance + Jobs (2-col) ─────────────────────────────────────── -->
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
 
@@ -150,6 +200,28 @@
     <div class="px-4 py-2 border-t border-slate-700 shrink-0 flex items-center justify-between">
       <span id="modal-job-status" class="text-xs"></span>
       <button onclick="closeJobModal()" class="px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Session transcript modal -->
+<div id="session-modal" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50"
+     onclick="if(event.target===this)closeSessionModal()">
+  <div class="bg-slate-800 border border-slate-600 rounded-xl w-4/5 max-w-4xl max-h-[80vh] flex flex-col shadow-2xl">
+    <div class="flex items-center justify-between px-4 py-3 border-b border-slate-700 shrink-0">
+      <div class="flex items-center gap-3">
+        <span id="session-modal-title" class="text-sm font-semibold text-slate-200">Session Transcript</span>
+        <span id="session-modal-outcome" class="text-xs px-2 py-0.5 rounded"></span>
+      </div>
+      <div class="flex items-center gap-3">
+        <span class="text-xs text-slate-500">Failures highlighted in amber/red</span>
+        <button onclick="closeSessionModal()" class="text-slate-500 hover:text-slate-200">✕</button>
+      </div>
+    </div>
+    <div id="session-modal-body" class="flex-1 overflow-y-auto p-4 space-y-2 font-mono text-xs"></div>
+    <div class="px-4 py-2 border-t border-slate-700 shrink-0 flex items-center justify-between">
+      <span id="session-modal-meta" class="text-xs text-slate-500"></span>
+      <button onclick="closeSessionModal()" class="px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded">Close</button>
     </div>
   </div>
 </div>
@@ -212,6 +284,8 @@ async function refresh() {
   await refreshJobs();
   loadPlanStats();
   loadFeedbackAnalysis();
+  loadFeedbackReview();
+  loadSessions();
 }
 
 // ── System health ──────────────────────────────────────────────────────────
@@ -607,6 +681,121 @@ async function loadFeedbackAnalysis() {
   el.innerHTML = summaryCard + agentCard + qtypeCard + gapCard;
 }
 
+// ── Feedback Review ────────────────────────────────────────────────────────
+const _TRIAGE_OPTIONS = [
+  { value: 'new',          label: 'New',          cls: 'text-sky-400' },
+  { value: 'known_issue',  label: 'Known issue',  cls: 'text-amber-400' },
+  { value: 'actioned',     label: 'Actioned',     cls: 'text-emerald-400' },
+  { value: 'deferred',     label: 'Deferred',     cls: 'text-slate-400' },
+  { value: 'not_an_issue', label: 'Not an issue', cls: 'text-slate-500' },
+];
+
+function _triageCls(status) {
+  return (_TRIAGE_OPTIONS.find(o => o.value === status) || _TRIAGE_OPTIONS[0]).cls;
+}
+
+async function loadFeedbackReview() {
+  const el = document.getElementById('fb-review-body');
+  if (!el) return;
+  let records = [];
+  try {
+    const r = await fetch('/api/feedback/extended');
+    if (!r.ok) throw new Error(r.statusText);
+    const data = await r.json();
+    records = data.records || [];
+  } catch (e) {
+    el.innerHTML = `<div class="p-4 text-xs text-slate-500">Unable to load feedback records.</div>`;
+    return;
+  }
+
+  // Apply filters
+  const voteFilter   = document.getElementById('fb-filter-vote')?.value || 'all';
+  const triageFilter = document.getElementById('fb-filter-triage')?.value || 'all';
+  let filtered = records.filter((rec, idx) => { rec._idx = idx; return true; });
+  if (voteFilter !== 'all') filtered = filtered.filter(r => String(r.vote) === voteFilter);
+  if (triageFilter !== 'all') filtered = filtered.filter(r => (r.triage_status || 'new') === triageFilter);
+
+  if (!filtered.length) {
+    el.innerHTML = `<div class="p-4 text-xs text-slate-500">No records match current filter (${records.length} total).</div>`;
+    return;
+  }
+
+  // Newest first
+  filtered = filtered.slice().reverse();
+
+  const rows = filtered.map(rec => {
+    const idx = rec._idx;
+    const voteIcon   = rec.vote === 1 ? '👍' : rec.vote === -1 ? '👎' : '—';
+    const triageCls  = _triageCls(rec.triage_status || 'new');
+    const triageOpts = _TRIAGE_OPTIONS.map(o =>
+      `<option value="${o.value}"${(rec.triage_status || 'new') === o.value ? ' selected' : ''}>${o.label}</option>`
+    ).join('');
+    const ts = rec.timestamp ? rec.timestamp.slice(0, 19).replace('T', ' ') : '—';
+    const perspective = rec.perspective || '—';
+    const intent = rec.intent_override || 'auto';
+    const queryType  = rec.query_type || '—';
+    const agent      = rec.routing_agent || '—';
+    const query      = (rec.query || '').replace(/</g, '&lt;');
+    const respText   = (rec.response_text || '').replace(/</g, '&lt;');
+    const comments   = (rec.analysis_comments || '').replace(/</g, '&lt;');
+    const respId = `resp-${idx}`;
+    const commentId = `comment-${idx}`;
+
+    return `<tr class="border-t border-slate-700/50 align-top hover:bg-slate-750/30" data-idx="${idx}">
+      <td class="px-3 py-2 text-sm">${voteIcon}</td>
+      <td class="px-3 py-2 text-xs text-slate-400 whitespace-nowrap">${ts}</td>
+      <td class="px-3 py-2 text-xs">
+        <div class="font-medium text-slate-200 max-w-xs">${query}</div>
+        <div class="text-slate-500 mt-0.5">${perspective} / ${intent} → <span class="font-mono">${queryType}</span> <span class="text-slate-600">[${agent}]</span></div>
+        ${respText ? `<details class="mt-1"><summary class="cursor-pointer text-slate-500 hover:text-slate-300">Response ▸</summary><pre id="${respId}" class="mt-1 text-xs text-slate-400 whitespace-pre-wrap max-h-40 overflow-y-auto bg-slate-900/60 rounded p-2">${respText}</pre></details>` : ''}
+      </td>
+      <td class="px-3 py-2">
+        <select onchange="fbUpdateTriage(${idx}, this.value)" class="text-xs bg-slate-700 border border-slate-600 rounded px-2 py-1 ${triageCls} w-full">
+          ${triageOpts}
+        </select>
+      </td>
+      <td class="px-3 py-2 min-w-[200px]">
+        <textarea id="${commentId}" rows="2" placeholder="Analysis notes…"
+          class="w-full text-xs bg-slate-900/60 border border-slate-700 rounded px-2 py-1 text-slate-300 resize-y"
+          onblur="fbSaveComment(${idx}, this.value)"
+        >${comments}</textarea>
+      </td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="border-b border-slate-700 text-xs text-slate-500 uppercase tracking-wider">
+          <th class="text-left px-3 py-2 w-6"></th>
+          <th class="text-left px-3 py-2 whitespace-nowrap">Time</th>
+          <th class="text-left px-3 py-2">Query / Routing</th>
+          <th class="text-left px-3 py-2 w-36">Triage</th>
+          <th class="text-left px-3 py-2">Analysis notes</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="px-3 py-2 text-xs text-slate-600 border-t border-slate-700/50">${filtered.length} of ${records.length} records</div>
+  `;
+}
+
+async function fbUpdateTriage(idx, value) {
+  await fetch(`/api/feedback/extended/${idx}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ triage_status: value }),
+  }).catch(() => {});
+}
+
+async function fbSaveComment(idx, value) {
+  await fetch(`/api/feedback/extended/${idx}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ analysis_comments: value }),
+  }).catch(() => {});
+}
+
 // ── Job modal ──────────────────────────────────────────────────────────────
 function openJobModal(jobId, description) {
   _modalJobId = jobId;
@@ -635,7 +824,172 @@ function closeJobModal() {
   _modalJobId = null;
 }
 
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeJobModal(); });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { closeJobModal(); closeSessionModal(); }
+});
+
+// ── Plan Sessions ──────────────────────────────────────────────────────────
+
+// Phrases that indicate the system was confused or couldn't handle the input
+const _SESSION_FAILURE_PHRASES = [
+  "i wasn't sure", "i'm not sure how", "i don't know how",
+  "i couldn't", "i was unable", "unable to update", "not sure how to update",
+];
+// Phrases in user turns that indicate a correction
+const _USER_CORRECTION_PHRASES = [
+  "i asked to", "that's wrong", "that is wrong", "not a project", "not a campaign",
+  "not a glossary", "not a task", "not a team", "not an agreement",
+  "you got it wrong", "wrong type", "incorrect",
+];
+
+function _outcomeClass(outcome) {
+  if (!outcome)                          return 'badge-stale';   // in-progress
+  if (outcome === 'plan_generated')      return 'badge-done';
+  if (outcome === 'executed')            return 'badge-done';
+  if (outcome === 'cancelled')           return 'badge-failed';
+  if (outcome === 'abandoned')           return 'badge-failed';
+  return 'badge-stale';
+}
+
+function _outcomeLabel(outcome) {
+  if (!outcome)                          return 'active';
+  if (outcome === 'plan_generated')      return 'generated';
+  if (outcome === 'executed')            return 'executed';
+  if (outcome === 'cancelled')           return 'cancelled';
+  if (outcome === 'abandoned')           return 'abandoned';
+  return outcome;
+}
+
+function _hasFailure(session) {
+  return session.outcome === 'cancelled' || session.outcome === 'abandoned';
+}
+
+function _fmtTs(ts) {
+  if (!ts) return '—';
+  try {
+    const d = new Date(ts);
+    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  } catch { return ts.slice(0, 16).replace('T', ' '); }
+}
+
+async function loadSessions() {
+  const tbody = document.getElementById('sessions-body');
+  try {
+    const r = await fetch('/api/sessions');
+    const data = await r.json();
+    const sessions = data.sessions || [];
+    if (!sessions.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-6 text-center text-slate-500 text-xs">No sessions recorded yet.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = sessions.map(s => {
+      const cls  = _outcomeClass(s.outcome);
+      const lbl  = _outcomeLabel(s.outcome);
+      const warn = _hasFailure(s) ? 'bg-amber-950/30' : '';
+      const sid  = s.session_id.replace(/"/g, '&quot;');
+      return `<tr class="border-b border-slate-700/50 hover:bg-slate-750 ${warn}">
+        <td class="px-4 py-2 text-slate-400 text-xs font-mono">${s.session_id.slice(0, 32)}&hellip;</td>
+        <td class="px-4 py-2 text-xs text-slate-500 hidden md:table-cell">${_fmtTs(s.started_at)}</td>
+        <td class="px-4 py-2 text-xs text-slate-500 hidden lg:table-cell">${s.user || '—'}</td>
+        <td class="px-4 py-2 text-center text-xs text-slate-400">${s.turns}</td>
+        <td class="px-4 py-2 text-center">
+          <span class="px-2 py-0.5 rounded text-xs font-medium ${cls}">${lbl}</span>
+        </td>
+        <td class="px-4 py-2 text-right">
+          <button onclick="openSessionModal('${sid}')" class="action-btn btn-blue">View</button>
+        </td>
+      </tr>`;
+    }).join('');
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="6" class="px-4 py-6 text-center text-red-400 text-xs">Error loading sessions: ${e.message}</td></tr>`;
+  }
+}
+
+async function openSessionModal(sessionId) {
+  const modal  = document.getElementById('session-modal');
+  const body   = document.getElementById('session-modal-body');
+  const title  = document.getElementById('session-modal-title');
+  const outcEl = document.getElementById('session-modal-outcome');
+  const meta   = document.getElementById('session-modal-meta');
+
+  title.textContent = sessionId.slice(0, 40) + '…';
+  body.innerHTML = '<div class="text-slate-500 p-4">Loading transcript…</div>';
+  modal.classList.remove('hidden');
+
+  try {
+    const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`);
+    if (!r.ok) { body.innerHTML = `<div class="text-red-400 p-4">Session not found.</div>`; return; }
+    const data = await r.json();
+    const entries = data.entries || [];
+
+    // Find summary entry for outcome/user
+    const summary = entries.find(e => e.event === 'session_end');
+    if (summary) {
+      outcEl.textContent  = _outcomeLabel(summary.outcome);
+      outcEl.className    = `text-xs px-2 py-0.5 rounded font-medium ${_outcomeClass(summary.outcome)}`;
+      const user = summary.user || '';
+      const persp = summary.perspective || '';
+      meta.textContent = [user, persp].filter(Boolean).join(' · ') + ` · ${entries.length} entries`;
+    } else {
+      outcEl.textContent = 'in-progress';
+      outcEl.className   = 'text-xs px-2 py-0.5 rounded badge-stale';
+      meta.textContent   = `${entries.length} entries`;
+    }
+
+    body.innerHTML = entries.map(e => {
+      if (e.event === 'session_end') return '';   // skip — shown in header
+
+      const ts      = e.ts ? e.ts.slice(11, 19) : '';
+      const role    = e.role || e.event || 'event';
+      const content = (e.content || JSON.stringify(e)).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const phase   = e.phase ? `<span class="text-slate-600">[${e.phase}]</span> ` : '';
+
+      // Detect failure signals
+      const contentLow = (e.content || '').toLowerCase();
+      let rowCls = '';
+      let badge  = '';
+
+      if (e.role === 'system') {
+        if (_SESSION_FAILURE_PHRASES.some(p => contentLow.includes(p))) {
+          rowCls = 'bg-amber-950/40 border-l-2 border-amber-500';
+          badge  = '<span class="ml-1 px-1 rounded text-amber-400 bg-amber-900/50 text-[10px]">confused</span>';
+        }
+      } else if (e.role === 'user') {
+        if (_USER_CORRECTION_PHRASES.some(p => contentLow.includes(p))) {
+          rowCls = 'bg-red-950/40 border-l-2 border-red-500';
+          badge  = '<span class="ml-1 px-1 rounded text-red-400 bg-red-900/50 text-[10px]">correction</span>';
+        }
+      }
+
+      const roleColor = e.role === 'user'   ? 'text-cyan-400'
+                      : e.role === 'system' ? 'text-emerald-400'
+                      : 'text-slate-500';
+
+      // Truncate very long messages
+      const maxLen = 600;
+      const displayContent = content.length > maxLen
+        ? content.slice(0, maxLen) + `<span class="text-slate-600">…(${content.length} chars)</span>`
+        : content;
+
+      return `<div class="p-2 rounded ${rowCls}">
+        <div class="flex items-baseline gap-2 mb-0.5">
+          <span class="text-slate-600 shrink-0">${ts}</span>
+          <span class="${roleColor} font-semibold shrink-0">${role}</span>
+          ${badge}
+          ${phase}
+        </div>
+        <div class="text-slate-300 leading-relaxed break-words pl-2">${displayContent}</div>
+      </div>`;
+    }).join('');
+
+  } catch (err) {
+    body.innerHTML = `<div class="text-red-400 p-4">Error loading transcript: ${err.message}</div>`;
+  }
+}
+
+function closeSessionModal() {
+  document.getElementById('session-modal').classList.add('hidden');
+}
 </script>
 </body>
 </html>

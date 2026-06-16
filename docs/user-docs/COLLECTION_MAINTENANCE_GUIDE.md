@@ -1,338 +1,176 @@
 # Collection Maintenance Guide
 
-Complete guide for maintaining Egeria Advisor collections, statistics, and analytics.
-
-## Table of Contents
-
-1. [Collection Overview](#collection-overview)
-2. [PyEgeria Collection](#pyegeria-collection)
-3. [Specialized Collections](#specialized-collections)
-4. [Statistics and Analytics](#statistics-and-analytics)
-5. [Troubleshooting](#troubleshooting)
+Guide for understanding, maintaining, and updating the Egeria Advisor vector collections.
 
 ---
 
-## Collection Overview
+## Collection overview
 
-### Available Collections
+Egeria Advisor indexes content from four upstream Git repositories into nine pgvector collections (~88,900 entities total). Each collection targets a distinct content type and is tuned accordingly — chunk size, overlap, similarity threshold, and result count all vary based on the nature of the material.
 
-| Collection | Description | Source |
-|------------|-------------|--------|
-| **pyegeria** | PyEgeria code (classes, methods, modules) | `data/repos/egeria-python` |
-| **egeria_docs** | Egeria documentation | `data/repos/egeria-docs` |
-| **cli_commands** | CLI command documentation | Parsed from CLI help |
-| **code_examples** | Code examples and notebooks | `data/repos/egeria-python/examples` |
+The authoritative definitions live in `advisor/collection_config.py`. This guide explains the design choices documented there.
 
-### Check Collection Status
+---
+
+## Collection definitions and RAG parameters
+
+### Parameter rationale by content type
+
+Before the per-collection table, here is why each parameter class differs:
+
+**Chunk size** controls how much text is stored per vector. Smaller chunks suit code (functions are natural, self-contained units) while larger chunks suit narrative content where ideas span multiple paragraphs.
+
+**Chunk overlap** carries context across chunk boundaries. Code needs moderate overlap to keep class/method context. Self-contained template files need none.
+
+**Min score** sets the similarity floor for retrieval. Precise, well-defined content (concept definitions, type schemas) warrants a higher threshold; fuzzy intent matching (templates, tutorials) benefits from a lower one.
+
+**Top k** controls how many chunks are retrieved. Code queries benefit from more examples; precise concept or template queries need fewer but higher-quality results.
+
+### Collection matrix
+
+| Collection | Content | Source paths | Chunk | Overlap | Min score | Top k | Priority |
+|---|---|---|---|---|---|---|---|
+| `pyegeria` | Python SDK code and tests | `pyegeria/`, `tests/` | 512 | 100 | 0.35 | 10 | 10 |
+| `pyegeria_cli` | `hey_egeria` CLI command handlers | `commands/` | 512 | 100 | 0.35 | 10 | 9 |
+| `pyegeria_drE` | Dr. Egeria markdown processing code | `md_processing/`, `docs/` | 512 | 100 | 0.35 | 8 | 8 |
+| `egeria_java` | Egeria core Java (OMAS, OMAG, OMRS) | `.` (full repo) | 768 | 150 | 0.35 | 8 | 7 |
+| `egeria_concepts` | Core concept definitions (short) | `site/docs/concepts/` | 768 | 150 | 0.45 | 5 | 12 |
+| `egeria_types` | Type system and schema definitions | `site/docs/types/` | 1024 | 200 | 0.42 | 6 | 11 |
+| `egeria_general` | Tutorials, guides, how-tos | `site/docs/` (excl. concepts/types) | 1536 | 300 | 0.38 | 8 | 9 |
+| `egeria_workspaces` | Jupyter notebooks, deployment examples | `.` (full repo) | 1536 | 300 | 0.38 | 6 | 5 |
+| `egeria_templates` | Dr. Egeria markdown command templates | `sample-data/templates/` | 2048 | 0 | 0.30 | 5 | 12 |
+
+`egeria_docs` exists in the registry but is **disabled** — it was split into `egeria_concepts`, `egeria_types`, and `egeria_general`.
+
+### Per-collection design notes
+
+**`pyegeria`, `pyegeria_cli`, `pyegeria_drE`** — Python code collections
+
+- 512-token chunks capture a complete function with its docstring.
+- 100-token overlap keeps class context visible at chunk boundaries.
+- min\_score 0.35 is appropriate for code: semantic similarity is more precise than for prose.
+- top\_k 10 gives the LLM multiple examples to synthesise from.
+
+**`egeria_java`** — Java code
+
+- Java methods are more verbose than Python; 768-token chunks are needed to capture a complete method.
+- Otherwise follows the same logic as the Python collections.
+
+**`egeria_concepts`** — Short concept definitions
+
+- The source documents are short (one concept per file) and highly precise.
+- min\_score 0.45 is the highest threshold in the system — a concept definition that doesn't clearly match the query is noise.
+- top\_k 5 is conservative; retrieving too many concept snippets makes answers verbose without adding value.
+- priority 12 (highest) so that "what is X?" queries pull from here before any other collection.
+
+**`egeria_types`** — Type system definitions
+
+- Type definitions are longer than concept definitions (full attribute tables, relationship lists) so chunk size is 1024.
+- min\_score 0.42 is high but slightly lower than concepts — type queries are often more exploratory.
+
+**`egeria_general`** — Tutorials and guides
+
+- Tutorial steps and guide sections need large chunks (1536) to stay coherent; a step split mid-instruction loses meaning.
+- 300-token overlap preserves the narrative thread across chunk boundaries.
+- min\_score 0.38 and top\_k 8 cast a moderately wide net — general queries are inherently broader.
+
+**`egeria_workspaces`** — Jupyter notebooks and deployment examples
+
+- Same chunking logic as `egeria_general` because the dominant content is narrative example code.
+- top\_k 6 (not 8) — complete notebook examples are longer, so fewer chunks avoid exceeding the LLM context window.
+- priority 5 (lowest) — workspace content is secondary to docs and code for most queries.
+
+**`egeria_templates`** — Dr. Egeria markdown command templates
+
+- Each template file is a single, self-contained Dr. Egeria command. Splitting across files would make templates useless.
+- chunk\_size 2048 keeps an entire template in one chunk. chunk\_overlap 0 — there is nothing to overlap.
+- min\_score 0.30 is the lowest in the system. Template retrieval is intent-matching (the user says "create a project" and we need to find the `Create Project` template), which is inherently fuzzier than concept or code retrieval.
+- priority 12 (tied highest) — template queries should resolve here before hitting general docs.
+
+---
+
+## Upstream repositories
+
+| Repository | Collections indexed |
+|---|---|
+| `https://github.com/odpi/egeria-python.git` | `pyegeria`, `pyegeria_cli`, `pyegeria_drE`, `egeria_templates` |
+| `https://github.com/odpi/egeria.git` | `egeria_java` |
+| `https://github.com/odpi/egeria-docs.git` | `egeria_concepts`, `egeria_types`, `egeria_general` |
+| `https://github.com/odpi/egeria-workspaces.git` | `egeria_workspaces` |
+
+Local clones are expected under `data/repos/` by the ingestion scripts. The pgvector backend runs at `localhost:5442` (database `egeria_advisor`).
+
+---
+
+## Checking collection status
 
 ```bash
-# List all collections
-python scripts/check_collection_names.py
+# Count vectors per collection
+python scripts/count_vectors.py
 
-# Check collection health
-python scripts/collect_collection_health.py
+# Run the quick E2E health check
+python scripts/test_end_to_end.py --categories environment,config,vector_store
 
-# Check specific collection contents
-python scripts/check_projectmanager.py  # Example for PyEgeria
+# Admin dashboard (web UI must be running)
+open http://localhost:8880/admin
 ```
 
 ---
 
-## PyEgeria Collection
+## Re-ingesting a collection
 
-### Initial Setup
+Use the incremental indexer to refresh a single collection without touching the others:
 
 ```bash
-# 1. Clone/update repositories
+source activate_venv.sh
+
+# Re-index one collection (drops and rebuilds)
+python -m advisor.incremental_indexer --collection pyegeria
+
+# Common targets
+python -m advisor.incremental_indexer --collection egeria_concepts
+python -m advisor.incremental_indexer --collection egeria_templates
+```
+
+To re-index all collections from scratch:
+
+```bash
+# 1. Update upstream repos
 python scripts/clone_repos.py
 
-# 2. Ingest all collections (includes PyEgeria)
+# 2. Re-ingest all collections
 python scripts/ingest_collections.py
 ```
 
-### Update PyEgeria Collection
+---
 
-When PyEgeria code changes:
+## Adding a new collection
 
-```bash
-# Option 1: Full re-ingest (recommended)
-python scripts/ingest_collections.py
-
-# Option 2: Simple re-ingest (if collection exists)
-python scripts/simple_reingest_pyegeria.py
-
-# Option 3: Drop and re-create (if schema changed)
-./scripts/simple_drop_and_reingest_pyegeria.sh
-```
-
-### Verify PyEgeria Collection
-
-```bash
-# Check if collection has data
-python scripts/check_projectmanager.py
-
-# Test PyEgeria detection
-python scripts/test_pyegeria_detection.py
-
-# Test full agent flow
-python scripts/test_full_agent_flow.py
-```
-
-### PyEgeria Collection Schema
-
-The collection includes these scalar fields for efficient filtering:
-
-- `class_name` - Class name (e.g., "ProjectManager")
-- `method_name` - Method name (e.g., "create_project")
-- `element_type` - Type: "class", "method", "module", "function"
-- `module_path` - Python module path
-- `is_async` - Boolean: async method
-- `is_private` - Boolean: private method
+1. Define a `CollectionMetadata` instance in `advisor/collection_config.py`. Choose parameters using the rationale above.
+2. Add it to `ALL_COLLECTIONS` in the same file.
+3. Add domain terms to `config/routing.yaml` under `collection_domain_terms` so the `CollectionRouter` can select it.
+4. Run `python -m advisor.incremental_indexer --collection <new_name>` to populate it.
+5. Verify with `python scripts/count_vectors.py` and a test query via the Web UI.
 
 ---
 
-## Specialized Collections
+## Modifying RAG parameters
 
-### What Are Specialized Collections?
+Collection-level parameters (`chunk_size`, `chunk_overlap`, `min_score`, `default_top_k`) are set in `advisor/collection_config.py`. The global fallback values are in `config/advisor.yaml` under `rag:`.
 
-Specialized collections contain:
-- **CLI Commands** - Parsed from `egeria-advisor --help` and subcommands
-- **Code Examples** - Jupyter notebooks, Python examples
-- **Documentation** - Markdown files, guides
-
-### Update Specialized Collections
-
-```bash
-# Re-ingest specialized collections
-python scripts/ingest_specialized_collections.py
-```
-
-This will:
-1. Parse CLI commands from the installed `egeria-advisor` command
-2. Extract code examples from repositories
-3. Process documentation files
-4. Update the respective collections
-
-### Enable/Disable Collections
-
-Edit `config/advisor.yaml`:
-
-```yaml
-collections:
-  pyegeria:
-    enabled: true
-    priority: 1
-  
-  cli_commands:
-    enabled: true  # Set to false to disable
-    priority: 2
-  
-  code_examples:
-    enabled: true
-    priority: 3
-```
+After changing parameters, the collection must be re-ingested — the chunk size and overlap affect how documents are split at index time, not just at query time.
 
 ---
 
-## Statistics and Analytics
+## Enabling and disabling collections
 
-### Update Collection Statistics
-
-```bash
-# Collect health metrics for all collections
-python scripts/collect_collection_health.py
-```
-
-This updates:
-- Entity counts
-- Index status
-- Schema information
-- Collection health scores
-
-### View Analytics Dashboard
-
-```bash
-# Terminal dashboard (text-based)
-python -m advisor.dashboard.terminal_dashboard
-
-# Streamlit dashboard (web-based)
-python -m advisor.dashboard.streamlit_dashboard
-```
-
-### Generate Enhanced Analytics
-
-```bash
-# Test enhanced analytics
-python scripts/test_enhanced_analytics.py
-
-# Generate enhanced relationships
-python scripts/generate_enhanced_relationships.py
-```
-
-### MLflow Tracking
-
-View experiment tracking:
-
-```bash
-# Start MLflow UI
-mlflow ui --port 5025
-
-# Then open: http://localhost:5025
-```
-
-Experiments tracked:
-- Query processing
-- RAG retrieval
-- Agent interactions
-- Model performance
-
-### Monitoring Integration
-
-```bash
-# Test monitoring integration
-python scripts/test_monitoring_integration.py
-
-# Test enhanced MLflow tracking
-python scripts/test_enhanced_mlflow.py
-```
+Set `enabled: True/False` on the `CollectionMetadata` instance in `advisor/collection_config.py`. The `CollectionRouter` will ignore disabled collections without any other configuration change. Restart the web UI after modifying this file.
 
 ---
 
-## Troubleshooting
+## See also
 
-### Collection Has No Data
-
-**Symptom:** Queries return "I couldn't find specific information"
-
-**Solution:**
-```bash
-# Check collection
-python scripts/check_collection_names.py
-
-# Re-ingest
-python scripts/ingest_collections.py
-```
-
-### Collection Missing Scalar Fields
-
-**Symptom:** Error: `field class_name not exist`
-
-**Solution:**
-```bash
-# Drop and re-create with correct schema
-./scripts/simple_drop_and_reingest_pyegeria.sh
-```
-
-### PyEgeria Detection Not Working
-
-**Symptom:** PyEgeria queries route to wrong agent
-
-**Solution:**
-```bash
-# Test detection
-python scripts/test_pyegeria_detection.py
-
-# Check routing config
-cat config/routing.yaml
-
-# Update detection patterns in routing.yaml if needed
-```
-
-### Cache Issues
-
-**Symptom:** Old data persists after updates
-
-**Solution:**
-```bash
-# Clear query cache
-egeria-advisor -a
-agent> /clear-query-cache
-
-# Or clear all caches
-rm -rf cache/*.json
-```
-
-### Performance Issues
-
-**Symptom:** Slow queries or high memory usage
-
-**Solution:**
-```bash
-# Check collection health
-python scripts/collect_collection_health.py
-
-# Test cache performance
-python scripts/test_cache_performance.py
-
-# Optimize embeddings (if using ONNX)
-python scripts/convert_to_onnx.py
-```
-
----
-
-## Maintenance Schedule
-
-### Daily
-- Monitor MLflow experiments
-- Check error logs
-
-### Weekly
-- Update repositories: `python scripts/clone_repos.py`
-- Re-ingest if code changed: `python scripts/ingest_collections.py`
-- Collect health metrics: `python scripts/collect_collection_health.py`
-
-### Monthly
-- Review analytics dashboard
-- Update routing configuration if needed
-- Clean up old experiment data
-
-### As Needed
-- Update specialized collections when CLI changes
-- Re-create collections if schema changes
-- Update documentation when features change
-
----
-
-## Quick Reference
-
-### Common Commands
-
-```bash
-# Start agent
-egeria-advisor -a
-
-# Update everything
-python scripts/clone_repos.py && python scripts/ingest_collections.py
-
-# Check status
-python scripts/check_collection_names.py
-python scripts/collect_collection_health.py
-
-# View analytics
-python -m advisor.dashboard.terminal_dashboard
-
-# Clear caches
-egeria-advisor -a
-agent> /clear-query-cache
-```
-
-### Configuration Files
-
-- `config/advisor.yaml` - Main configuration
-- `config/routing.yaml` - Query routing patterns
-- `config/mcp_servers.json` - MCP server configuration
-
-### Log Files
-
-- MLflow experiments: `mlruns/`
-- Collection health: Stored in Milvus metadata
-- Application logs: Console output (use `--debug` flag)
-
----
-
-## See Also
-
-- [Query Routing Guide](QUERY_ROUTING_GUIDE.md)
-- [Data-Driven Routing Guide](DATA_DRIVEN_ROUTING_GUIDE.md)
-- [MLflow Tracking Guide](MLFLOW_ENHANCED_TRACKING.md)
-- [Testing Guide](TESTING_GUIDE.md)
+- `advisor/collection_config.py` — authoritative collection definitions
+- `config/routing.yaml` — domain terms and routing patterns per collection
+- `docs/user-docs/RAG_TUNING_GUIDE.md` — troubleshooting poor answer quality
+- `docs/user-docs/QUERY_ROUTING_GUIDE.md` — how queries are routed to collections

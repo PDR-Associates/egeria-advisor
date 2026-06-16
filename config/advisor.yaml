@@ -184,6 +184,18 @@ observability:
     collector_endpoint: http://localhost:6006
     trace_all_queries: false
 
+auth:
+  enabled: true
+  jwt_secret: ""          # override with ADVISOR_JWT_SECRET env var; auto-derived from hostname if blank
+  jwt_ttl_hours: 8        # token lifetime — one workday; re-login when expired
+  portal:
+    enabled: false
+    origin: "http://localhost:8885"
+    shared_secret: ""     # override with ADVISOR_PORTAL_SECRET env var
+    token_ttl_seconds: 30 # portal tokens expire quickly; Advisor exchanges them for a full JWT
+  anonymous_rag_mode: true  # allow unauthenticated RAG queries (Q&A, code examples, explanations)
+                            # set false to require login for all access
+
 logging:
   level: INFO
   format: "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"

@@ -267,6 +267,9 @@
       <button id="pcanvas-generate-btn"
         class="px-2 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition-colors"
         title="Generate full Plan Document">Generate Plan</button>
+      <button id="pcanvas-validate-btn"
+        class="hidden px-2 py-1 rounded bg-sky-800 hover:bg-sky-700 text-white text-xs font-semibold transition-colors"
+        title="Validate the plan without executing it">✓ Validate</button>
       <button id="pcanvas-execute-btn"
         class="hidden px-2 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold transition-colors"
         title="Execute the approved plan">▶ Execute</button>
@@ -617,7 +620,50 @@ async function loadPlans() {
           submitQuery(`execute the plan ${plan.doc_id}`, {});
         };
         row.appendChild(execBtn);
+      } else {
+        const retryBtn = document.createElement('button');
+        retryBtn.className = 'shrink-0 px-1.5 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs transition-colors';
+        retryBtn.title = 'Re-run or edit this plan';
+        retryBtn.textContent = '↺';
+        retryBtn.onclick = async e => {
+          e.stopPropagation();
+          if (!confirm(`Move "${plan.title || plan.doc_id}" back to Inbox to edit and re-run?`)) return;
+          retryBtn.disabled = true; retryBtn.textContent = '…';
+          try {
+            const r = await fetch(`/api/plans/${encodeURIComponent(plan.doc_id)}/recover`, { method: 'POST', headers: Auth.getHeaders() });
+            if (!r.ok) {
+              const err = await r.json().catch(() => ({}));
+              throw new Error(err.detail || `Server error ${r.status}`);
+            }
+            await loadPlans();
+            openPlanEditor(plan.doc_id, null);
+          } catch (err) {
+            alert(`Could not recover plan: ${err.message}`);
+            retryBtn.disabled = false; retryBtn.textContent = '↺';
+          }
+        };
+        row.appendChild(retryBtn);
       }
+      // Delete button — both inbox and outbox
+      const delBtn = document.createElement('button');
+      delBtn.className = 'shrink-0 px-1 py-0.5 rounded text-slate-600 hover:text-red-400 hover:bg-red-950/40 text-xs transition-colors';
+      delBtn.title = 'Delete this plan (a version backup is saved first)';
+      delBtn.textContent = '×';
+      delBtn.onclick = async e => {
+        e.stopPropagation();
+        const label = plan.title && plan.title !== '(untitled)' ? plan.title : plan.doc_id;
+        if (!confirm(`Delete "${label}"?\n\nA backup version will be saved first.`)) return;
+        delBtn.disabled = true;
+        try {
+          await fetch(`/api/plans/${encodeURIComponent(plan.doc_id)}`, {
+            method: 'DELETE', headers: Auth.getHeaders(),
+          });
+          loadPlans();
+        } catch (err) {
+          delBtn.disabled = false;
+        }
+      };
+      row.appendChild(delBtn);
       el.appendChild(row);
     });
   };
@@ -956,7 +1002,7 @@ function _applyQueryResult(query, result, wrap) {
   }
 
   // Refresh plan sidebar after any plan lifecycle event
-  if (qtype === 'plan' || qtype === 'plan_executed') loadPlans();
+  if (qtype === 'plan' || qtype === 'plan_executed' || qtype === 'plan_validated') loadPlans();
   if (isPlanQA) { loadDrafts(); if (_activeDraftId) PlanCanvas.refresh(_activeDraftId); }
 
   // Plan Document banner — shown when the agent saved a new plan to inbox/
@@ -1046,11 +1092,14 @@ function _applyQueryResult(query, result, wrap) {
   const btnUp = document.createElement('button');
   btnUp.className = 'text-xs text-slate-500 hover:text-green-400 transition-colors';
   btnUp.textContent = '👍';
+  const responseText = wrap.querySelector('.msg-body')?.textContent || '';
   btnUp.dataset.q = query;
   btnUp.dataset.qt = qtype;
   btnUp.dataset.vote = '1';
   btnUp.dataset.perspective = selectedPerspective || '';
   btnUp.dataset.routingAgent = routingAgentFromResult;
+  btnUp.dataset.intentOverride = document.getElementById('intent-select')?.value || 'auto';
+  btnUp.dataset.responseText = responseText.slice(0, 2000);
   btnUp.addEventListener('click', feedbackClick);
   const btnDown = document.createElement('button');
   btnDown.className = 'text-xs text-slate-500 hover:text-red-400 transition-colors';
@@ -1060,6 +1109,8 @@ function _applyQueryResult(query, result, wrap) {
   btnDown.dataset.vote = '-1';
   btnDown.dataset.perspective = selectedPerspective || '';
   btnDown.dataset.routingAgent = routingAgentFromResult;
+  btnDown.dataset.intentOverride = document.getElementById('intent-select')?.value || 'auto';
+  btnDown.dataset.responseText = responseText.slice(0, 2000);
   btnDown.addEventListener('click', feedbackClick);
   fb.appendChild(btnUp);
   fb.appendChild(btnDown);
@@ -1168,10 +1219,12 @@ async function feedbackClick(e) {
   const queryType = btn.dataset.qt;
   const perspective = btn.dataset.perspective || null;
   const routingAgent = btn.dataset.routingAgent || null;
+  const intentOverride = btn.dataset.intentOverride || null;
+  const responseText = btn.dataset.responseText || null;
   await fetch('/api/feedback', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
-    body: JSON.stringify({ query, query_type: queryType, vote, perspective, routing_agent: routingAgent }),
+    body: JSON.stringify({ query, query_type: queryType, vote, perspective, routing_agent: routingAgent, intent_override: intentOverride, response_text: responseText }),
   }).catch(() => {});
   const fb = btn.parentElement;
   fb.innerHTML = vote > 0
@@ -1300,6 +1353,41 @@ function initCanvasButtons() {
     if (!_activeDraftId) return;
     appendMessage('you', 'generate now');
     submitQuery('generate now', { intent_override: 'plan' });
+  });
+  document.getElementById('pcanvas-validate-btn').addEventListener('click', async () => {
+    const docId = document.getElementById('pcanvas-title')?.dataset?.docId;
+    if (!docId) return;
+    const btn = document.getElementById('pcanvas-validate-btn');
+    btn.disabled = true;
+    btn.textContent = '⏳ Validating…';
+    try {
+      const r = await fetch(`/api/plans/${docId}/validate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      });
+      const data = await r.json();
+      const valErrs  = data.validation_errors || [];
+      const execErrs = data.execution_errors  || [];
+      const allErrors = [...valErrs, ...execErrs];
+      const ok = data.success !== false && allErrors.length === 0;
+      let msg = ok
+        ? `✓ **Validation passed** — plan \`${docId}\` is ready to execute.`
+        : `⚠ **Validation found ${allErrors.length} issue${allErrors.length !== 1 ? 's' : ''}** in \`${docId}\`.`;
+      if (allErrors.length) {
+        msg += '\n\n' + allErrors.map(e => {
+          const step = e.step || e.index || '';
+          const cmd  = e.command || e.name || '';
+          const txt  = e.message || e.error || String(e);
+          return `- **${cmd}**${step ? ` (step ${step})` : ''}: ${txt}`;
+        }).join('\n');
+      }
+      appendMessage('advisor', msg, { query_type: 'explanation' });
+    } catch (e) {
+      appendMessage('advisor', `Validation request failed: ${e.message}`, { query_type: 'explanation' });
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '✓ Validate';
+    }
   });
   document.getElementById('pcanvas-execute-btn').addEventListener('click', () => {
     const docId = document.getElementById('pcanvas-title')?.dataset?.docId;
@@ -1534,6 +1622,29 @@ function _esc(s) {
   <!-- Status bar -->
   <div id="ped-status-bar" class="px-4 py-1 text-xs text-slate-500 bg-slate-900 border-b border-slate-800 shrink-0"></div>
 
+  <!-- Recovery bar — only visible for outbox plans -->
+  <div id="ped-recovery-bar" class="hidden shrink-0 px-4 py-2 bg-amber-950/60 border-b border-amber-800/50 flex items-center gap-3 text-xs text-amber-200">
+    <span class="font-semibold">⚠ This plan is in the Outbox (read-only).</span>
+    <span class="text-amber-400/70">Edit &amp; re-run, or restore an earlier version:</span>
+    <button onclick="pedRecoverForEditing()"
+      class="px-3 py-1 rounded bg-amber-700 hover:bg-amber-600 text-white font-semibold transition-colors">
+      Recover for Editing
+    </button>
+    <button onclick="pedShowVersionHistory()"
+      class="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 font-semibold transition-colors">
+      Version History
+    </button>
+  </div>
+
+  <!-- Version history panel — hidden by default -->
+  <div id="ped-version-panel" class="hidden shrink-0 px-4 py-3 bg-slate-900 border-b border-slate-700 max-h-48 overflow-y-auto text-xs">
+    <div class="font-semibold text-slate-300 mb-2">Version History
+      <button onclick="document.getElementById('ped-version-panel').classList.add('hidden')"
+        class="float-right text-slate-500 hover:text-slate-200">✕</button>
+    </div>
+    <div id="ped-version-list" class="flex flex-col gap-1 text-slate-400">Loading…</div>
+  </div>
+
   <!-- Main scrollable content -->
   <div class="flex-1 overflow-y-auto px-6 py-5 flex flex-col gap-5">
 
@@ -1628,8 +1739,8 @@ function _esc(s) {
   </div>
 </div>
 
-<script src="/static/artifact_canvas.js"></script>
-<script src="/static/plan_canvas.js"></script>
-<script src="/static/plan_editor.js"></script>
+<script src="/static/artifact_canvas.js?v=20260615f"></script>
+<script src="/static/plan_canvas.js?v=20260615f"></script>
+<script src="/static/plan_editor.js?v=20260615f"></script>
 </body>
 </html>

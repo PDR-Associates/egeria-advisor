@@ -61,16 +61,26 @@ class OutcomeReporter:
         execution_output: str,
         perspective: str | None = None,
         expected_command_count: int | None = None,
+        commands_succeeded: int | None = None,
+        commands_failed: int | None = None,
+        validation_errors: list | None = None,
+        execution_errors: list | None = None,
+        commands_detail: list | None = None,
     ) -> str:
         """
         Generate a markdown Outcome section for the plan document.
 
         Args:
-            plan_content:            Full markdown of the plan that was executed.
-            execution_output:        Raw output string returned by Dr.Egeria.
-            perspective:             User's role (used to filter reports).
-            expected_command_count:  Number of commands submitted; used to detect
-                                     partial execution when output shows fewer.
+            plan_content:           Full markdown of the plan that was executed.
+            execution_output:       Dr.Egeria output document (augmented plan text).
+            perspective:            User's role (used to filter reports).
+            expected_command_count: Commands submitted; used to detect partial execution.
+            commands_succeeded:     Authoritative count from Dr.Egeria structured response.
+            commands_failed:        Authoritative count from Dr.Egeria structured response.
+            validation_errors:      Per-command validation failures [{step,command,message}].
+            execution_errors:       Per-command runtime failures [{step,command,message}].
+            commands_detail:        Per-command detail from MCP [{step,command,status,guid,
+                                    qualified_name,display_name,message}].
 
         Returns:
             Markdown string for the Outcome section (ready to append to the plan).
@@ -85,22 +95,37 @@ class OutcomeReporter:
         logger.info(
             f"OutcomeReporter: families={families}, "
             f"report_specs={report_specs}, objects={object_names[:5]}, "
-            f"expected_commands={expected_command_count}"
+            f"expected_commands={expected_command_count}, "
+            f"succeeded={commands_succeeded}, failed={commands_failed}"
         )
 
         # Run verification reports
         report_results = self._run_reports(report_specs, object_names, perspective)
 
-        # Determine overall status from execution output
-        cmd_results = self._parse_command_results(execution_output)
-        status = self._infer_status(execution_output, expected_command_count, cmd_results)
+        # Prefer authoritative per-command detail from MCP; fall back to plan-derived list.
+        if commands_detail:
+            cmd_results = commands_detail  # already has status, guid, qualified_name
+        else:
+            cmd_results = self._build_command_results(
+                plan_content,
+                validation_errors or [],
+                execution_errors or [],
+            )
 
-        # Synthesise narrative
+        if commands_succeeded is not None or commands_failed is not None:
+            status = "Succeeded" if (commands_failed or 0) == 0 and (commands_succeeded or 0) > 0 else \
+                     "Partial"   if (commands_succeeded or 0) > 0 else \
+                     "Failed"
+        else:
+            status = self._infer_status(execution_output, expected_command_count, cmd_results)
+
+        # Synthesise narrative — include structured errors if available
         narrative = self._synthesise_narrative(
-            plan_content, execution_output, report_results, status
+            plan_content, execution_output, report_results, status,
+            validation_errors=validation_errors or [],
+            execution_errors=execution_errors or [],
         )
 
-        # Compose the section
         return self._compose_outcome_section(
             status=status,
             narrative=narrative,
@@ -108,6 +133,10 @@ class OutcomeReporter:
             report_results=report_results,
             cmd_results=cmd_results,
             expected_command_count=expected_command_count,
+            commands_succeeded=commands_succeeded,
+            commands_failed=commands_failed,
+            validation_errors=validation_errors or [],
+            execution_errors=execution_errors or [],
         )
 
     # ---------------------------------------------------------------------- #
@@ -266,11 +295,46 @@ class OutcomeReporter:
     _FAILURE_WORDS = frozenset(("error", "exception", "failed", "failure", "traceback", "✗", "cannot", "not found"))
     # GUIDs returned by Egeria look like 8-4-4-4-12 hex
     _GUID_RE = re.compile(r'\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b', re.IGNORECASE)
+    # Extract GUID from processor message: "Executed Verb Object (GUID: <guid>)"
+    _GUID_IN_MSG_RE = re.compile(r'\(GUID:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\)', re.IGNORECASE)
 
     def _count_commands(self, plan_content: str) -> int:
         """Count H2 command headers in the Command Sequence section of a plan."""
         section = self._extract_command_section(plan_content)
         return len(re.findall(r'^##\s+\S', section, re.MULTILINE))
+
+    def _build_command_results(
+        self,
+        plan_content: str,
+        validation_errors: list,
+        execution_errors: list,
+    ) -> List[Dict[str, str]]:
+        """
+        Build per-command status by combining plan command names with structured
+        MCP error lists.  The MCP only reports failures; all unlisted commands
+        are assumed to have succeeded.
+        """
+        section = self._extract_command_section(plan_content)
+        cmd_names = [m.group(1).strip() for m in re.finditer(r'^##\s+(.+)$', section, re.MULTILINE)]
+        if not cmd_names:
+            return []
+
+        # Index errors by command name (case-insensitive)
+        failed: dict[str, str] = {}
+        for e in validation_errors + execution_errors:
+            key = (e.get("command") or "").strip().lower()
+            if key:
+                failed[key] = e.get("message", "")
+
+        results: List[Dict[str, str]] = []
+        for name in cmd_names:
+            err = failed.get(name.lower(), "")
+            results.append({
+                "command": name,
+                "status": "Failed" if err else "Success",
+                "message": err,
+            })
+        return results
 
     def _parse_command_results(self, execution_output: str) -> List[Dict[str, str]]:
         """
@@ -369,24 +433,31 @@ class OutcomeReporter:
         execution_output: str,
         report_results: Dict[str, str],
         status: str,
+        validation_errors: list | None = None,
+        execution_errors: list | None = None,
     ) -> str:
         try:
             from advisor.llm_client import get_ollama_client
             llm = get_ollama_client()
 
-            # Condense report results to avoid context overflow
             report_summary = ""
             for spec, content in list(report_results.items())[:3]:
                 snippet = content[:400].replace("\n", " ")
                 report_summary += f"\n- {spec}: {snippet}"
 
+            error_context = ""
+            for e in (validation_errors or [])[:5]:
+                error_context += f"\n- VALIDATION: Step {e.get('step','?')} {e.get('command','')}: {e.get('message','')}"
+            for e in (execution_errors or [])[:5]:
+                error_context += f"\n- EXECUTION: Step {e.get('step','?')} {e.get('command','')}: {e.get('message','')}"
+
             prompt = (
                 f"A governance plan was executed against Egeria with status: {status}.\n\n"
-                f"Execution output (truncated):\n{execution_output[:600]}\n\n"
-                f"Verification report excerpts:{report_summary or ' (none run)'}\n\n"
-                f"Write a concise 2-4 sentence outcome narrative for a governance plan document. "
-                f"Describe what was created, note any warnings or partial failures, and confirm "
-                f"the overall result. Use plain language, no bullet points."
+                + (f"Errors encountered:{error_context}\n\n" if error_context else "")
+                + f"Verification report excerpts:{report_summary or ' (none run)'}\n\n"
+                f"Write a concise 2-4 sentence outcome narrative. Describe what was created or "
+                f"attempted, call out specific errors by step if present, and state the overall result. "
+                f"Plain language, no bullet points."
             )
             return llm.generate(prompt, temperature=0.3, max_tokens=300)
         except Exception as exc:
@@ -405,27 +476,22 @@ class OutcomeReporter:
         report_results: Dict[str, str],
         cmd_results: Optional[List[Dict[str, str]]] = None,
         expected_command_count: int | None = None,
+        commands_succeeded: int | None = None,
+        commands_failed: int | None = None,
+        validation_errors: list | None = None,
+        execution_errors: list | None = None,
     ) -> str:
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-        # Build completion summary line
-        completion = ""
-        if cmd_results and expected_command_count:
-            parsed = len(cmd_results)
-            succeeded = sum(1 for r in cmd_results if r["status"] == "Success")
-            if parsed < expected_command_count:
-                completion = (
-                    f"   **Commands:** {parsed} of {expected_command_count} processed "
-                    f"({succeeded} succeeded)"
-                )
-            else:
-                completion = f"   **Commands:** {succeeded} of {expected_command_count} succeeded"
-        elif expected_command_count:
+        # Completion summary line
+        if commands_succeeded is not None and expected_command_count:
+            completion = (
+                f"   **Commands:** {commands_succeeded} of {expected_command_count} succeeded"
+                + (f" ({commands_failed} failed)" if commands_failed else "")
+            )
+        else:
             guid_count = len(self._GUID_RE.findall(execution_output))
-            if guid_count:
-                completion = (
-                    f"   **Objects created:** ~{guid_count} of {expected_command_count} expected"
-                )
+            completion = f"   **Objects created:** ~{guid_count}" if guid_count else ""
 
         lines = [
             "## Outcome",
@@ -437,26 +503,65 @@ class OutcomeReporter:
             "",
         ]
 
-        # Per-command breakdown — shown when Partial or Failed, or when parsed results exist
-        if cmd_results and (status in ("Partial", "Failed") or len(cmd_results) > 1):
-            lines += ["### Command Results", ""]
-            lines += ["| Command | Status | Note |", "|---------|--------|------|"]
-            status_icon = {"Success": "✓", "Failed": "✗", "Partial": "~", "Unknown": "?"}
-            for r in cmd_results:
-                icon = status_icon.get(r["status"], "?")
-                lines.append(f"| {r['command']} | {icon} {r['status']} | {r['message']} |")
+        # Structured error tables
+        if validation_errors:
+            lines += ["### Validation Errors", "",
+                      "| Step | Command | Issue |", "|------|---------|-------|"]
+            for e in validation_errors:
+                lines.append(f"| {e.get('step','?')} | {e.get('command','')} | {e.get('message','')} |")
             lines.append("")
 
-        if execution_output and len(execution_output.strip()) > 10:
-            truncated = execution_output.strip()[:2000]
-            lines += [
-                "### Execution Output",
-                "",
-                "```",
-                truncated,
-                "```",
-                "",
-            ]
+        if execution_errors:
+            lines += ["### Execution Errors", "",
+                      "| Step | Command | Error |", "|------|---------|-------|"]
+            for e in execution_errors:
+                lines.append(f"| {e.get('step','?')} | {e.get('command','')} | {e.get('message','')} |")
+            lines.append("")
+
+        # Per-command status table
+        if cmd_results:
+            # Detect whether we have GUID/QN data (from MCP commands_detail)
+            has_guid_data = any(r.get("guid") or r.get("qualified_name") for r in cmd_results)
+            rows = []
+            for r in cmd_results:
+                status_val = r.get("status", "success")
+                failed = status_val in ("failure", "Failed")
+                status_cell = "✗ Failed" if failed else "✓ Success"
+                msg = r.get("message", "")
+
+                # Show full message as Note — always useful (e.g. "Linked X to Y")
+                # Truncate long messages but keep the informative part
+                note = msg[:120] if msg else ""
+
+                if has_guid_data:
+                    guid = r.get("guid", "")
+                    qn   = r.get("qualified_name", "")
+                    # Extract GUID from message when the field is empty
+                    # (happens when QN was auto-derived by Dr.Egeria, not present in plan)
+                    if not guid and msg:
+                        m = _GUID_IN_MSG_RE.search(msg)
+                        if m:
+                            guid = m.group(1)
+                    rows.append(f"| {r['command']} | {status_cell} | {guid} | {qn} | {note} |")
+                else:
+                    rows.append(f"| {r['command']} | {status_cell} | {note} |")
+            if rows:
+                if has_guid_data:
+                    lines += ["### Command Results", "",
+                              "| Command | Status | GUID | Qualified Name | Note |",
+                              "|---------|--------|------|----------------|------|"]
+                else:
+                    lines += ["### Command Results", "",
+                              "| Command | Status | Note |", "|---------|--------|------|"]
+                lines += rows
+                lines.append("")
+
+        # Extract the meaningful parts of Dr.Egeria output (Mermaid diagrams, report
+        # tables) for inline display. The full raw output is stored separately in the
+        # plan document as a collapsible "## Dr.Egeria Execution Output" section.
+        dr_output = _extract_report_sections(execution_output)
+        if dr_output:
+            lines += ["### Execution Results", "", dr_output, ""]
 
         if report_results:
             lines += ["### Verification Reports", ""]
@@ -464,6 +569,79 @@ class OutcomeReporter:
                 lines += [f"#### {spec}", "", content.strip()[:1500], ""]
 
         return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Helper: extract meaningful report/diagram sections from Dr.Egeria output
+# ---------------------------------------------------------------------------
+
+# H3 field headers that are just plan field definitions — skip these blocks
+_FIELD_HEADER_RE = re.compile(
+    r'^### (?:Display Name|Qualified Name|Description|Status|Type Name|'
+    r'Parent|Zone|Glossary|Project|Scope|Confidence|Notes?|'
+    r'Role|Person|Appointment|Version|Template|Directive|'
+    r'Planned|Domain|Classification|Identifier)\b',
+    re.MULTILINE | re.IGNORECASE,
+)
+
+_MERMAID_BLOCK_RE = re.compile(r'```mermaid.*?```', re.DOTALL)
+_TABLE_LINE_RE = re.compile(r'^\|.+\|', re.MULTILINE)
+
+
+def _extract_report_sections(execution_output: str) -> str:
+    """
+    Extract the parts of the Dr.Egeria execution output that contain new
+    useful content (Mermaid diagrams, result tables, View Report output)
+    rather than re-showing plan command field definitions.
+
+    Returns a markdown string, or "" if nothing meaningful found.
+    """
+    if not execution_output or len(execution_output) < 50:
+        return ""
+
+    collected: list[str] = []
+
+    # 1. Extract all Mermaid code blocks
+    for m in _MERMAID_BLOCK_RE.finditer(execution_output):
+        collected.append(m.group(0))
+
+    # 2. Walk H2 sections — include a section if it contains a table or a GUID
+    #    but has no field-definition H3 headers (those are plain command fields)
+    guid_re = re.compile(r'\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b', re.IGNORECASE)
+    h2_sections = re.split(r'(?m)^## ', execution_output)
+    for block in h2_sections[1:]:  # skip preamble before first ##
+        lines = block.strip().splitlines()
+        if not lines:
+            continue
+        header = lines[0].strip()
+        body = "\n".join(lines[1:])
+
+        # Skip command sections that are just field definitions
+        if _FIELD_HEADER_RE.search(body) and not _TABLE_LINE_RE.search(body):
+            continue
+
+        # Include if body has table rows or GUIDs (report output, creation confirmations)
+        has_table = bool(_TABLE_LINE_RE.search(body))
+        has_guid = bool(guid_re.search(body))
+        if has_table or has_guid:
+            # Avoid duplicating Mermaid blocks already extracted
+            body_no_mermaid = _MERMAID_BLOCK_RE.sub("", body).strip()
+            if body_no_mermaid:
+                collected.append(f"## {header}\n\n{body_no_mermaid}")
+
+    if not collected:
+        return ""
+
+    # De-duplicate (Mermaid blocks might appear in both passes)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for item in collected:
+        key = item[:120]
+        if key not in seen:
+            seen.add(key)
+            unique.append(item)
+
+    return "\n\n".join(unique)
 
 
 # ---------------------------------------------------------------------------

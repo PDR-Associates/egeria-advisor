@@ -764,6 +764,26 @@ class PlanElicitor:
             dm.save(spec)
             return self._build_template_offer_response(spec)
 
+        # Guard: if the request looks like a single-word command or an affirmation
+        # with no structural change verb, don't send it to the LLM — it would
+        # interpret "execute" / "run" / "go" as modification instructions and
+        # produce a truncated, corrupted plan document.
+        _CHANGE_VERBS = ("add", "remove", "delete", "change", "update", "rename",
+                         "replace", "move", "insert", "modify", "set", "create",
+                         "put", "make", "use", "include", "exclude", "link")
+        words = low.split()
+        has_change_verb = any(w in _CHANGE_VERBS for w in words)
+        if not has_change_verb and len(words) <= 4:
+            return _clarification_result(
+                spec,
+                "I didn't recognise that as a plan change. Describe what you'd like "
+                "to change — for example: *\"Rename the blueprint to X\"* or "
+                "*\"Add a component for data quality\"*.\n\n"
+                "Use **Validate** or **Execute** on the canvas when you're ready to proceed.",
+                can_go_back=False, nav=[],
+                extra={"doc_id": doc_id},
+            )
+
         # Use LLM to apply the change
         llm = get_planning_llm()
         updated_content = self._apply_change(current_content, user_response, llm)
@@ -776,12 +796,10 @@ class PlanElicitor:
             nc = len(re.findall(r"^## [^#]", updated_content, re.MULTILINE))
             return _clarification_result(
                 spec,
-                f"Done — I've updated the plan. Here's the revised version:\n\n"
-                f"---\n\n{updated_content}\n\n---\n\n"
-                f"Any other changes? Or say **\"looks good\"** to proceed.\n\n"
-                f"You can also **open the editor** to make changes directly.",
-                can_go_back=True,
-                nav=_NAV_FINAL,
+                "Done — the canvas has been updated. Describe another change, "
+                "or use **Validate** / **Execute** on the canvas when ready.",
+                can_go_back=False,
+                nav=[],
                 extra={"doc_id": doc_id},
             )
         else:
@@ -789,10 +807,9 @@ class PlanElicitor:
                 spec,
                 "I wasn't able to identify a specific change from that — could you be more specific?\n\n"
                 "For example: *\"Change the glossary name to Finance Terminology\"* or "
-                "*\"Add a sub-project called Data Quality\"*.\n\n"
-                "Or say **\"looks good\"** if you're happy with the plan as-is.",
-                can_go_back=True,
-                nav=_NAV_FINAL,
+                "*\"Add a sub-project called Data Quality\"*.",
+                can_go_back=False,
+                nav=[],
                 extra={"doc_id": doc_id},
             )
 
@@ -1063,20 +1080,16 @@ class PlanElicitor:
             doc_content = get_doc_manager().load(doc_id) or ""
 
         nc = len(re.findall(r"^<!-- Step \d+", doc_content, re.MULTILINE))
-        lines = [
-            f"I've created your plan: **{spec['title']}**\n",
-            f"Saved as `{doc_id}.md` in your inbox ({nc} command{'s' if nc != 1 else ''}).\n",
-            "---\n",
-            doc_content,
-            "\n---\n",
-            "**What would you like to do?**\n",
-            "- Say what you'd like to change (e.g. *\"Change the project name to X\"*, *\"Add a sub-project for Data Quality\"*)",
-            "- Or **open the editor** to make changes directly",
-            "- Say **\"looks good\"** when you're happy and ready to proceed",
-        ]
+        msg = (
+            f"Plan ready: **{spec['title']}** — {nc} command{'s' if nc != 1 else ''}, "
+            f"saved to Inbox as `{doc_id}.md`.\n\n"
+            "Review and edit commands in the canvas on the right, then use "
+            "**Validate** or **Execute** when ready.\n\n"
+            "*Describe any changes here and I'll update the plan.*"
+        )
         return _clarification_result(
-            spec, "\n".join(lines),
-            can_go_back=True, nav=_NAV_FINAL,
+            spec, msg,
+            can_go_back=False, nav=[],
             extra={"doc_id": doc_id, "query_type_override": "plan"},
         )
 
@@ -1274,17 +1287,25 @@ class PlanElicitor:
 
     def _apply_change(self, doc_content: str, change_request: str, llm) -> str:
         """Use the LLM to apply a natural-language change to a plan document."""
+        # Output budget must be at least as large as the input document to avoid
+        # truncation.  Add 20% headroom for structural changes, cap at model max.
+        input_chars = len(doc_content)
+        # Rough char→token ratio ~3.5; ask for input_len/3 tokens with 20% headroom
+        output_tokens = max(4000, int(input_chars / 3.5 * 1.2))
+        output_tokens = min(output_tokens, 16000)  # stay within typical model ctx
+
         prompt = (
             f"You are editing a Dr.Egeria governance plan document.\n"
             f"Apply the following change to the document:\n\n"
             f"Change request: \"{change_request}\"\n\n"
-            f"Current document:\n```markdown\n{doc_content[:4000]}\n```\n\n"
+            f"Current document:\n```markdown\n{doc_content}\n```\n\n"
             f"Return ONLY the complete updated document (no commentary, no code fences).\n"
-            f"Preserve all existing structure. Only change what was requested.\n"
+            f"Preserve all existing sections and commands. Only change what was requested.\n"
+            f"IMPORTANT: output the entire document — do not truncate or summarise.\n"
             f"Updated document:"
         )
         try:
-            updated = llm.generate(prompt, temperature=0.1, max_tokens=4000)
+            updated = llm.generate(prompt, temperature=0.1, max_tokens=output_tokens)
             # Strip accidental code fences
             updated = re.sub(r"^```(?:markdown)?\n?", "", updated.strip())
             updated = re.sub(r"\n?```$", "", updated.strip())

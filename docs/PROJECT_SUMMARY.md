@@ -1,6 +1,6 @@
 # Egeria Advisor — Project Summary: Phases, Capabilities, Lessons Learned
 
-**Last updated:** 2026-06-14  
+**Last updated:** 2026-06-15  
 **Repository:** `/Users/dwolfson/localGit/egeria-v6/egeria-advisor`  
 **GitHub:** `https://github.com/dwolfson/egeria-advisor`
 
@@ -509,6 +509,69 @@ docs/
 
 ## Recent work (Jun 2026)
 
+### Phase 11d — Execution quality + Outcome reporting (Jun 15, 2026)
+
+**MCP execution chain debugging and diagnostics** ✓
+- Traced `GovernancePlanAgent.execute()` → `DrEgeriaActionAgent.execute()` → `dr_egeria_run_block` MCP tool → `process_markdown_file_structured` → `dispatcher.dispatch_batch` → Egeria REST API
+- Identified that the Dr.Egeria MCP subprocess was writing inbox files correctly but no outbox output was produced — root cause was `os.environ["EGERIA_ROOT_PATH"] = "/"` in `mcp_server.py` corrupting the outbox path (`/distribution-hub/dr-egeria-outbox`)
+- Confirmed `UniversalExtractor` handles both H1 (`#`) and H2 (`##`) command headers; commands reach the dispatcher correctly
+- Discovered `_build_structured_response` defaulted `status` to `"success"` for commands with no registered processor — silent no-op counted as success. (MCP server fix applied upstream.)
+- Fixed by user in the Dr.Egeria MCP server; execution now reaches Egeria REST API correctly
+
+**Per-command GUID and Qualified Name in execution results** ✓
+- `_build_structured_response` in `mcp_server.py` now emits a `commands_detail` list alongside aggregated counts — each entry includes `step`, `command`, `status`, `guid`, `qualified_name`, `display_name`, `message`
+- `_parse_dr_egeria_response` extracts `commands_detail` from the JSON response
+- `OutcomeReporter.generate()` uses `commands_detail` directly when available (authoritative); falls back to plan-derived list + structured error matching
+- Command Results table in the Outcome section now shows **GUID** and **Qualified Name** columns — the key signal that a creation command actually ran
+- GUID fallback: when the `guid` field is empty (auto-derived QN not returned by processor), the GUID is extracted from the processor's message string `"Executed X Y (GUID: …)"`
+- **Note column always populated**: link command messages (e.g. "Linked X to Y") are shown in the Note column, not just error messages
+
+**Auto-derived Qualified Names for all command types** ✓
+- Added `Create Person Role → PersonRole`, `Create Community → Community`, `Create Actor Profile → ActorProfile`, `Create User Identity → UserIdentity` to `_ACTION_TO_EGERIA_TYPE`
+- Plans generated for these types now auto-populate Qualified Name following `Type::display-name` convention, so the processor returns both GUID and QN in the result
+
+**Raw Dr.Egeria output preserved in outbox plan** ✓
+- `governance_plan_agent.execute()` now appends a collapsible `## Dr.Egeria Execution Output` section to the outbox plan document containing the full augmented plan markdown
+- This preserves all Dr.Egeria output including View Report results and Mermaid diagrams
+- `plan_editor.js` listens for `<details>` expand events and re-runs Mermaid when the section is opened
+- The `## Outcome` section still shows a filtered `### Execution Results` block (Mermaid diagrams and report tables extracted from the raw output) for immediate visibility
+
+**Outcome reporter overhauled** ✓
+- `_parse_command_results` (text-parsing the augmented plan) replaced with `_build_command_results` — builds per-command status from plan command names cross-referenced with structured `validation_errors`/`execution_errors`; MCP only reports failures, so all unlisted commands are marked Success
+- `_extract_report_sections()` module-level helper: scans Dr.Egeria output for Mermaid blocks and H2 sections containing tables or GUIDs (report content, creation confirmations); skips plain field-definition sections
+- Status line correctly shows "7 of 7 succeeded" from authoritative MCP counts, not text parsing
+
+**Post-generate UX cleanup** ✓
+- `_build_post_generate_response` in `plan_elicitor.py`: removed full plan dump from chat, removed "What would you like to do?" and "Back" nav buttons; clean 3-line handoff pointing user to canvas
+- `_handle_refine` short-phrase guard: ≤4 words with no change verb → refuse without calling LLM (prevents "execute" in chat from being treated as a modification instruction)
+- `_apply_change` dynamic token budget: removed `doc_content[:4000]` truncation; `output_tokens` calculated from `len(doc_content) / 3.5 * 1.2` (min 4000, cap 16000); "do not truncate or summarise" added to prompt
+
+**Execute-in-chat intercept** ✓
+- In `rag_system._process_query`, detect execute-intent words ("execute", "run the plan", "go ahead", "do it") before forwarding to `PlanElicitor.continue_draft()`
+- Loads the active draft spec to get `doc_id`, calls `GovernancePlanAgent.execute(doc_id)` directly
+- Prevents "execute" from being treated as a plan modification instruction that corrupts/truncates the plan document
+
+**Canvas UX improvements** ✓
+- Added **Validate** button (sky-blue) to canvas toolbar between Generate Plan and Execute
+- Validate button enabled for both inbox and outbox plans
+- `plan_editor.js _validatePlanDoc()`: reads `data.validation_errors` + `data.execution_errors` (fixes prior bug reading `data.errors`); shows structured table with Step/Command/Issue columns; always shows raw Dr.Egeria output when validation fails
+- `plan_canvas.js onRender`: shows both Validate and Execute buttons when `doc_id` exists
+
+**Sidebar delete and recovery** ✓
+- `×` delete button on all inbox/outbox plan rows in sidebar
+- `DELETE /api/plans/{doc_id}` endpoint; `DocumentManager.delete()` method
+- `↺` outbox recovery button: checks HTTP response, opens Plan Editor after successful recovery
+- Outbox sidebar colour changed from amber warning to neutral slate
+
+**Command discovery routing** ✓
+- `_COMMAND_DISCOVERY_RE` regex + `_is_command_discovery()` + `_handle_command_discovery()` in `rag_system.py`
+- Queries like "what Dr.Egeria commands are about solutions?" → `CommandKeywordIndex.search_by_keyword(topic)` → structured response grouped by family
+- Previously routed to DocAgent and answered from documentation with hallucinations
+
+**Feedback admin UI** ✓
+- `admin.html` Feedback Review section: filter by vote and triage status; table with Step/Command/Issue columns; inline triage select and comment field; `PATCH /api/feedback/extended/{idx}` endpoint
+- `feedbackClick` captures `intent_override` and `response_text` from response metadata
+
 ### Phase 11c — Routing fixes + Plan Editor mode (Jun 13, 2026)
 
 **Action catalog gap analysis and expansion** ✓ (commit 4412ff5)
@@ -590,28 +653,43 @@ docs/
 - Phase 3 partial — ArtifactCanvas extracted; Report Spec canvas needs design
 - Phase 11b ✓ — auth, pattern library, Egeria context enrichment, zone valid values
 - Phase 11c ✓ — routing fixes, catalog expansion, keyword index, plan editor
+- Phase 11d ✓ — execution quality, GUID/QN in results, raw output preservation, UX fixes
+
+**What's working end-to-end (Jun 15, 2026):**
+- Plans generate via conversational Q&A or Plan Editor builder mode
+- Execution reaches Dr.Egeria MCP → Egeria REST API; objects created in Egeria confirmed by GUID in output
+- Outbox plan shows: structured Outcome with GUID/QN per command + filtered Execution Results (Mermaid diagrams) + collapsible raw Dr.Egeria output
+- Validate button works for both inbox and outbox plans
+- Command discovery ("what Dr.Egeria commands are about solutions?") routes correctly via keyword index
+- Delete, recover, and re-execute flows for inbox/outbox plans
 
 **Planned next (in priority order):**
 
-- **Action catalog expansion (Phase 4C)** — the catalog covers 55 of ~126 unique commands. Phase 4C adds the remaining ~71 to enable *conversational* planning across all Dr.Egeria families. Priority order: Collections (15), Solution Architect Link commands (8 remaining), Governance Officer Create commands (~27 remaining), Data Designer (11 remaining), Digital Product Manager (8 remaining). ⚠️ Verify field names against Dr.Egeria template files before writing entries.
+- **Plan re-execution as first-class workflow** — re-executing an outbox plan is *normal operation*, not error recovery. Current UX uses amber warning colour and "Recover for Editing" label. Changes needed: (1) neutral colour for outbox sidebar entries; (2) two action buttons per outbox entry — ✏ (edit first) and ▶ (re-execute directly); (3) `POST /api/plans/{doc_id}/rerun` endpoint that executes outbox plan without moving to inbox first, appending a new `## Outcome (Run N)` section; (4) Create→Update directive rewriting for idempotent re-execution (`update-if-exists` directive + validator rewrite). See backlog plan for full design.
 
-- **Egeria Projects & Tasks** — fill specific catalog gaps for the 0130-Projects type system: Update Project, Update Task, Add Project Team Member, Classify Project as Experiment; add `known_fields` (mission, successCriteria, projectStatus, projectHealth, priority, dates) to existing Create actions; routing patterns for project/task listing; report specs for Campaigns, Tasks.
+- **Searchable dropdowns for Dr.Egeria attribute valid value sets** — Plan Canvas renders all attribute fields as free-text inputs. For fields with constrained valid values (`DeployedImplementationType`, `GlossaryTermStatus`, `ProjectStatus`, etc.), show a searchable dropdown with an "other / not listed" escape hatch. Three source types: open-metadata enum (static list in catalog), Egeria valid value set (live lookup via pyegeria), reference data from existing entities (glossary names, zone names — partially done). Design: extend `dr_egeria_actions.yaml` with `valid_values_source` per attribute; new `ValidValueRegistry`; `GET /api/valid-values/{source_key}`; Plan Canvas renders `<select>` with text filter instead of `<input type="text">`. See backlog plan for full design.
 
-- **Egeria referenced data for valid field values** — `ReferenceDataManager` for project status, data classification levels, etc.; extend `EgeriaContext.find_valid_values(set_name)` and wire into the fields endpoint for field types beyond governance zones.
+- **Egeria Projects & Tasks gaps** — fill specific catalog gaps for the 0130-Projects type system: Update Project, Update Task, Add Project Team Member, Classify Project as Experiment; add `known_fields` (mission, successCriteria, projectStatus, projectHealth, priority, dates) to existing Create actions; routing patterns for project/task listing; report specs for Campaigns, Tasks.
+
+- **Action catalog expansion** — the catalog covers 55 of ~126 unique commands. The remaining ~71 are accessible via the Plan Editor command picker but not through conversational planning. Priority order: Collections (15), remaining Governance Officer Creates (~27), Data Designer (11), Digital Product Manager (8). ⚠️ Verify field names against Dr.Egeria template files before writing entries.
+
+- **Live Glossary Term Lookup** — for `explanation` intent + interrogative phrasing ("what is X?"), call `EgeriaContext.search_glossary_terms(term)` after vector retrieval; prepend live glossary results to context with "From your Egeria glossary:" label; surface matching terms as suggestion chips below the response. Cap timeout at 3 seconds — don't block Q&A.
+
+- **Egeria referenced data for valid field values** — extend `EgeriaContext.find_valid_values(set_name)` for project status, data classification levels, etc.; wire into the fields endpoint for field types beyond governance zones.
 
 - **Egeria Actor lookup for unresolved names** — when `actor_found=False`, optionally auto-insert a `Create Actor Profile` command before the role appointment. Currently surfaces a warning only.
 
-- **Few-shot examples from approved plans** — index past approved plans into a new pgvector collection; retrieve similar plans during `_decompose_intent` to improve narrative generation for recurring task types.
+- **Builder mode chat routing** — when `builder_mode: True` is set on a draft, informational chat queries should route to DocAgent rather than GovernancePlanAgent (flag is stored but not yet read by `_process_query`).
+
+- **MCP credential propagation** — investigate whether `run_report`/`dr_egeria_run_block` accept per-call user args; if yes, thread JWT-extracted credentials through to MCP calls.
 
 - **Report Spec canvas** — create/edit question_specs via chat + canvas (needs design session).
 
-- **MCP credential propagation** — investigate whether `run_report`/`dr_egeria_run_block` accept per-call user args; if yes, thread JWT-extracted credentials through to MCP.
+- **Few-shot examples from approved plans** — index past approved plans into a new pgvector collection; retrieve similar plans during `_decompose_intent` to improve narrative generation for recurring task types.
 
-- **Builder mode chat routing** — when `builder_mode: True` is set on a draft, informational chat queries should route to DocAgent rather than GovernancePlanAgent (currently not yet implemented — the flag is stored but not yet read by `_process_query`).
+- **Multi-user considerations** — system is currently single-user. Multi-user raises: (1) *Auth* — JWT in place; Egeria credentials per-user need per-session MCP processes or credential injection; (2) *Isolation* — plan drafts/sessions in `~/egeria-plans/`; multi-user needs per-user directories; (3) *Egeria permissions* — system uses a service account; (4) *Vector store* — indexed collections are shared (public docs/code), fine; only plan artifacts and live-data queries are user-specific. Recommend: defer until Portal integration defines the auth boundary.
 
-- **Multi-user considerations** — the system is currently single-user (OS user identity, one set of Egeria credentials, shared pgvector). Multi-user raises questions across several layers: (1) *Auth* — JWT already in place; Egeria credentials per-user would require per-session MCP processes or credential injection into tool calls; (2) *Isolation* — plan drafts and session transcripts currently sit in `~/egeria-plans/`; multi-user needs per-user directories or a shared store keyed on user ID; (3) *Egeria permissions* — each user may have different Egeria access rights; the system currently uses a service account; (4) *Vector store* — the indexed collections are shared (public Egeria documentation + code), which is fine; only the plan artifacts and live-data queries are user-specific; (5) *Session state* — `_activeDraftId` is in `sessionStorage` (per-browser-tab), which is already per-user in practice. Recommend: defer full multi-user until the Portal integration (shared-secret SSO) is in place, since the Portal defines the auth boundary.
-
-- **Docker deployment** — the system has four external dependencies (pgvector, Ollama, Dr.Egeria MCP, Egeria itself) that a Docker Compose setup would need to manage. Key considerations: (1) Ollama GPU passthrough requires `--gpus all` and is Linux-only natively (macOS runs Ollama outside Docker); (2) pgvector can be `ankane/pgvector` image; (3) the Advisor itself is straightforward to containerize; (4) Dr.Egeria MCP and Egeria require separate containers or external hosts; (5) volume mounts for `~/egeria-plans/` and the vector store data. A minimal Compose file would cover: advisor + pgvector + Ollama (or point to external). Full environment including Egeria server is more complex and likely out of scope for the first Docker pass.
+- **Docker deployment** — four external dependencies (pgvector, Ollama, Dr.Egeria MCP, Egeria). Key: Ollama GPU passthrough is Linux-only; pgvector → `ankane/pgvector` image; Dr.Egeria MCP and Egeria require separate containers or external hosts. A minimal Compose: advisor + pgvector + Ollama (or external Ollama).
 
 - **IntentModel** (deferred) — formal intermediate representation between extraction and command mapping.
 

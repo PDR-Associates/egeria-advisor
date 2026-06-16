@@ -111,6 +111,28 @@ query_patterns:
       - "dr egeria how"
       - "dre how"
     explanation:
+      # Command-discovery questions: "what dr.egeria commands are about X" etc.
+      # These are capability questions, not execution requests → DocAgent / template index
+      - "what dr.egeria commands"
+      - "what dr egeria commands"
+      - "what dr. egeria commands"
+      - "which dr.egeria commands"
+      - "which dr egeria commands"
+      - "which dr. egeria commands"
+      - "dr.egeria commands about"
+      - "dr egeria commands about"
+      - "dr.egeria commands for"
+      - "dr egeria commands for"
+      - "dr.egeria commands related"
+      - "dr egeria commands related"
+      - "what commands are available"
+      - "which commands are available"
+      - "what commands exist"
+      - "which commands exist"
+      - "list dr.egeria commands"
+      - "list dr egeria commands"
+      - "show dr.egeria commands"
+      - "show dr egeria commands"
       # Dr.Egeria usage / "what is" questions → DocAgent with pyegeria_drE collection
       - "how do i use dr egeria"
       - "how do i use dr. egeria"

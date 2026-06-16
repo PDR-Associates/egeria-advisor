@@ -107,6 +107,13 @@ class DocumentManager:
         logger.warning(f"DocumentManager: doc_id {doc_id!r} not found")
         return None
 
+    def load_outbox(self, doc_id: str) -> Optional[str]:
+        """Load a plan document from the outbox only."""
+        path = self._paths["outbox"] / f"{doc_id}.md"
+        if path.exists():
+            return path.read_text(encoding="utf-8")
+        return None
+
     def update(self, doc_id: str, content: str) -> bool:
         """
         Overwrite a plan document in place (inbox only — executed docs are immutable).
@@ -138,8 +145,47 @@ class DocumentManager:
         versions_dir = self._paths["versions"]
         entries = []
         for md in sorted(versions_dir.glob(f"{doc_id}_v*.md"), reverse=True):
-            entries.append({"version_file": md.name, "path": str(md)})
+            # Extract the timestamp portion from the filename stem
+            stem = md.stem  # e.g. "20260614_165841_..._v20260614_170122"
+            ts_part = stem.rsplit("_v", 1)[-1] if "_v" in stem else ""
+            entries.append({
+                "version_file": md.name,
+                "timestamp": ts_part,
+                "path": str(md),
+            })
         return entries
+
+    def load_version(self, doc_id: str, version_file: str) -> Optional[str]:
+        """Load content from a specific version file."""
+        ver_path = self._paths["versions"] / version_file
+        if ver_path.exists() and ver_path.stem.startswith(doc_id):
+            return ver_path.read_text(encoding="utf-8")
+        logger.warning(f"DocumentManager.load_version: {version_file!r} not found or wrong doc_id")
+        return None
+
+    def restore_version(self, doc_id: str, version_file: str) -> bool:
+        """
+        Restore a version to inbox, overwriting any existing inbox/outbox copy.
+
+        The current inbox or outbox copy is saved as a version first.
+        Returns True on success.
+        """
+        content = self.load_version(doc_id, version_file)
+        if content is None:
+            return False
+
+        inbox_path = self._paths["inbox"] / f"{doc_id}.md"
+        outbox_path = self._paths["outbox"] / f"{doc_id}.md"
+
+        # Save whatever currently exists as a version before overwriting
+        for existing in (inbox_path, outbox_path):
+            if existing.exists():
+                self._save_version(doc_id, existing.read_text(encoding="utf-8"))
+                existing.unlink()
+
+        inbox_path.write_text(content, encoding="utf-8")
+        logger.info(f"DocumentManager: restored {version_file} to inbox as {doc_id}")
+        return True
 
     def move_to_outbox(self, doc_id: str, outcome_content: str) -> bool:
         """
@@ -157,6 +203,36 @@ class DocumentManager:
         outbox_path.write_text(final, encoding="utf-8")
         inbox_path.unlink()
         logger.info(f"DocumentManager: moved {doc_id} to outbox")
+        return True
+
+    def move_to_inbox(self, doc_id: str) -> bool:
+        """
+        Move a plan document from outbox back to inbox, stripping the outcome section.
+
+        Returns True on success. Fails if the inbox already has a file with that name
+        (would overwrite a different plan).
+        """
+        outbox_path = self._paths["outbox"] / f"{doc_id}.md"
+        if not outbox_path.exists():
+            logger.warning(f"DocumentManager.move_to_inbox: {doc_id!r} not in outbox")
+            return False
+        inbox_path = self._paths["inbox"] / f"{doc_id}.md"
+        if inbox_path.exists():
+            logger.warning(f"DocumentManager.move_to_inbox: {doc_id!r} already exists in inbox")
+            return False
+        content = outbox_path.read_text(encoding="utf-8")
+        # Strip the outcome section (everything from the separator before ## Outcome onward)
+        import re
+        stripped = re.sub(
+            r'\n\n---\n\n## Outcome\b.*',
+            '',
+            content,
+            flags=re.DOTALL,
+        )
+        self._save_version(doc_id, content)
+        inbox_path.write_text(stripped.rstrip() + "\n", encoding="utf-8")
+        outbox_path.unlink()
+        logger.info(f"DocumentManager: moved {doc_id} from outbox back to inbox")
         return True
 
     def archive(self, doc_id: str) -> bool:
@@ -181,6 +257,16 @@ class DocumentManager:
     def list_outbox(self) -> List[Dict[str, str]]:
         """Return metadata for all documents in outbox/, newest first."""
         return self._list_folder("outbox")
+
+    def delete(self, doc_id: str) -> bool:
+        """Delete a document from inbox or outbox (whichever it's in). Returns True if deleted."""
+        for folder in ("inbox", "outbox"):
+            path = self._paths[folder] / f"{doc_id}.md"
+            if path.exists():
+                self._save_version(doc_id, path.read_text(encoding="utf-8"))
+                path.unlink()
+                return True
+        return False
 
     def _list_folder(self, folder: str) -> List[Dict[str, str]]:
         folder_path = self._paths[folder]

@@ -187,6 +187,35 @@ class CommandKeywordIndex:
 
         return best if best_score >= 0.50 else None
 
+    def search_by_keyword(self, keyword: str) -> Dict[str, List[Dict]]:
+        """Return all commands whose name, family, or aliases contain *keyword*.
+
+        Returns a dict grouped by family (same shape as all_commands()).
+        """
+        self._ensure_built()
+        kw = self._normalize(keyword)
+        seen: Dict[str, Dict] = {}
+        for entry in self._entries:
+            name_n = entry["name_normalized"]
+            family_n = self._normalize(entry["family"] or "")
+            terms = entry["terms"]
+            if (kw in name_n or kw in family_n
+                    or any(kw in t for t in terms)):
+                key = entry["command"]
+                if key not in seen:
+                    seen[key] = {
+                        "name": entry["command"],
+                        "family": entry["family"],
+                        "aliases": terms,
+                        "in_catalog": entry["source_tier"] == "catalog",
+                    }
+        groups: Dict[str, List] = {}
+        for cmd in seen.values():
+            fam = cmd["family"] or "Other"
+            groups.setdefault(fam, []).append(cmd)
+        return {fam: sorted(cmds, key=lambda c: c["name"])
+                for fam, cmds in sorted(groups.items())}
+
     def all_commands(self) -> List[Dict]:
         """Return all commands grouped for the /api/actions endpoint."""
         self._ensure_built()

@@ -101,14 +101,12 @@ const PlanCanvas = (() => {
       adapter:      _planAdapter,
       itemAdapter:  _planItemAdapter,
       onRender(data) {
-        // Show Execute button when plan document has been generated
-        const execBtn = document.getElementById('pcanvas-execute-btn');
-        if (execBtn) {
-          const docId = data?.meta?.doc_id;
-          execBtn.classList.toggle('hidden', !docId);
-          const titleEl = document.getElementById('pcanvas-title');
-          if (titleEl) titleEl.dataset.docId = docId || '';
-        }
+        // Show Validate + Execute buttons when plan document has been generated
+        const docId = data?.meta?.doc_id;
+        const titleEl = document.getElementById('pcanvas-title');
+        if (titleEl) titleEl.dataset.docId = docId || '';
+        document.getElementById('pcanvas-validate-btn')?.classList.toggle('hidden', !docId);
+        document.getElementById('pcanvas-execute-btn')?.classList.toggle('hidden', !docId);
       },
     });
     return _canvas;

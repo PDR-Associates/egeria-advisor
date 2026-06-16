@@ -453,15 +453,27 @@ class GovernancePlanAgent:
                 "context_length": len(command_section),
             }
 
-        # Generate outcome section
+        # Parse structured response from Dr.Egeria
+        ex_success, ex_output, ex_val_errs, ex_exe_errs, ex_counts = _parse_dr_egeria_response(execution_output)
+
+        # Generate outcome section — pass structured data to reporter
         reporter = get_outcome_reporter()
         outcome_md = reporter.generate(
-            plan_content, execution_output, perspective,
-            expected_command_count=expected_command_count,
+            plan_content, ex_output or execution_output, perspective,
+            expected_command_count=ex_counts.get('total', expected_command_count),
+            commands_succeeded=ex_counts.get('succeeded'),
+            commands_failed=ex_counts.get('failed'),
+            validation_errors=ex_val_errs,
+            execution_errors=ex_exe_errs,
+            commands_detail=ex_counts.get('detail', []),
         )
 
-        # Move to outbox with outcome appended
-        moved = doc_manager.move_to_outbox(doc_id, outcome_md)
+        # Append raw Dr.Egeria output as a separate section so it's always available.
+        # This contains the augmented plan markdown, View Report output, and Mermaid diagrams.
+        raw_section = _build_raw_output_section(ex_output or execution_output)
+
+        # Move to outbox with outcome + raw output appended
+        moved = doc_manager.move_to_outbox(doc_id, outcome_md + "\n\n" + raw_section)
         if moved:
             logger.info(f"GovernancePlanAgent.execute: moved {doc_id} to outbox")
         else:
@@ -502,6 +514,97 @@ class GovernancePlanAgent:
             "avg_relevance_score": 0.0,
             "context_length": len(outcome_md),
         }
+
+    def validate(self, doc_id: str) -> Dict[str, Any]:
+        """
+        Validate a plan's command sequence against Egeria without executing it.
+
+        Uses Dr.Egeria's 'validate' directive which checks connectivity and
+        command syntax but does not create or modify any Egeria objects.
+        """
+        from advisor.governance_docs import get_doc_manager
+        from advisor.agents.dr_egeria_agent import DrEgeriaActionAgent
+
+        # Accept both inbox and outbox plans
+        doc_manager = get_doc_manager()
+        plan_content = doc_manager.load(doc_id)
+        if not plan_content:
+            plan_content = doc_manager.load_outbox(doc_id)
+        if not plan_content:
+            return _error_result(
+                doc_id,
+                f"Plan document `{doc_id}` not found in inbox or outbox.",
+            )
+
+        command_section = self._extract_command_section(plan_content)
+        if not command_section.strip():
+            return _error_result(
+                doc_id,
+                f"Plan document `{doc_id}` has no Command Sequence section to validate.",
+            )
+
+        action_agent = DrEgeriaActionAgent()
+        try:
+            raw_output = action_agent.execute(
+                command_section,
+                directive="validate",
+                dry_run=False,
+            )
+        except ConnectionError as exc:
+            return _error_result(
+                doc_id,
+                f"Cannot validate: Egeria MCP server is not reachable.\n\nDetails: {exc}",
+            )
+        except Exception as exc:
+            return _error_result(
+                doc_id,
+                f"Validation failed: {exc}",
+            )
+
+        success, output_text, val_errs, exe_errs, counts = _parse_dr_egeria_response(raw_output)
+        logger.info(
+            f"validate({doc_id}): success={success} "
+            f"val_errs={len(val_errs)} exe_errs={len(exe_errs)} "
+            f"raw_type={type(raw_output).__name__} raw_prefix={str(raw_output)[:120]!r}"
+        )
+
+        result: Dict[str, Any] = {
+            "query": doc_id,
+            "query_type": "plan_validated",
+            "doc_id": doc_id,
+            "success": success,
+            "output": output_text,
+            "response": output_text,
+            "validation_errors": val_errs,
+            "execution_errors": exe_errs,
+            "sources": [],
+            "num_sources": 0,
+            "retrieval_time": 0.0,
+            "generation_time": 0.0,
+            "avg_relevance_score": 0.0,
+            "context_length": len(command_section),
+        }
+        result.update(counts)
+        return result
+
+    def retry(self, doc_id: str, perspective: str | None = None) -> Dict[str, Any]:
+        """
+        Move a failed outbox plan back to inbox and re-execute it.
+
+        The existing outcome section is stripped so the document is clean
+        for a fresh execution attempt.
+        """
+        from advisor.governance_docs import get_doc_manager
+        doc_manager = get_doc_manager()
+
+        moved = doc_manager.move_to_inbox(doc_id)
+        if not moved:
+            return _error_result(
+                doc_id,
+                f"Could not move `{doc_id}` back to inbox. "
+                f"It may not be in the outbox, or the inbox already has a file with that name.",
+            )
+        return self.execute(doc_id, perspective=perspective)
 
     @staticmethod
     def _extract_command_section(plan_content: str) -> str:
@@ -562,6 +665,10 @@ class GovernancePlanAgent:
         "Create Digital Product":         "DigitalProduct",
         "Create Agreement":               "Agreement",
         "Create Data Sharing Agreement":  "Agreement",
+        "Create Person Role":             "PersonRole",
+        "Create Community":               "Community",
+        "Create Actor Profile":           "ActorProfile",
+        "Create User Identity":           "UserIdentity",
         "Create Solution Blueprint":      "SolutionBlueprint",
         "Create Solution Component":      "SolutionComponent",
         "Create Information Supply Chain":"InformationSupplyChain",
@@ -1599,6 +1706,69 @@ def _extract_balanced_json(raw: str) -> str:
 # ---------------------------------------------------------------------------
 
 _agent: Optional[GovernancePlanAgent] = None
+
+
+def _parse_dr_egeria_response(raw: str) -> "tuple[bool, str, list[dict], list[dict], dict]":
+    """
+    Parse Dr.Egeria's output from validate/process directives.
+
+    Returns (success, output_text, validation_errors, execution_errors, counts)
+    where counts = {total, succeeded, failed}.
+
+    Handles two formats:
+    1. JSON envelope: {"success": bool, "output": "...", "validation_errors": [...], ...}
+    2. Plain text: treat as success with no structured errors.
+    """
+    if not raw or not raw.strip():
+        return False, "(no output returned by Dr.Egeria)", [], [], {}
+
+    stripped = raw.strip()
+    if stripped.startswith('{'):
+        data = None
+        try:
+            import json as _json
+            data = _json.loads(stripped)
+        except Exception:
+            pass
+        if data is None:
+            # MCP may return Python repr (single quotes, True/False) instead of JSON
+            try:
+                import ast as _ast
+                data = _ast.literal_eval(stripped)
+            except Exception:
+                pass
+        if isinstance(data, dict) and 'success' in data:
+            success  = bool(data['success'])
+            output   = str(data.get('output', '') or '')
+            val_errs = data.get('validation_errors', [])
+            exe_errs = data.get('execution_errors', [])
+            counts   = {
+                'total':     data.get('commands_total', 0),
+                'succeeded': data.get('commands_succeeded', 0),
+                'failed':    data.get('commands_failed', 0),
+                'detail':    data.get('commands_detail', []),
+            }
+            return success, output, val_errs, exe_errs, counts
+
+    # Plain text — Dr.Egeria ran but didn't return structured output yet
+    return True, raw, [], [], {}
+
+
+def _build_raw_output_section(raw_output: str) -> str:
+    """
+    Wrap the raw Dr.Egeria execution output in a collapsible markdown section.
+    This is appended to the outbox plan so the full output (including View Report
+    results and Mermaid diagrams) is always preserved and accessible.
+    """
+    if not raw_output or not raw_output.strip():
+        return ""
+    return (
+        "## Dr.Egeria Execution Output\n\n"
+        "<details>\n"
+        "<summary>View raw Dr.Egeria output (click to expand)</summary>\n\n"
+        f"{raw_output.strip()}\n\n"
+        "</details>\n"
+    )
 
 
 def get_governance_plan_agent() -> GovernancePlanAgent:

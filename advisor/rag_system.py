@@ -213,10 +213,74 @@ class RAGSystem:
         q = query.strip().lower()
         return any(q.startswith(p) for p in self._INTERROGATIVE_PREFIXES)
 
+    # Patterns that indicate "what dr.egeria commands handle X" — answer from catalog.
+    _COMMAND_DISCOVERY_RE = re.compile(
+        r'\b(?:what|which|list|show)\s+(?:dr\.?\s*egeria\s+)?commands?\b',
+        re.IGNORECASE,
+    )
+
+    def _is_command_discovery(self, query: str) -> bool:
+        return bool(self._COMMAND_DISCOVERY_RE.search(query))
+
+    def _handle_command_discovery(self, query: str) -> Optional[Dict[str, Any]]:
+        """Answer a command-discovery question directly from CommandKeywordIndex."""
+        from advisor.command_keyword_index import get_command_keyword_index
+        idx = get_command_keyword_index()
+
+        # Extract the topic keyword after "about", "for", "related to", etc.
+        topic_m = re.search(
+            r'\b(?:about|for|related\s+to|regarding|on)\s+(.+?)[\?\.]*$',
+            query, re.IGNORECASE,
+        )
+        topic = topic_m.group(1).strip() if topic_m else None
+
+        if topic:
+            groups = idx.search_by_keyword(topic)
+        else:
+            groups = idx.all_commands()
+
+        if not groups:
+            if topic:
+                return {
+                    "query": query,
+                    "response": (
+                        f"No Dr. Egeria commands found matching **{topic}**. "
+                        "Try a broader term, or ask \"what dr.egeria commands are available?\" "
+                        "to browse all command families."
+                    ),
+                    "query_type": "explanation",
+                    "sources": [],
+                    "routing_agent": "command_keyword_index",
+                }
+            return None  # no topic and no commands — fall through to DocAgent
+
+        lines = []
+        if topic:
+            lines.append(f"Dr. Egeria commands related to **{topic}**:\n")
+        else:
+            lines.append("Available Dr. Egeria command families:\n")
+
+        for family, cmds in groups.items():
+            lines.append(f"### {family}")
+            for cmd in cmds:
+                tag = " *(catalog)*" if cmd["in_catalog"] else ""
+                lines.append(f"- **{cmd['name']}**{tag}")
+            lines.append("")
+
+        return {
+            "query": query,
+            "response": "\n".join(lines),
+            "query_type": "explanation",
+            "sources": [],
+            "routing_agent": "command_keyword_index",
+        }
+
     # Keywords that signal the user wants Python code, not live Egeria data.
     _CODE_EXAMPLE_SIGNALS = (
         "python", "code example", "code sample", "write python",
         "python code", "pyegeria example", "python snippet",
+        # Any mention of Dr.Egeria belongs to the command/template path, never a data report
+        "dr.egeria", "dr egeria", "dr. egeria",
     )
 
     # Phrases that explicitly request a Dr.Egeria template/command, used to
@@ -341,6 +405,53 @@ class RAGSystem:
             _tmpl_m = re.match(r'^save\s+(?:as\s+)?template\s+(.+)', q)
             if _tmpl_m:
                 return agent.save_as_template(draft_id, _tmpl_m.group(1).strip())
+            # "Open the editor" / "open editor" — UI navigation hint, not a plan edit
+            if re.match(r'^open\s+(the\s+)?editor\b', q):
+                return {
+                    "query": user_query,
+                    "response": (
+                        "To open the Plan Editor, click the **pencil icon** (✏️) next to "
+                        "the plan in the Inbox sidebar, or use the **Edit** button that "
+                        "appears on the plan canvas.\n\n"
+                        "You can also make changes by describing what you want here — "
+                        "for example: *\"Change the project name to X\"* or "
+                        "*\"Add a sub-project for Data Quality\"*."
+                    ),
+                    "query_type": "plan_clarification",
+                    "draft_id": draft_id,
+                    "can_go_back": True,
+                    "navigation": ["back", "cancel"],
+                    "sources": [],
+                }
+
+            # "execute" / "run" typed in chat while a draft is active — route to
+            # actual plan execution rather than letting the LLM treat it as a
+            # plan-modification instruction (which produces a truncated document).
+            _exec_pattern = re.compile(
+                r'^(?:execute|run|run\s+(?:the\s+)?plan|go\s+ahead|proceed(?:\s+with\s+execution)?'
+                r'|run\s+it|execute\s+(?:the\s+)?plan|execute\s+it)\b',
+                re.IGNORECASE,
+            )
+            if _exec_pattern.match(q):
+                from advisor.governance_draft import get_draft_manager as _gdm
+                spec = _gdm().load(draft_id)
+                doc_id = spec.get("doc_id") if spec else None
+                if doc_id:
+                    logger.info(f"Draft execute command detected — executing plan {doc_id}")
+                    return agent.execute(doc_id)
+                else:
+                    return {
+                        "query": user_query,
+                        "response": (
+                            "The plan hasn't been generated yet — use **Generate Plan** "
+                            "on the canvas first, then **Execute** when ready."
+                        ),
+                        "query_type": "plan_clarification",
+                        "draft_id": draft_id,
+                        "can_go_back": False,
+                        "navigation": [],
+                        "sources": [],
+                    }
 
             # Default: forward user response to active Q&A phase
             return agent.continue_draft(draft_id, user_query)
@@ -652,6 +763,14 @@ class RAGSystem:
                 return result
             except Exception as exc:
                 logger.warning(f"ExamplesAgent failed ({exc}), falling back to RAG")
+
+        # ── Command-discovery shortcut ──────────────────────────────────────
+        # "what dr.egeria commands are about X" → answer from keyword index,
+        # not from docs (docs have no structured command catalog).
+        if query_analysis['query_type'] == 'explanation' and self._is_command_discovery(user_query):
+            result = self._handle_command_discovery(user_query)
+            if result:
+                return result
 
         # Route explanation/conceptual/debugging queries to DocAgent (BeeAI + fallback).
         if query_analysis['query_type'] in ('explanation', 'best_practice', 'comparison', 'debugging', 'general'):

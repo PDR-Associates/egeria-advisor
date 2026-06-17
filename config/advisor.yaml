@@ -158,7 +158,7 @@ governance_plans:
   # outbox (executed, with outcome sections appended).
   inbox:        ~/egeria-plans/inbox/
   outbox:       ~/egeria-plans/outbox/
-  archived:     ~/egeria-plans/archived/
+  trash:        ~/egeria-plans/trash/
   drafts:       ~/egeria-plans/drafts/
   plan_templates: ~/egeria-plans/plan_templates/
   sessions:     ~/egeria-plans/sessions/    # full conversation transcripts

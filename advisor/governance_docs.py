@@ -4,12 +4,20 @@ DocumentManager — lifecycle management for Governance Plan Documents (GPDs).
 Folder layout (all paths configurable in advisor.yaml → governance_plans):
   inbox/     — plans awaiting review or execution
   outbox/    — executed plans with outcome sections appended
-  archived/  — superseded or cancelled plans
+  trash/     — soft-deleted plans (single live copy per doc_id, recoverable)
+  versions/  — immutable timestamped snapshots, one per mutating operation
 
 Each document is a markdown file named:
   {YYYYMMDD_HHMMSS}_{slug}.md
 
-where slug is a URL-safe version of the plan title.
+where slug is a URL-safe version of the plan title. doc_id (the filename
+stem) is stable for the document's entire life — it never changes across
+inbox/outbox/trash moves.
+
+A document lives in exactly one of inbox/outbox/trash at any time. Deleting
+moves a document to trash (not a hard delete) — it can be restored or
+permanently purged. versions/ is separate: it accumulates a full edit
+history regardless of which folder the document currently lives in.
 """
 from __future__ import annotations
 
@@ -32,7 +40,7 @@ def _load_paths() -> Dict[str, Path]:
     defaults = {
         "inbox":    base / "inbox",
         "outbox":   base / "outbox",
-        "archived": base / "archived",
+        "trash":    base / "trash",
         "versions": base / "versions",
     }
     try:
@@ -44,7 +52,8 @@ def _load_paths() -> Dict[str, Path]:
         return {
             "inbox":    Path(gp["inbox"]).expanduser()    if "inbox"    in gp else defaults["inbox"],
             "outbox":   Path(gp["outbox"]).expanduser()   if "outbox"   in gp else defaults["outbox"],
-            "archived": Path(gp["archived"]).expanduser() if "archived" in gp else defaults["archived"],
+            "trash":    Path(gp["trash"]).expanduser()    if "trash"    in gp else
+                        (Path(gp["archived"]).expanduser() if "archived" in gp else defaults["trash"]),
             "versions": Path(gp["versions"]).expanduser() if "versions" in gp else base_cfg / "versions",
         }
     except Exception as exc:
@@ -65,17 +74,84 @@ def _doc_id(path: Path) -> str:
     return path.stem
 
 
+_KNOWN_OBJECTS_HEADER_RE = re.compile(
+    r'^\|\s*Command\s*\|\s*Status\s*\|\s*GUID\s*\|\s*Qualified Name\s*\|.*\|\s*$',
+    re.MULTILINE,
+)
+
+
+def _parse_known_objects(content: str) -> List[Dict[str, str]]:
+    """
+    Extract {command, qualified_name, guid} rows from a plan's "Command Results"
+    table — the GUID/Qualified Name variant produced when commands_detail was
+    available from the MCP response (see OutcomeReporter._compose_outcome_section).
+
+    Returns [] if no such table is present (e.g. plan was never executed, or the
+    MCP didn't return per-command detail).
+    """
+    header_match = _KNOWN_OBJECTS_HEADER_RE.search(content)
+    if not header_match:
+        return []
+
+    objects: List[Dict[str, str]] = []
+    for line in content[header_match.end():].splitlines():
+        line = line.strip()
+        if not line:
+            continue  # blank line right after the header doesn't end the table
+        if not line.startswith("|"):
+            break  # table ended
+        if re.match(r'^\|[\s:-]+\|', line):
+            continue  # separator row
+        cols = [c.strip() for c in line.strip("|").split("|")]
+        if len(cols) < 4:
+            continue
+        command, _status, guid, qualified_name = cols[0], cols[1], cols[2], cols[3]
+        if guid and qualified_name:
+            objects.append({"command": command, "qualified_name": qualified_name, "guid": guid})
+    return objects
+
+
+def _replace_title(content: str, new_title: str) -> str:
+    """Replace the first H1 line in a plan document with new_title."""
+    lines = content.splitlines()
+    for i, line in enumerate(lines):
+        if line.strip().startswith("# "):
+            lines[i] = f"# {new_title}"
+            return "\n".join(lines)
+    return f"# {new_title}\n\n" + content
+
+
 # ---------------------------------------------------------------------------
 # DocumentManager
 # ---------------------------------------------------------------------------
 
 class DocumentManager:
-    """Manages Plan Document files across inbox / outbox / archived folders."""
+    """Manages Plan Document files across inbox / outbox / trash folders."""
 
     def __init__(self) -> None:
         self._paths = _load_paths()
         for p in self._paths.values():
             p.mkdir(parents=True, exist_ok=True)
+        self._migrate_archived_to_trash()
+
+    def _migrate_archived_to_trash(self) -> None:
+        """
+        One-time migration: the old "archived/" folder (dead code — never read
+        by any endpoint or UI) is superseded by "trash/" as of the lifecycle
+        redesign. If an old archived/ directory exists alongside the configured
+        base and has files trash/ doesn't already have, move them over.
+        """
+        old_dir = self._paths["trash"].parent / "archived"
+        if old_dir == self._paths["trash"] or not old_dir.is_dir():
+            return
+        moved = 0
+        for md in old_dir.glob("*.md"):
+            dest = self._paths["trash"] / md.name
+            if not dest.exists():
+                md.rename(dest)
+                moved += 1
+        if moved:
+            logger.info(f"DocumentManager: migrated {moved} document(s) from archived/ to trash/")
 
     # ------------------------------------------------------------------
     # CRUD
@@ -94,14 +170,75 @@ class DocumentManager:
         logger.info(f"DocumentManager: created {path}")
         return doc_id
 
-    def load(self, doc_id: str) -> Optional[str]:
+    def import_document(self, content: str, title: Optional[str] = None) -> str:
         """
-        Load a plan document by doc_id from any folder.
+        Import externally-written Dr.Egeria/LGCI markdown as a new managed plan
+        in inbox/, exactly like a generated plan.
+
+        Detects two shapes:
+          - Already LGCI-structured ("## Command Sequence" header present) —
+            imported as-is (an H1 title is added if one isn't already present).
+          - Bare Dr.Egeria command file (just "## CommandName" blocks, no
+            narrative) — wrapped with a synthesized title and an empty
+            "## Command Sequence" header, so it conforms to what
+            _extract_command_section() expects for validate/execute.
+
+        Returns the new doc_id.
+        """
+        content = content.strip()
+        if not content:
+            raise ValueError("Cannot import empty content")
+
+        has_command_sequence = bool(
+            re.search(r'^##\s+Command Sequence\s*$', content, re.MULTILINE)
+        )
+
+        if has_command_sequence:
+            existing_title = None
+            for line in content.splitlines():
+                if line.strip().startswith("# "):
+                    existing_title = line.strip()[2:].strip()
+                    break
+            final_title = title or existing_title or "Imported Plan"
+            final_content = content if existing_title else f"# {final_title}\n\n{content}"
+        else:
+            final_title = title or self._derive_title_from_commands(content) or "Imported Plan"
+            final_content = (
+                f"# {final_title}\n"
+                f"**Imported:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+                f"## Command Sequence\n\n"
+                f"{content}\n"
+            )
+
+        doc_id = self.create(final_title, final_content)
+        logger.info(f"DocumentManager: imported external document as {doc_id!r}")
+        return doc_id
+
+    @staticmethod
+    def _derive_title_from_commands(content: str) -> Optional[str]:
+        """Best-effort title for a bare command file: first Display Name, else first command verb."""
+        m = re.search(r'^###\s+Display Name\s*\n(.+)$', content, re.MULTILINE)
+        if m:
+            return m.group(1).strip()
+        m = re.search(r'^##\s+(.+)$', content, re.MULTILINE)
+        if m:
+            return m.group(1).strip()
+        return None
+
+    def load(self, doc_id: str, include_trash: bool = False) -> Optional[str]:
+        """
+        Load a plan document by doc_id from inbox or outbox (the "live" folders).
+
+        Trash is excluded by default — a trashed document should not be silently
+        usable by validate/execute/update. Pass include_trash=True for UI lookups
+        that need to detect and surface a trashed document (e.g. the Editor's
+        "this plan was deleted" banner).
 
         Returns the markdown content, or None if not found.
         """
-        for folder in self._paths.values():
-            path = folder / f"{doc_id}.md"
+        folders = ("inbox", "outbox", "trash") if include_trash else ("inbox", "outbox")
+        for folder in folders:
+            path = self._paths[folder] / f"{doc_id}.md"
             if path.exists():
                 return path.read_text(encoding="utf-8")
         logger.warning(f"DocumentManager: doc_id {doc_id!r} not found")
@@ -165,20 +302,22 @@ class DocumentManager:
 
     def restore_version(self, doc_id: str, version_file: str) -> bool:
         """
-        Restore a version to inbox, overwriting any existing inbox/outbox copy.
+        Restore a version to inbox, overwriting any existing inbox/outbox/trash copy.
 
-        The current inbox or outbox copy is saved as a version first.
-        Returns True on success.
+        Whatever currently exists for this doc_id (in any folder) is saved as a
+        version first. Returns True on success.
         """
         content = self.load_version(doc_id, version_file)
         if content is None:
             return False
 
         inbox_path = self._paths["inbox"] / f"{doc_id}.md"
-        outbox_path = self._paths["outbox"] / f"{doc_id}.md"
 
-        # Save whatever currently exists as a version before overwriting
-        for existing in (inbox_path, outbox_path):
+        # Save whatever currently exists as a version before overwriting, and
+        # remove it from wherever it was living (inbox/outbox/trash) — restoring
+        # a version always lands the document back in inbox.
+        for folder in ("inbox", "outbox", "trash"):
+            existing = self._paths[folder] / f"{doc_id}.md"
             if existing.exists():
                 self._save_version(doc_id, existing.read_text(encoding="utf-8"))
                 existing.unlink()
@@ -186,6 +325,65 @@ class DocumentManager:
         inbox_path.write_text(content, encoding="utf-8")
         logger.info(f"DocumentManager: restored {version_file} to inbox as {doc_id}")
         return True
+
+    def fork(self, doc_id: str, new_title: str, version_file: Optional[str] = None) -> str:
+        """
+        Create a new, independent PlanDocument seeded from doc_id's current
+        content (or a specific prior version if version_file is given).
+
+        The Outcome/Execution-Output sections are stripped (a fork hasn't been
+        executed yet) and replaced with a "## Known Objects" appendix listing
+        the Qualified Name and GUID of anything the source plan successfully
+        created, parsed from its Command Results table — so the new plan's
+        commands can reference these objects directly without retyping or a
+        live Egeria round-trip. Editing the fork never touches the source's
+        history.
+
+        Returns the new doc_id.
+        """
+        if version_file:
+            source_content = self.load_version(doc_id, version_file)
+            lineage_ts = version_file.rsplit("_v", 1)[-1].replace(".md", "")
+        else:
+            source_content = self.load(doc_id, include_trash=True)
+            lineage_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        if source_content is None:
+            raise ValueError(
+                f"Could not load source content for fork "
+                f"(doc_id={doc_id!r}, version_file={version_file!r})"
+            )
+
+        known_objects = _parse_known_objects(source_content)
+
+        # Keep narrative + Command Sequence; drop everything from the Outcome separator onward
+        stripped = re.sub(
+            r'\n\n---\n\n## Outcome\b.*',
+            '',
+            source_content,
+            flags=re.DOTALL,
+        ).rstrip()
+
+        appendix = f"\n\n**Forked from:** `{doc_id}` @ {lineage_ts}\n"
+        if known_objects:
+            rows = "\n".join(
+                f"| {o['command']} | {o['qualified_name']} | {o['guid']} |"
+                for o in known_objects
+            )
+            appendix += (
+                "\n## Known Objects (from forked plan)\n\n"
+                "| Command | Qualified Name | GUID |\n"
+                "|---------|----------------|------|\n"
+                f"{rows}\n"
+            )
+
+        new_content = _replace_title(stripped, new_title) + appendix
+        new_doc_id = self.create(new_title, new_content)
+        logger.info(
+            f"DocumentManager: forked {doc_id!r} (version={version_file}) -> {new_doc_id!r} "
+            f"({len(known_objects)} known object(s) carried forward)"
+        )
+        return new_doc_id
 
     def move_to_outbox(self, doc_id: str, outcome_content: str) -> bool:
         """
@@ -203,6 +401,41 @@ class DocumentManager:
         outbox_path.write_text(final, encoding="utf-8")
         inbox_path.unlink()
         logger.info(f"DocumentManager: moved {doc_id} to outbox")
+        return True
+
+    def append_rerun_outcome(self, doc_id: str, outcome_content: str) -> bool:
+        """
+        Append a new Outcome section to a document that's already in outbox/,
+        for "Re-run Now" — executing directly from outbox without an inbox
+        detour. The document stays in outbox; it never touches inbox.
+
+        Versions the pre-run outbox content first. The first-ever outcome
+        section is left as "## Outcome"; this method's job is only invoked
+        for the second and later runs, so the new section is always
+        "## Outcome (Run N)" where N counts existing "## Outcome" headers + 1.
+        """
+        outbox_path = self._paths["outbox"] / f"{doc_id}.md"
+        if not outbox_path.exists():
+            logger.warning(f"DocumentManager.append_rerun_outcome: {doc_id!r} not in outbox")
+            return False
+
+        original = outbox_path.read_text(encoding="utf-8")
+        self._save_version(doc_id, original)
+
+        run_number = len(re.findall(r'^##\s+Outcome\b', original, re.MULTILINE)) + 1
+        section = outcome_content.strip()
+        if run_number > 1:
+            section = re.sub(
+                r'^##\s+Outcome\b.*$',
+                f"## Outcome (Run {run_number})",
+                section,
+                count=1,
+                flags=re.MULTILINE,
+            )
+
+        final = original.rstrip() + "\n\n---\n\n" + section + "\n"
+        outbox_path.write_text(final, encoding="utf-8")
+        logger.info(f"DocumentManager: appended re-run outcome (run {run_number}) to {doc_id}")
         return True
 
     def move_to_inbox(self, doc_id: str) -> bool:
@@ -235,17 +468,6 @@ class DocumentManager:
         logger.info(f"DocumentManager: moved {doc_id} from outbox back to inbox")
         return True
 
-    def archive(self, doc_id: str) -> bool:
-        """Move a document from inbox to archived/."""
-        inbox_path = self._paths["inbox"] / f"{doc_id}.md"
-        if not inbox_path.exists():
-            logger.warning(f"DocumentManager.archive: {doc_id!r} not in inbox")
-            return False
-        dest = self._paths["archived"] / f"{doc_id}.md"
-        inbox_path.rename(dest)
-        logger.info(f"DocumentManager: archived {doc_id}")
-        return True
-
     # ------------------------------------------------------------------
     # Listing
     # ------------------------------------------------------------------
@@ -258,15 +480,65 @@ class DocumentManager:
         """Return metadata for all documents in outbox/, newest first."""
         return self._list_folder("outbox")
 
+    def list_trash(self) -> List[Dict[str, str]]:
+        """Return metadata for all documents in trash/, newest first."""
+        return self._list_folder("trash")
+
     def delete(self, doc_id: str) -> bool:
-        """Delete a document from inbox or outbox (whichever it's in). Returns True if deleted."""
+        """
+        Soft-delete: move a document from inbox or outbox to trash/ (whichever
+        it's in). A version snapshot is saved first. Returns True if moved.
+
+        This is reversible — see restore_from_trash(). If a document already
+        exists in trash with this doc_id, it is overwritten (its own content
+        was already versioned when it was first trashed).
+        """
         for folder in ("inbox", "outbox"):
             path = self._paths[folder] / f"{doc_id}.md"
             if path.exists():
-                self._save_version(doc_id, path.read_text(encoding="utf-8"))
+                content = path.read_text(encoding="utf-8")
+                self._save_version(doc_id, content)
+                trash_path = self._paths["trash"] / f"{doc_id}.md"
+                trash_path.write_text(content, encoding="utf-8")
                 path.unlink()
+                logger.info(f"DocumentManager: moved {doc_id} to trash")
                 return True
         return False
+
+    def restore_from_trash(self, doc_id: str) -> bool:
+        """
+        Restore a document from trash/ back to inbox/. A version snapshot of
+        the trash copy is saved first (for symmetry with other mutations).
+        Fails if inbox already has a document with this doc_id.
+        """
+        trash_path = self._paths["trash"] / f"{doc_id}.md"
+        if not trash_path.exists():
+            logger.warning(f"DocumentManager.restore_from_trash: {doc_id!r} not in trash")
+            return False
+        inbox_path = self._paths["inbox"] / f"{doc_id}.md"
+        if inbox_path.exists():
+            logger.warning(f"DocumentManager.restore_from_trash: {doc_id!r} already exists in inbox")
+            return False
+        content = trash_path.read_text(encoding="utf-8")
+        self._save_version(doc_id, content)
+        inbox_path.write_text(content, encoding="utf-8")
+        trash_path.unlink()
+        logger.info(f"DocumentManager: restored {doc_id} from trash to inbox")
+        return True
+
+    def purge(self, doc_id: str) -> bool:
+        """
+        Permanently delete a document from trash/. Does not touch versions/ —
+        prior snapshots (including the one saved at delete time) remain
+        available even after a purge.
+        """
+        trash_path = self._paths["trash"] / f"{doc_id}.md"
+        if not trash_path.exists():
+            logger.warning(f"DocumentManager.purge: {doc_id!r} not in trash")
+            return False
+        trash_path.unlink()
+        logger.info(f"DocumentManager: purged {doc_id} from trash")
+        return True
 
     def _list_folder(self, folder: str) -> List[Dict[str, str]]:
         folder_path = self._paths[folder]
@@ -313,6 +585,16 @@ class DocumentManager:
 
     def outbox_path(self) -> Path:
         return self._paths["outbox"]
+
+    def trash_path(self) -> Path:
+        return self._paths["trash"]
+
+    def folder_of(self, doc_id: str) -> Optional[str]:
+        """Return which folder (inbox/outbox/trash) currently holds doc_id, or None."""
+        for folder in ("inbox", "outbox", "trash"):
+            if (self._paths[folder] / f"{doc_id}.md").exists():
+                return folder
+        return None
 
 
 # ---------------------------------------------------------------------------

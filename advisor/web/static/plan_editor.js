@@ -292,6 +292,20 @@ function _renderEditor() {
         }
       });
     });
+    // Offer a standalone report download when the outcome contains extracted
+    // report content (Mermaid diagram / result table from a View Report command)
+    if (!editable && /^###\s+Execution Results/m.test(_ped.outcome)) {
+      const h3 = Array.from(outcomeBody.querySelectorAll('h3'))
+        .find(el => el.textContent.trim() === 'Execution Results');
+      if (h3 && !h3.querySelector('.ped-export-report-link')) {
+        const link = document.createElement('a');
+        link.className = 'ped-export-report-link ml-2 text-xs font-normal text-violet-400 hover:text-violet-200 transition-colors cursor-pointer';
+        link.textContent = '📄 Export Report';
+        link.href = `/api/plans/${encodeURIComponent(_ped.doc_id)}/report-export`;
+        link.target = '_blank';
+        h3.appendChild(link);
+      }
+    }
   } else {
     outcomeEl.classList.add('hidden');
   }
@@ -768,17 +782,45 @@ async function pedRecoverForEditing() {
   }
 }
 
+// ── Re-run Now (outbox → outbox, no inbox detour) ─────────────────────────────
+
+async function pedRerunNow() {
+  if (!confirm(`Re-run "${_ped.doc_id}" now?\nThis submits its commands to Egeria again, as-is, and appends a new outcome.`)) return;
+  const bar = document.getElementById('ped-recovery-bar');
+  if (bar) bar.innerHTML = '<span class="text-emerald-300">Re-running…</span>';
+  try {
+    const r = await fetch(`/api/plans/${encodeURIComponent(_ped.doc_id)}/rerun`, { method: 'POST', headers: Auth.getHeaders() });
+    if (!r.ok) { const e = await r.json(); throw new Error(e.detail || r.statusText); }
+    await openPlanEditor(_ped.doc_id, null);
+    if (typeof loadPlans === 'function') loadPlans();
+    _showToast('Plan re-executed — outcome updated.');
+  } catch (e) {
+    if (bar) bar.innerHTML = `<span class="text-red-400">Re-run failed: ${_esc(e.message)}</span>`;
+  }
+}
+
+function _pedTitle() {
+  const m = /^#\s+(.+)$/m.exec(_ped.narrative || '');
+  return m ? m[1].trim() : _ped.doc_id;
+}
+
 async function pedShowVersionHistory() {
   const panel = document.getElementById('ped-version-panel');
   const list  = document.getElementById('ped-version-list');
   panel.classList.remove('hidden');
-  list.textContent = 'Loading…';
+  list.innerHTML =
+    `<div class="flex items-center justify-between mb-2 pb-1 border-b border-slate-700">` +
+    `<span class="text-slate-500">Fork from the current content:</span>` +
+    `<button class="px-2 py-0.5 rounded bg-violet-700 hover:bg-violet-600 text-white transition-colors" ` +
+    `onclick="openForkModal('${_esc(_ped.doc_id)}', null, '${_esc(_pedTitle())}')">Fork Current</button></div>` +
+    `<div id="ped-version-list-items">Loading…</div>`;
+  const itemsEl = document.getElementById('ped-version-list-items');
   try {
     const r    = await fetch(`/api/plans/${encodeURIComponent(_ped.doc_id)}/versions`, { headers: Auth.getHeaders() });
     const data = await r.json();
     const vers = data.versions || [];
-    if (!vers.length) { list.textContent = 'No saved versions.'; return; }
-    list.innerHTML = '';
+    if (!vers.length) { itemsEl.textContent = 'No saved versions.'; return; }
+    itemsEl.innerHTML = '';
     vers.forEach(v => {
       const row = document.createElement('div');
       row.className = 'flex items-center gap-2 py-0.5';
@@ -787,11 +829,13 @@ async function pedShowVersionHistory() {
       row.innerHTML =
         `<span class="flex-1 text-slate-300">${ts || v.version_file}</span>` +
         `<button class="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 transition-colors" ` +
-        `onclick="pedRestoreVersion('${_esc(v.version_file)}')">Restore</button>`;
-      list.appendChild(row);
+        `onclick="pedRestoreVersion('${_esc(v.version_file)}')">Restore</button>` +
+        `<button class="px-2 py-0.5 rounded bg-violet-800 hover:bg-violet-700 text-white transition-colors" ` +
+        `onclick="openForkModal('${_esc(_ped.doc_id)}', '${_esc(v.version_file)}', '${_esc(_pedTitle())}')">Fork</button>`;
+      itemsEl.appendChild(row);
     });
   } catch (e) {
-    list.innerHTML = `<span class="text-red-400">Failed to load versions: ${_esc(e.message)}</span>`;
+    itemsEl.innerHTML = `<span class="text-red-400">Failed to load versions: ${_esc(e.message)}</span>`;
   }
 }
 

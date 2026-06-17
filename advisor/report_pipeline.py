@@ -386,6 +386,9 @@ class ReportPipeline:
         except Exception:
             self._default_page_size = 100
             self._starts_with_on_filter = True
+        # Set by run_report() to the failure reason when execution errors/times out;
+        # None means the last run either succeeded or returned a genuine empty result.
+        self._last_run_error: Optional[str] = None
 
     def _read_pyegeria_connection(self) -> Dict[str, str]:
         """Extract Egeria connection params from the pyegeria MCP server config section."""
@@ -561,6 +564,10 @@ class ReportPipeline:
         """
         effective_page_size = page_size if page_size is not None else self._default_page_size
         is_wildcard = not search_string or search_string.strip() in ("*", "")
+        # Record why we return None so the caller can distinguish a genuine
+        # "no records" empty result from an execution error/timeout, and never
+        # mask a failure behind an unrelated convenience-listing fallback.
+        self._last_run_error = None
         try:
             args: Dict[str, Any] = {
                 "report_name": report_name,
@@ -597,7 +604,13 @@ class ReportPipeline:
         except ConnectionError:
             raise
         except Exception as e:
-            logger.error(f"run_report({report_name}) failed [{type(e).__name__}]: {e}")
+            err = type(e).__name__
+            is_timeout = "timeout" in err.lower() or "timeout" in str(e).lower()
+            self._last_run_error = (
+                f"The report timed out (Egeria took too long to respond)."
+                if is_timeout else f"{err}: {e}"
+            )
+            logger.error(f"run_report({report_name}) failed [{err}]: {e}")
             return None
 
     # ------------------------------------------------------------------
@@ -733,19 +746,24 @@ class ReportPipeline:
 
         return "\n".join(lines)
 
+    # Convenience MCP listing tools are ONLY equivalent to the plain "list all X"
+    # report specs — never to a sub-type report (e.g. Glossary-Terms, which lists
+    # terms, not glossaries). Match the exact spec name, normalised, so a failed
+    # sub-type report is never silently answered with an unrelated listing.
+    _LISTING_TOOL_BY_SPEC = {
+        "glossaries": "egeria_list_glossaries",
+        "collections": "egeria_list_collections",
+    }
+
     def _try_listing_tool(self, report_name: str) -> Optional[str]:
         """
-        When run_report fails for a listing-style spec, try convenience MCP tools
-        (egeria_list_glossaries, egeria_list_collections) from the dr-egeria server.
-        Returns the output string or None.
+        When a plain "list all X" report spec returns *no records*, fall back to the
+        equivalent convenience MCP tool. Only fires for the exact all-listing specs
+        (Glossaries, Collections) — sub-type reports get None so the caller reports
+        the empty/failed result honestly instead of showing irrelevant data.
         """
-        name_lower = report_name.lower()
-        tool = None
-        if "glossar" in name_lower:
-            tool = "egeria_list_glossaries"
-        elif "collection" in name_lower:
-            tool = "egeria_list_collections"
-
+        key = re.sub(r"[-_\s]", "", report_name).lower()
+        tool = self._LISTING_TOOL_BY_SPEC.get(key)
         if tool is None:
             return None
 
@@ -970,13 +988,39 @@ class ReportPipeline:
         except ConnectionError as exc:
             connection_err = str(exc)
 
-        if raw_output is None and mcp_connected:
-            raw_output = self._try_listing_tool(report_name)
+        # Distinguish a real execution failure/timeout from a genuine empty result.
+        run_error = getattr(self, "_last_run_error", None)
 
+        # Only fall back to a convenience listing tool when the report ran cleanly
+        # but returned no records — never to paper over an error/timeout, and only
+        # for the exact all-listing specs (handled inside _try_listing_tool).
+        if raw_output is None and mcp_connected and not run_error:
+            raw_output = self._try_listing_tool(report_name)
 
         output = self._format_output(raw_output, fmt, report_name) if raw_output is not None else None
 
         if output is None:
+            if mcp_connected and run_error:
+                err_response = (
+                    f"The report **{report_name}** could not be completed.\n\n"
+                    f"> {run_error}\n\n"
+                    "Tips:\n"
+                    "- Try again — transient timeouts can clear on a second run\n"
+                    "- Narrow the request with a search filter to reduce the result size\n"
+                    f"- To run via Dr.Egeria: `[[{report_name}]]`"
+                )
+                return {
+                    "query": query,
+                    "response": err_response,
+                    "query_type": "report",
+                    "report_name": report_name,
+                    "sources": [],
+                    "num_sources": 0,
+                    "retrieval_time": 0.0,
+                    "generation_time": 0.0,
+                    "avg_relevance_score": 0.0,
+                    "context_length": 0,
+                }
             if not mcp_connected:
                 detail = f"\n\n*Connection detail: {connection_err}*" if connection_err else ""
                 err_response = (

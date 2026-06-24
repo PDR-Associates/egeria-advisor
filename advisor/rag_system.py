@@ -296,10 +296,12 @@ class RAGSystem:
         Return True if the query is a data-retrieval request that the report
         pipeline can answer by running a report spec.
 
-        Semantic similarity against question_spec entries with three guards:
-        1. Score must be >= 0.50 (lowered from 0.65 — listing questions now in index).
-        2. Query must not start with a definitional phrase (those go to RAG).
-        3. Query must not explicitly request Python code / code examples.
+        Routes when EITHER:
+        1. The query strongly matches a known report *name* (so typing a report
+           name in chat works), OR
+        2. Semantic similarity against question_spec entries is >= 0.45 (questions
+           are hints, so the floor is forgiving).
+        Guarded so definitional and code-example queries still go to RAG.
         """
         q = query.strip().lower()
         if any(q.startswith(p) for p in self._DEFINITIONAL_PREFIXES):
@@ -307,8 +309,17 @@ class RAGSystem:
         if any(sig in q for sig in self._CODE_EXAMPLE_SIGNALS):
             return False
         try:
-            from advisor.report_pipeline import _question_index
-            hits = _question_index.search(query, top_k=1, threshold=0.50)
+            from advisor.report_pipeline import get_report_pipeline, _question_index
+            # Name-first: a short, name-like query (e.g. "Collections", "My User MD")
+            # routes here even though it isn't phrased as a question. Restricted to
+            # short inputs so conceptual questions that merely mention a report name
+            # (e.g. "tell me about collections") fall through to semantic matching.
+            if len(q.split()) <= 4:
+                name_match = get_report_pipeline().match_report_name(query)
+                if name_match and name_match[1] >= 0.9:
+                    logger.info(f"Report pre-check via name: {name_match[0]!r} (conf={name_match[1]:.2f})")
+                    return True
+            hits = _question_index.search(query, top_k=1, threshold=0.45)
             if hits:
                 logger.info(
                     f"Semantic report pre-check: {hits[0]['report_spec']} "

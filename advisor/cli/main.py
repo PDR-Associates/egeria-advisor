@@ -351,16 +351,20 @@ def start_interactive(options: dict):
 @click.command("web")
 @click.option("--host", default="127.0.0.1", show_default=True, help="Bind host")
 @click.option("--port", default=8880, show_default=True, help="Bind port")
-@click.option("--reload", is_flag=True, help="Auto-reload on code changes (dev mode)")
+@click.option("--reload/--no-reload", default=True, show_default=True,
+              help="Auto-reload the server on code changes (dev mode)")
 def web_command(host: str, port: int, reload: bool):
     """Launch the browser-based web UI."""
     import uvicorn
-    console.print(f"[cyan]Starting Egeria Advisor web UI at http://{host}:{port}[/cyan]")
+    mode = "auto-reload on" if reload else "auto-reload off"
+    console.print(f"[cyan]Starting Egeria Advisor web UI at http://{host}:{port} ({mode})[/cyan]")
     uvicorn.run(
         "advisor.web.app:app",
         host=host,
         port=port,
         reload=reload,
+        # Watch the advisor package so edits to Python and static assets restart the server.
+        reload_dirs=["advisor"] if reload else None,
         log_level="warning",
     )
 

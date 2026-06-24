@@ -155,6 +155,57 @@ def _is_dre(name: str) -> bool:
     return "-dre-" in name.lower()
 
 
+# Canonical, ordered set of browser-renderable output formats. `value` is the
+# token sent to pyegeria (via the fmt:'<value>' query tag); `label` is shown in
+# the picker. A spec's declared `formats[].types` are intersected with this set
+# (and `ALL` expands to all of it) to build a spec-aware dropdown.
+_BROWSER_FORMATS: List[tuple] = [
+    ("LIST",    "List — compact Markdown table"),
+    ("TABLE",   "Table — structured data table"),
+    ("REPORT",  "Report — full narrative (Mermaid, graphs)"),
+    ("FORM",    "Form — Dr.Egeria editable form"),
+    ("MERMAID", "Diagram — Mermaid graph"),
+    ("HTML",    "HTML — rendered page"),
+    ("MD",      "Markdown — simple"),
+    ("DICT",    "Dict — materialized properties"),
+    ("JSON",    "JSON — raw Egeria response"),
+]
+_BROWSER_FORMAT_VALUES = [v for v, _ in _BROWSER_FORMATS]
+
+
+def _spec_supported_formats(name: str) -> List[str]:
+    """Return the browser-renderable output formats a spec supports, in canonical
+    order. Reads the in-process pyegeria registry; `ALL` expands to every browser
+    format. Falls back to a safe default if the spec/registry is unavailable."""
+    try:
+        from pyegeria.view.base_report_formats import get_report_registry
+        fs = get_report_registry().get(name)
+        if fs is None:
+            return list(_BROWSER_FORMAT_VALUES)
+        declared = {
+            t.upper()
+            for fmt in (getattr(fs, "formats", []) or [])
+            for t in (getattr(fmt, "types", []) or [])
+        }
+        if "ALL" in declared:
+            return list(_BROWSER_FORMAT_VALUES)
+        supported = [v for v in _BROWSER_FORMAT_VALUES if v in declared]
+        # Always offer at least DICT so the report is runnable from the picker.
+        return supported or ["DICT"]
+    except Exception as exc:
+        logger.debug(f"_spec_supported_formats({name}) failed: {exc}")
+        return list(_BROWSER_FORMAT_VALUES)
+
+
+def _catalog_formats(catalog: Dict[str, List[str]]) -> Dict[str, List[str]]:
+    """Build {spec_name: [supported formats]} for every spec in the catalog."""
+    formats: Dict[str, List[str]] = {}
+    for names in catalog.values():
+        for name in names:
+            formats[name] = _spec_supported_formats(name)
+    return formats
+
+
 def _load_report_catalog(include_dre: bool = False) -> Dict[str, List[str]]:
     """Return {topic: [spec_name, ...]} from spec JSON files."""
     catalog: Dict[str, List[str]] = {}
@@ -395,7 +446,14 @@ async def list_reports(include_dre: bool = False) -> Dict[str, Any]:
     """Return the report spec catalog grouped by topic."""
     catalog = _load_report_catalog(include_dre=include_dre)
     total = sum(len(v) for v in catalog.values())
-    return {"catalog": catalog, "total": total, "include_dre": include_dre}
+    formats = _catalog_formats(catalog)
+    return {
+        "catalog": catalog,
+        "formats": formats,
+        "format_labels": dict(_BROWSER_FORMATS),
+        "total": total,
+        "include_dre": include_dre,
+    }
 
 
 @app.get("/api/status")

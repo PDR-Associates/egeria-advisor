@@ -376,15 +376,10 @@
       Output format
       <span class="text-slate-600 ml-1">(how to render the results)</span>
     </label>
+    <!-- Options are populated per-report from the spec's supported formats -->
     <select id="output-format-select"
       class="w-full bg-slate-700 text-slate-100 rounded-lg px-3 py-1.5 text-sm
              border border-slate-600 focus:outline-none focus:border-cyan-500 mb-3">
-      <option value="LIST">LIST — concise summary list (default)</option>
-      <option value="TABLE">TABLE — structured data table</option>
-      <option value="MERMAID">MERMAID — diagram / mind map</option>
-      <option value="MD">MD — full Markdown narrative report</option>
-      <option value="JSON">JSON — raw JSON</option>
-      <option value="DICT">DICT — property dictionary</option>
     </select>
     <label class="text-xs text-slate-400 block mb-1">
       Max results
@@ -424,6 +419,8 @@ let pendingClarification = null;  // { candidates: [string] } when disambiguatio
 let selectedIntent = '';          // '', 'explanation', 'code_search', 'report', 'command', 'debugging'
 let selectedPerspective = '';     // '', 'developer', 'data_engineer', 'data_steward', 'governance_officer'
 let pendingReportName = null;     // report name awaiting search-string confirmation
+let reportFormats = {};           // {spec_name: [supported format tokens]} from /api/reports
+let reportFormatLabels = {};      // {format token: human label} from /api/reports
 let recentQueries = JSON.parse(sessionStorage.getItem('ea_recent') || '[]');
 let _activeDraftId = sessionStorage.getItem('ea_active_draft') || null;
 
@@ -475,6 +472,8 @@ async function loadReports() {
   const dre = document.getElementById('dre-toggle').checked;
   const r = await fetch(`/api/reports?include_dre=${dre}`, { headers: Auth.getHeaders() });
   const data = await r.json();
+  reportFormats = data.formats || {};
+  reportFormatLabels = data.format_labels || {};
   document.getElementById('report-count').textContent = `${data.total}`;
   const el = document.getElementById('report-catalog');
   el.innerHTML = '';
@@ -502,12 +501,32 @@ async function loadReports() {
   }
 }
 
+// Preferred default order — first supported format becomes the dropdown default.
+// TABLE is preferred over LIST: it renders cleanly in the browser and avoids the
+// pyegeria MCP LIST master-detail issue (see PROJECT notes). LIST stays selectable.
+const _FORMAT_DEFAULT_PREF = ['TABLE', 'REPORT', 'DICT', 'LIST'];
+
+function populateFormatOptions(name) {
+  const sel = document.getElementById('output-format-select');
+  sel.innerHTML = '';
+  const supported = (reportFormats && reportFormats[name]) || ['DICT'];
+  supported.forEach(fmt => {
+    const opt = document.createElement('option');
+    opt.value = fmt;
+    opt.textContent = reportFormatLabels[fmt] || fmt;
+    sel.appendChild(opt);
+  });
+  // Choose a sensible default: first preferred format the spec actually supports.
+  const def = _FORMAT_DEFAULT_PREF.find(f => supported.includes(f)) || supported[0];
+  sel.value = def;
+}
+
 function runReport(name) {
   pendingReportName = name;
   document.getElementById('modal-report-name').textContent = name;
   document.getElementById('search-string-input').value = '';
   document.getElementById('page-size-input').value = '';
-  document.getElementById('output-format-select').value = 'LIST';
+  populateFormatOptions(name);
   document.getElementById('search-modal').classList.remove('hidden');
   setTimeout(() => document.getElementById('search-string-input').focus(), 50);
 }
@@ -522,7 +541,7 @@ function confirmRunReport() {
   const filter = document.getElementById('search-string-input').value.trim();
   const pageSizeRaw = document.getElementById('page-size-input').value.trim();
   const pageSize = pageSizeRaw ? parseInt(pageSizeRaw, 10) : null;
-  const outputFmt = document.getElementById('output-format-select').value || 'LIST';
+  const outputFmt = document.getElementById('output-format-select').value || 'DICT';
   closeSearchModal();
   if (!name) return;
   const fmtLabel = outputFmt !== 'LIST' ? ` (${outputFmt})` : '';

@@ -1196,6 +1196,11 @@ function _applyQueryResult(query, result, wrap) {
   if (qtype === 'plan' || qtype === 'plan_executed' || qtype === 'plan_validated') loadPlans();
   if (isPlanQA) { loadDrafts(); if (_activeDraftId) PlanCanvas.refresh(_activeDraftId); }
 
+  // Dr.Egeria template → offer to start a plan
+  if (result.clarification_type === 'plan_offer') {
+    renderPlanOffer(result.original_query || query, wrap);
+  }
+
   // Plan Document banner — shown when the agent saved a new plan to inbox/
   if (qtype === 'plan' && result.doc_id) {
     const planBanner = document.createElement('div');
@@ -1392,6 +1397,34 @@ function renderIntentClarification(mdText, labels, intents, originalQuery) {
   wrap.appendChild(btnRow);
   messages.appendChild(wrap);
   messages.scrollTop = messages.scrollHeight;
+}
+
+function renderPlanOffer(originalQuery, wrap) {
+  const offer = document.createElement('div');
+  offer.className = 'mt-3 px-3 py-2 rounded bg-violet-950/60 border border-violet-700/50 text-xs flex items-center gap-3';
+
+  const msg = document.createElement('span');
+  msg.className = 'text-slate-300 flex-1';
+  msg.innerHTML = '<span class="text-violet-300 font-semibold">Would you like to create a Dr.Egeria plan</span> using this template?';
+  offer.appendChild(msg);
+
+  const yesBtn = document.createElement('button');
+  yesBtn.className = 'px-3 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold shrink-0 transition-colors';
+  yesBtn.textContent = 'Yes, start a plan';
+  yesBtn.onclick = () => {
+    offer.remove();
+    appendMessage('you', 'Yes, start a plan');
+    submitQuery(originalQuery, { intent_override: 'plan' });
+  };
+  offer.appendChild(yesBtn);
+
+  const noBtn = document.createElement('button');
+  noBtn.className = 'px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs font-semibold shrink-0 transition-colors';
+  noBtn.textContent = 'No thanks';
+  noBtn.onclick = () => offer.remove();
+  offer.appendChild(noBtn);
+
+  wrap.appendChild(offer);
 }
 
 function clearClarification() {

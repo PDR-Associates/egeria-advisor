@@ -523,14 +523,16 @@ class RAGSystem:
                 logger.warning(f"Template start failed ({exc}), continuing normal routing")
 
         # ------------------------------------------------------------------ #
-        # Negative routing guard: interrogative forms bypass action agents   #
-        # regardless of the intent override.  "What is X" / "How does Y"    #
-        # must never reach GovernancePlanAgent, DrEgeriaActionAgent, or      #
-        # ExamplesAgent — even when intent=Plan is selected.                 #
+        # Negative routing guard: interrogative forms bypass plan creation.  #
+        # "What is X" / "How does Y" must never reach GovernancePlanAgent   #
+        # when intent=Plan is selected accidentally.                         #
+        # NOTE: 'command' (Dr.Egeria / Act) is intentionally excluded here  #
+        # — DrEgeriaTemplateAgent is safe for informational queries and the  #
+        # user may have explicitly chosen it via the clarification buttons.  #
         # The draft_id block above already handled active drafts; this guard #
         # fires only for new (draft-free) queries.                           #
         # ------------------------------------------------------------------ #
-        if self._is_interrogative(user_query) and query_type_override in ('plan', 'command', 'act'):
+        if self._is_interrogative(user_query) and query_type_override in ('plan', 'act'):
             logger.info(
                 f"Interrogative guard: query is informational; "
                 f"overriding intent '{query_type_override}' → explanation"

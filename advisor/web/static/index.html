@@ -1366,7 +1366,7 @@ function appendMessage(role, text, opts = {}) {
   wrap.appendChild(header);
 
   const body = document.createElement('div');
-  body.className = 'prose prose-invert text-sm text-slate-200 max-w-none';
+  body.className = 'msg-body prose prose-invert text-sm text-slate-200 max-w-none';
   body.innerHTML = marked.parse(preprocessMarkdown(text));
   wrap.appendChild(body);
   // Render Mermaid diagrams inside this message

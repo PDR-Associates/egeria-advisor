@@ -602,7 +602,9 @@ class RAGSystem:
                 "dr egeria", "dr. egeria", "dr_egeria", "dre",
             ))
             tech_roles = {"developer", "data_engineer"}
-            steward_roles = {"data_steward", "governance_officer"}
+            # Roles (and the empty "Anyone" role) that should see Python-vs-DrE
+            # disambiguation rather than silently routing to Python examples.
+            ambiguous_roles = {"data_steward", "governance_officer", "", None}
 
             # Respect the pattern classifier if it already identified a command:
             # "give me a dr. egeria example" is a command, not a Python example.
@@ -621,24 +623,24 @@ class RAGSystem:
                 except Exception as exc:
                     logger.warning(f"ExamplesAgent failed ({exc}), continuing normal routing")
 
-            elif perspective in steward_roles and example_signals \
+            elif perspective in ambiguous_roles and example_signals \
                     and not code_signals and not dre_signals and not pattern_is_command:
-                # Ambiguous: could be Dr.Egeria command or a conceptual/code example.
+                # Ambiguous: the query could be answered with a Python pyegeria example
+                # OR a Dr.Egeria markdown template.  Return a button-based clarification
+                # so the user can pick which path they want without re-typing.
                 logger.info(
-                    f"Role '{perspective}' + ambiguous example signal → returning clarification"
+                    f"Role '{perspective}' + ambiguous example signal → returning intent clarification"
                 )
                 return {
                     "query": user_query,
-                    "response": (
-                        "Would you like me to:\n\n"
-                        "1. **Show a Python (pyegeria) code example** — how to do this "
-                        "programmatically using the pyegeria SDK?\n"
-                        "2. **Show a Dr.Egeria markdown template** — the notebook command "
-                        "you paste into an Egeria Workspaces Jupyter cell and fill in?\n\n"
-                        "You can also click **Show me** (Python) or **Act** (Dr.Egeria) "
-                        "above to set your intent before asking."
-                    ),
+                    "response": "How would you like me to answer?",
                     "query_type": "clarification",
+                    "clarification_type": "intent_choice",
+                    "candidates": [
+                        "🐍 Python / pyegeria example",
+                        "📋 Dr.Egeria markdown template",
+                    ],
+                    "candidate_intents": ["code_search", "command"],
                     "routing_agent": "clarification",
                     "sources": [],
                     "num_sources": 0,

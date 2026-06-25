@@ -1121,6 +1121,10 @@ async function submitQuery(query, extra = {}) {
   const isClarify = qtype === 'clarification';
   const candidates = result.candidates || [];
 
+  if (isClarify && result.clarification_type === 'intent_choice') {
+    renderIntentClarification(result.response, candidates, result.candidate_intents || [], query);
+    return;
+  }
   if (isClarify && candidates.length) {
     renderClarification(result.response, candidates);
     pendingClarification = { candidates };
@@ -1175,7 +1179,12 @@ function _applyQueryResult(query, result, wrap) {
     badge.style.color = intent.color || '#64748b';
   }
 
-  // If disambiguation, render as buttons
+  // If Python-vs-DrE intent choice, render dedicated buttons
+  if (isClarify && result.clarification_type === 'intent_choice') {
+    renderIntentClarification(result.response, candidates, result.candidate_intents || [], query);
+    return;
+  }
+  // If report disambiguation, render as numbered buttons
   if (isClarify && candidates.length) {
     renderClarification(result.response, candidates);
     pendingClarification = { candidates };
@@ -1338,6 +1347,49 @@ function renderClarification(mdText, candidates) {
   });
   wrap.appendChild(btnRow);
 
+  messages.appendChild(wrap);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+// ── Intent-choice clarification (Python vs Dr.Egeria) ─────────────────────────
+function renderIntentClarification(mdText, labels, intents, originalQuery) {
+  const messages = document.getElementById('messages');
+  const wrap = document.createElement('div');
+  wrap.className = 'msg-clarify pl-3 pr-2 py-2 rounded-r-lg bg-slate-800/60';
+
+  const header = document.createElement('div');
+  header.className = 'text-xs font-semibold mb-1 text-amber-400';
+  header.textContent = 'Assistant · how would you like to proceed?';
+  wrap.appendChild(header);
+
+  const body = document.createElement('div');
+  body.className = 'prose prose-invert text-sm text-slate-200 max-w-none mb-2';
+  body.innerHTML = marked.parse(mdText);
+  wrap.appendChild(body);
+
+  const btnRow = document.createElement('div');
+  btnRow.className = 'flex flex-wrap gap-2';
+
+  const STYLES = [
+    'border-cyan-700 bg-cyan-900/40 text-cyan-300 hover:bg-cyan-800/60',   // Python
+    'border-violet-700 bg-violet-900/40 text-violet-300 hover:bg-violet-800/60', // Dr.Egeria
+  ];
+
+  labels.forEach((label, i) => {
+    const intent = intents[i] || 'code_search';
+    const btn = document.createElement('button');
+    btn.className = 'px-4 py-1.5 rounded text-sm font-medium transition-colors border ' +
+      (STYLES[i] || STYLES[0]);
+    btn.textContent = label;
+    btn.onclick = () => {
+      wrap.querySelectorAll('button').forEach(b => b.disabled = true);
+      appendMessage('you', label);
+      submitQuery(originalQuery, { intent_override: intent });
+    };
+    btnRow.appendChild(btn);
+  });
+
+  wrap.appendChild(btnRow);
   messages.appendChild(wrap);
   messages.scrollTop = messages.scrollHeight;
 }

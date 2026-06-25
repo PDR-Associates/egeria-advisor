@@ -337,18 +337,8 @@ class AnalyticsManager:
 
             # "what methods does GlossaryManager have?" / "methods on AssetManager"
             import re as _re
-            _class_method_re = _re.compile(
-                r'(?:methods?\s+(?:does|on|of|for|in)\s+|methods?\s+available\s+(?:on|in)\s+'
-                r'|what\s+(?:methods?|api)\s+does\s+|api\s+for\s+)([A-Z]\w+)',
-                _re.IGNORECASE,
-            )
-            m = _class_method_re.search(query)
-            if m:
-                class_name = m.group(1)
-                rows = ss.methods_for_class(class_name, collection)
-                return self._format_method_list(rows, class_name)
-
-            # "most complex methods" / "highest complexity"
+            # "most complex methods" / "highest complexity" — check BEFORE class-method
+            # regex so "most complex methods in pyegeria" doesn't misparse "pyegeria" as a class
             if any(p in query_lower for p in ("most complex", "highest complex",
                                                "complex method", "complex function")):
                 rows = ss.most_complex(collection, limit=10)
@@ -362,6 +352,18 @@ class AnalyticsManager:
                         f"{r.get('loc', 0)} lines ({r['collection']})"
                     )
                 return "\n".join(lines)
+
+            # "what methods does GlossaryManager have?" — require CamelCase to avoid
+            # matching collection names like "pyegeria" as class names
+            _class_method_re = _re.compile(
+                r'(?:methods?\s+(?:does|on|of|for|in)\s+|methods?\s+available\s+(?:on|in)\s+'
+                r'|what\s+(?:methods?|api)\s+does\s+|api\s+for\s+)([A-Z][A-Za-z0-9]+)',
+            )
+            m = _class_method_re.search(query)
+            if m:
+                class_name = m.group(1)
+                rows = ss.methods_for_class(class_name, collection)
+                return self._format_method_list(rows, class_name)
 
             # "largest classes" / "biggest class"
             if any(p in query_lower for p in ("largest class", "biggest class",

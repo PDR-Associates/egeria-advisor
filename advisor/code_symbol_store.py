@@ -137,12 +137,14 @@ class CodeSymbolStore:
                 params,
             ).fetchall()
 
+        _kind_key = {"class": "classes", "function": "functions", "method": "methods"}
         summary: dict[str, Any] = {}
         for r in rows:
             col = r["collection"]
             if col not in summary:
                 summary[col] = {"classes": 0, "functions": 0, "methods": 0, "loc": 0}
-            summary[col][r["kind"] + "s"] = r["n"]
+            key = _kind_key.get(r["kind"], r["kind"] + "s")
+            summary[col][key] = r["n"]
             summary[col]["loc"] = summary[col].get("loc", 0) + (r["loc"] or 0)
         return summary
 

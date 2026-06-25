@@ -296,6 +296,47 @@ class RAGSystem:
             "routing_agent": "command_keyword_index",
         }
 
+    # Structural code queries that should go to the symbol store, not RAG.
+    _STRUCTURAL_QUERY_RE = re.compile(
+        r'(?:'
+        r'(?:list|show|what|which|give\s+me|find|how\s+many)\s+'
+        r'(?:are\s+the\s+|are\s+in\s+|is\s+in\s+)?'
+        r'(?:all\s+)?'
+        r'(?:classes?|methods?\s+(?:in|on|of|for)|functions?|symbols?)'
+        r')'
+        r'|(?:what\s+methods?\s+does\s+\w+\s+have)'
+        r'|(?:methods?\s+(?:on|of|for|available\s+(?:on|in))\s+[A-Z]\w+)'
+        r'|(?:(?:most\s+)?complex\s+(?:method|function))'
+        r'|(?:largest\s+class)'
+        r'|(?:biggest\s+class)'
+        r'|(?:class\s+with\s+most\s+method)',
+        re.IGNORECASE,
+    )
+
+    def _is_structural_query(self, query: str) -> bool:
+        return bool(self._STRUCTURAL_QUERY_RE.search(query))
+
+    def _handle_structural_query(self, query: str, path_filter: str | None = None) -> Optional[Dict[str, Any]]:
+        """Answer a code structure question directly from the symbol store."""
+        try:
+            from advisor.analytics import get_analytics_manager
+            response = get_analytics_manager().answer_quantitative_query(query, path_filter=path_filter)
+            return {
+                "query": query,
+                "response": response,
+                "query_type": "quantitative",
+                "routing_agent": "symbol_store",
+                "sources": [],
+                "num_sources": 0,
+                "retrieval_time": 0.0,
+                "generation_time": 0.0,
+                "avg_relevance_score": 0.0,
+                "context_length": len(response),
+            }
+        except Exception as exc:
+            logger.warning(f"Structural query handler failed: {exc}")
+            return None
+
     # Keywords that signal the user wants Python code, not live Egeria data.
     _CODE_EXAMPLE_SIGNALS = (
         "python", "code example", "code sample", "write python",
@@ -799,6 +840,16 @@ class RAGSystem:
                 return result
             except Exception as exc:
                 logger.warning(f"ExamplesAgent failed ({exc}), falling back to RAG")
+
+        # ── Structural code-symbol shortcut ────────────────────────────────
+        # "what classes are in pyegeria?" / "list methods on GlossaryManager"
+        # → answer directly from SQLite symbol table, bypass RAG/LLM.
+        if query_analysis['query_type'] in ('quantitative', 'code_search', 'general', 'explanation') \
+                and not query_type_override \
+                and self._is_structural_query(user_query):
+            result = self._handle_structural_query(user_query, path_filter=query_analysis.get('path_filter'))
+            if result:
+                return result
 
         # ── Command-discovery shortcut ──────────────────────────────────────
         # "are there dr.egeria commands/templates for X" → answer from keyword index.

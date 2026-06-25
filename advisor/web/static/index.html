@@ -115,6 +115,24 @@
     details > summary::-webkit-details-marker { display:none; }
     details > summary::before { content:'▶'; font-size:.6rem; margin-right:.35rem; color:#64748b; transition:transform .15s; display:inline-block; }
     details[open] > summary::before { transform:rotate(90deg); }
+
+    /* Sidebar artifact-type tabs */
+    .sidebar-tab {
+      flex: 1;
+      padding: .375rem .5rem;
+      font-size: .7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      color: #94a3b8;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      transition: color .15s, border-color .15s, background .15s;
+    }
+    .sidebar-tab:hover { color: #cbd5e1; background: #1e293b44; }
+    .sidebar-tab.active { color: #e2e8f0; border-bottom-color: #06b6d4; background: #1e293b66; }
   </style>
 </head>
 <body class="dark bg-slate-900 text-slate-100 h-screen flex flex-col overflow-hidden">
@@ -127,11 +145,6 @@
     <span id="status-dot" class="w-2 h-2 rounded-full bg-slate-500" title="MCP status"></span>
   </div>
   <div class="flex items-center gap-3 text-xs text-slate-500">
-    <label class="flex items-center gap-1 cursor-pointer select-none">
-      <input type="checkbox" id="dre-toggle" onchange="loadReports()" class="accent-cyan-500">
-      <span>Show DrE specs</span>
-    </label>
-    <span>·</span>
     <span>Enter=send &nbsp; Shift+Enter=newline</span>
     <span>·</span>
     <span id="current-user" class="hidden text-cyan-400 font-medium"></span>
@@ -153,19 +166,30 @@
   <!-- ── Sidebar ─────────────────────────────────────────────────────────── -->
   <aside id="left-sidebar" class="flex flex-col bg-slate-800 border-r border-slate-700 overflow-hidden" style="flex:0 0 288px;min-width:160px">
 
-    <!-- Top pane: Available Reports -->
+    <!-- Tab strip -->
+    <div class="flex shrink-0 border-b border-slate-700">
+      <button class="sidebar-tab active" data-tab="reports" onclick="setSidebarTab('reports')">Reports</button>
+      <button class="sidebar-tab" data-tab="plans" onclick="setSidebarTab('plans')">Plans</button>
+      <button class="sidebar-tab" data-tab="recent" onclick="setSidebarTab('recent')">Recent</button>
+    </div>
+
+    <!-- Reports panel -->
     <div id="sidebar-reports" class="flex flex-col flex-1 sidebar-pane min-h-0">
       <div class="px-3 pt-3 pb-1 shrink-0 flex items-center justify-between">
         <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Available Reports</span>
-        <span id="report-count" class="text-xs text-slate-600"></span>
+        <div class="flex items-center gap-2">
+          <label class="flex items-center gap-1 cursor-pointer select-none text-xs text-slate-500">
+            <input type="checkbox" id="dre-toggle" onchange="loadReports()" class="accent-cyan-500">
+            <span>DrE</span>
+          </label>
+          <span id="report-count" class="text-xs text-slate-600"></span>
+        </div>
       </div>
       <div id="report-catalog" class="px-2 pb-2 flex flex-col gap-0.5 text-sm"></div>
     </div>
 
-    <div id="resize-reports-plans" class="resize-handle"></div>
-
-    <!-- Middle pane: Plans (Drafts / Inbox / Outbox) -->
-    <div id="sidebar-plans" class="flex flex-col sidebar-pane shrink-0">
+    <!-- Plans panel -->
+    <div id="sidebar-plans" class="flex flex-col flex-1 sidebar-pane min-h-0 hidden">
       <div class="px-3 pt-2 pb-1 shrink-0 flex items-center justify-between">
         <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Plans</span>
         <div class="flex items-center gap-2">
@@ -179,10 +203,8 @@
       <div id="plan-list" class="px-2 pb-2 flex flex-col gap-0.5 text-xs overflow-y-auto"></div>
     </div>
 
-    <div id="resize-plans-recent" class="resize-handle"></div>
-
-    <!-- Bottom pane: Recent Queries -->
-    <div id="sidebar-recent" class="flex flex-col sidebar-pane shrink-0">
+    <!-- Recent Queries panel -->
+    <div id="sidebar-recent" class="flex flex-col flex-1 sidebar-pane min-h-0 hidden">
       <div class="px-3 pt-2 pb-1 shrink-0 flex items-center justify-between">
         <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Recent Queries</span>
         <button onclick="clearHistory()" class="text-xs text-slate-600 hover:text-slate-400 transition-colors">clear</button>
@@ -427,7 +449,7 @@ let _activeDraftId = sessionStorage.getItem('ea_active_draft') || null;
 // ── Init ───────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   initLeftSidebarResize();
-  initSidebarResize();
+  setSidebarTab(localStorage.getItem('ea_sidebar_tab') || 'reports');
   initCanvasResize();
   initCanvasButtons();
 
@@ -932,6 +954,15 @@ function setIntent(btn) {
   selectedIntent = btn.dataset.intent;
 }
 
+// ── Sidebar tab switcher ───────────────────────────────────────────────────────
+function setSidebarTab(name) {
+  document.querySelectorAll('.sidebar-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  ['reports', 'plans', 'recent'].forEach(t => {
+    document.getElementById('sidebar-' + t).classList.toggle('hidden', t !== name);
+  });
+  localStorage.setItem('ea_sidebar_tab', name);
+}
+
 // ── Send / query ───────────────────────────────────────────────────────────────
 function sendQuery() {
   const inp = document.getElementById('query-input');
@@ -1130,6 +1161,7 @@ function _applyQueryResult(query, result, wrap) {
   if (_activeDraftId) {
     sessionStorage.setItem('ea_active_draft', _activeDraftId);
     PlanCanvas.open(_activeDraftId);
+    setSidebarTab('plans');
   } else {
     sessionStorage.removeItem('ea_active_draft');
     // Don't close canvas on plan_executed — user may want to see what was executed
@@ -1394,73 +1426,6 @@ function setThinking(on) {
   document.getElementById('send-btn').classList.toggle('opacity-50', on);
 }
 
-// ── Sidebar resize ─────────────────────────────────────────────────────────────
-function initSidebarResize() {
-  const panePlans  = document.getElementById('sidebar-plans');
-  const paneRecent = document.getElementById('sidebar-recent');
-  const sidebar    = panePlans.closest('aside');
-
-  const MIN_H = 48; // minimum pane height in px
-
-  function sidebarH() { return sidebar.clientHeight; }
-
-  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
-
-  // Load or initialise heights
-  let planH   = parseInt(localStorage.getItem('ea_sidebar_plan_h'))   || 0;
-  let recentH = parseInt(localStorage.getItem('ea_sidebar_recent_h')) || 0;
-
-  function applyHeights() {
-    const total = sidebarH();
-    if (!planH)   planH   = Math.round(total * 0.30);
-    if (!recentH) recentH = Math.round(total * 0.18);
-    panePlans.style.height  = planH   + 'px';
-    paneRecent.style.height = recentH + 'px';
-  }
-
-  function saveHeights() {
-    localStorage.setItem('ea_sidebar_plan_h',   planH);
-    localStorage.setItem('ea_sidebar_recent_h', recentH);
-  }
-
-  applyHeights();
-
-  function startDrag(e, handle) {
-    e.preventDefault();
-    handle.classList.add('dragging');
-    const startY       = e.clientY;
-    const startPlanH   = planH;
-    const startRecentH = recentH;
-
-    function onMove(ev) {
-      const dy = ev.clientY - startY;
-      if (handle.id === 'resize-reports-plans') {
-        // Handle is above Plans pane: dragging UP means Plans grows (dy is negative → negate).
-        planH = clamp(startPlanH - dy, MIN_H, sidebarH() - recentH - MIN_H - 10);
-      } else {
-        // Moving this handle redistributes between Plans and Recent.
-        const poolH = startPlanH + startRecentH;
-        planH   = clamp(startPlanH + dy,       MIN_H, poolH - MIN_H);
-        recentH = poolH - planH;
-      }
-      applyHeights();
-    }
-
-    function onUp() {
-      handle.classList.remove('dragging');
-      saveHeights();
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup',   onUp);
-    }
-
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup',   onUp);
-  }
-
-  document.getElementById('resize-reports-plans').addEventListener('mousedown', e => startDrag(e, document.getElementById('resize-reports-plans')));
-  document.getElementById('resize-plans-recent').addEventListener('mousedown',  e => startDrag(e, document.getElementById('resize-plans-recent')));
-}
-
 // ── Left sidebar resize (horizontal, ew-resize) ────────────────────────────────
 function initLeftSidebarResize() {
   const handle  = document.getElementById('resize-sidebar-chat');
@@ -1648,6 +1613,7 @@ async function createBuilderPlan(title) {
     _activeDraftId = spec.draft_id;
     sessionStorage.setItem('ea_active_draft', _activeDraftId);
     PlanCanvas.open(_activeDraftId);
+    setSidebarTab('plans');
     loadDrafts();
     appendMessage('assistant',
       `**${title}** — plan canvas is open. Use **+ Add step** to browse and add ` +

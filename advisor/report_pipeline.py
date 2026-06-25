@@ -907,10 +907,12 @@ class ReportPipeline:
     _FILTER_TAG_RE = re.compile(r"\s+filter:'([^']*)'", re.IGNORECASE)
     # Extracts an explicit output format tag appended by the web UI: fmt:'<FORMAT>'
     _FMT_TAG_RE = re.compile(r"\s+fmt:'([^']*)'", re.IGNORECASE)
-    # Detects "what/which reports are about X" — discovery, not execution.
+    # Detects "what/which/are there reports about X" — discovery, not execution.
     _REPORT_DISCOVERY_RE = re.compile(
-        r"^(?:what|which|are\s+there|find|list|show|search\s+for|do\s+you\s+have)"
-        r"[\w\s]*report[\w\s]*(?:about|for|on|covering|related\s+to|that|touching|dealing\s+with|regarding)\b",
+        r"^(?:what|which|are\s+there|is\s+there|find|list|show|search\s+for"
+        r"|do\s+(?:we|you|i)\s+have|can\s+you\s+(?:show|list|find))"
+        r"[\w\s]*report[\w\s]*"
+        r"(?:about|for|on|covering|related\s+to|that|touching|deal(?:ing)?\s+with|regarding)\b",
         re.IGNORECASE,
     )
 

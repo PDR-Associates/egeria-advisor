@@ -213,9 +213,20 @@ class RAGSystem:
         q = query.strip().lower()
         return any(q.startswith(p) for p in self._INTERROGATIVE_PREFIXES)
 
-    # Patterns that indicate "what dr.egeria commands handle X" — answer from catalog.
+    # Patterns that indicate "what dr.egeria commands/templates handle X" — answer from catalog.
     _COMMAND_DISCOVERY_RE = re.compile(
-        r'\b(?:what|which|list|show)\s+(?:dr\.?\s*egeria\s+)?commands?\b',
+        r'(?:'
+        # Interrogative openers: "are there (any)", "is there (a)", "what/which/list/show/find"
+        r'(?:are\s+there(?:\s+any)?|is\s+there(?:\s+a(?:ny)?)?'
+        r'|(?:what|which|list|show|find|search\s+for|do\s+(?:we|you|i)\s+have'
+        r'|can\s+you\s+(?:show|list|find))[\w\s]{0,20})'
+        # optional "dr.egeria" qualifier
+        r'\s+(?:dr\.?\s*egeria\s+|dre\s+)?'
+        # "commands" or "templates" (with optional "markdown" prefix)
+        r'(?:commands?|templates?|markdown\s+commands?)'
+        r')'
+        # OR "how do I X with dr.egeria" form
+        r'|how\s+(?:do\s+(?:i|we)|can\s+(?:i|we))\s+.{0,60}(?:with|using|in)\s+dr\.?\s*egeria\b',
         re.IGNORECASE,
     )
 
@@ -227,12 +238,22 @@ class RAGSystem:
         from advisor.command_keyword_index import get_command_keyword_index
         idx = get_command_keyword_index()
 
-        # Extract the topic keyword after "about", "for", "related to", etc.
+        # Extract the topic keyword — try prepositions first, then verb objects.
         topic_m = re.search(
-            r'\b(?:about|for|related\s+to|regarding|on)\s+(.+?)[\?\.]*$',
+            r'\b(?:about|for|related\s+to|regarding|on|covering|deal(?:ing)?\s+with)\s+(.+?)[\?\.]*$',
+            query, re.IGNORECASE,
+        ) or re.search(
+            # "how do I create a glossary term with Dr.Egeria" → topic = "glossary term"
+            r'\b(?:creat|add|updat|link|classif|manag|defin)\w*\s+(?:a\s+|an\s+)?(.+?)'
+            r'(?:\s+(?:with|using|in)\s+dr\.?\s*egeria)?[\?\.]*$',
             query, re.IGNORECASE,
         )
-        topic = topic_m.group(1).strip() if topic_m else None
+        if topic_m:
+            # Use the last captured group that actually matched
+            topic = next((g for g in reversed(topic_m.groups()) if g), None)
+            topic = topic.strip() if topic else None
+        else:
+            topic = None
 
         if topic:
             groups = idx.search_by_keyword(topic)
@@ -776,9 +797,11 @@ class RAGSystem:
                 logger.warning(f"ExamplesAgent failed ({exc}), falling back to RAG")
 
         # ── Command-discovery shortcut ──────────────────────────────────────
-        # "what dr.egeria commands are about X" → answer from keyword index,
-        # not from docs (docs have no structured command catalog).
-        if query_analysis['query_type'] == 'explanation' and self._is_command_discovery(user_query):
+        # "are there dr.egeria commands/templates for X" → answer from keyword index.
+        # Fires on explanation, command, and code_search so the user doesn't have to
+        # pick the right intent selector for a discovery question.
+        if query_analysis['query_type'] in ('explanation', 'command', 'code_search', 'general') \
+                and self._is_command_discovery(user_query):
             result = self._handle_command_discovery(user_query)
             if result:
                 return result

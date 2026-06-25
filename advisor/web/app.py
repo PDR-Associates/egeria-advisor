@@ -206,8 +206,20 @@ def _catalog_formats(catalog: Dict[str, List[str]]) -> Dict[str, List[str]]:
     return formats
 
 
+def _is_runnable_spec(name: str) -> bool:
+    """Return True if the spec has an action (can be executed standalone)."""
+    try:
+        from pyegeria.view.base_report_formats import get_report_registry
+        spec = get_report_registry().get(name)
+        if spec is None:
+            return True  # unknown to registry — assume runnable, let executor decide
+        return getattr(spec, "action", None) is not None
+    except Exception:
+        return True  # registry unavailable — assume runnable
+
+
 def _load_report_catalog(include_dre: bool = False) -> Dict[str, List[str]]:
-    """Return {topic: [spec_name, ...]} from spec JSON files."""
+    """Return {topic: [spec_name, ...]} from spec JSON files, runnable specs only."""
     catalog: Dict[str, List[str]] = {}
     seen: set = set()
     for path in _SPEC_FILES:
@@ -220,6 +232,8 @@ def _load_report_catalog(include_dre: bool = False) -> Dict[str, List[str]]:
                     continue
                 seen.add(name)
                 if not include_dre and _is_dre(name):
+                    continue
+                if not _is_runnable_spec(name):
                     continue
                 topic = _topic_for(name)
                 catalog.setdefault(topic, []).append(name)

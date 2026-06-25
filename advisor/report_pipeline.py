@@ -907,6 +907,12 @@ class ReportPipeline:
     _FILTER_TAG_RE = re.compile(r"\s+filter:'([^']*)'", re.IGNORECASE)
     # Extracts an explicit output format tag appended by the web UI: fmt:'<FORMAT>'
     _FMT_TAG_RE = re.compile(r"\s+fmt:'([^']*)'", re.IGNORECASE)
+    # Detects "what/which reports are about X" — discovery, not execution.
+    _REPORT_DISCOVERY_RE = re.compile(
+        r"^(?:what|which|are\s+there|find|list|show|search\s+for|do\s+you\s+have)"
+        r"[\w\s]*report[\w\s]*(?:about|for|on|covering|related\s+to|that|touching|dealing\s+with|regarding)\b",
+        re.IGNORECASE,
+    )
 
     @staticmethod
     def _norm_name(s: str) -> str:
@@ -922,8 +928,8 @@ class ReportPipeline:
         seen: set = set()
         try:
             from pyegeria.view.base_report_formats import get_report_registry
-            for label in get_report_registry().keys():
-                if label not in seen:
+            for label, spec in get_report_registry().items():
+                if label not in seen and getattr(spec, "action", None) is not None:
                     seen.add(label)
                     names.append(label)
         except Exception as exc:
@@ -1014,6 +1020,48 @@ class ReportPipeline:
 
         return raw, search_string
 
+    def _discover_reports(self, query: str, perspective: Optional[str]) -> Dict[str, Any]:
+        """Return a formatted list of report specs that match the query topic."""
+        try:
+            specs = self.find_specs(query, perspective=perspective)
+        except Exception:
+            specs = []
+        if not specs:
+            return {
+                "query": query,
+                "response": (
+                    "I couldn't find any report specs matching that topic. "
+                    "Try browsing the **Reports** tab in the left sidebar, or ask me to *list all reports*."
+                ),
+                "query_type": "report",
+                "sources": [], "num_sources": 0,
+                "retrieval_time": 0.0, "generation_time": 0.0,
+                "avg_relevance_score": 0.0, "context_length": 0,
+            }
+        ranked = self._rank_specs(specs)
+        lines = ["Here are the report specs that match:\n"]
+        for item in ranked[:10]:
+            name = item.get("report_spec") or item.get("name") or item.get("spec_name") or ""
+            q = item.get("question", "")
+            family = item.get("family", "")
+            if name:
+                label = f"- **{name}**"
+                if family:
+                    label += f" *(family: {family})*"
+                if q:
+                    label += f" — {q}"
+                lines.append(label)
+        lines.append("\nClick one in the **Reports** sidebar to run it, or say **run report \\<name\\>**.")
+        response = "\n".join(lines)
+        return {
+            "query": query,
+            "response": response,
+            "query_type": "report",
+            "sources": [], "num_sources": len(ranked),
+            "retrieval_time": 0.0, "generation_time": 0.0,
+            "avg_relevance_score": 0.0, "context_length": len(response),
+        }
+
     def process(
         self, query: str, perspective: Optional[str] = None,
         page_size: Optional[int] = None,
@@ -1028,6 +1076,11 @@ class ReportPipeline:
         if not self._egeria_specs_tried:
             import threading
             threading.Thread(target=self._try_refresh_egeria_specs, daemon=True).start()
+
+        # Discovery: "what/which reports are about X" → list matching specs, don't run.
+        if self._REPORT_DISCOVERY_RE.match(query.strip()):
+            logger.info(f"Report discovery query: {query!r}")
+            return self._discover_reports(query, perspective)
 
         # Direct dispatch: "run report <name>" bypasses find_specs / disambiguation.
         m = self._RUN_REPORT_RE.match(query.strip())
@@ -1118,9 +1171,15 @@ class ReportPipeline:
                 "- Check the spelling — I match names forgivingly but this was too far off"
             )
         if "does not have an action property" in low:
+            masters = _detail_to_masters().get(report_name, [])
+            if masters:
+                master_hint = "Run the parent report instead — it includes this as a linked detail section:\n" + \
+                              "".join(f"- **{m}**\n" for m in masters)
+            else:
+                master_hint = "Run the parent report instead — it includes this as a linked detail section."
             return (
                 f"**{report_name}** is a detail/sub-view and can't be run on its own.\n\n"
-                "Run the parent report instead — it includes this as a linked detail section."
+                + master_hint
             )
         if "timeout" in low or "timed out" in low:
             return (
@@ -1254,9 +1313,10 @@ class ReportPipeline:
                 "context_length": 0,
             }
 
+        labeled_output = f"**Report: {report_name}**\n\n{output}"
         return {
             "query": query,
-            "response": output,
+            "response": labeled_output,
             "query_type": "report",
             "report_name": report_name,
             "num_specs_found": num_specs_found,
@@ -1267,6 +1327,27 @@ class ReportPipeline:
             "avg_relevance_score": 0.0,
             "context_length": len(output),
         }
+
+
+def _detail_to_masters() -> Dict[str, List[str]]:
+    """Build reverse map: detail_spec_name → [master_spec_names] from the registry.
+    Cached on first call; returns {} if the registry is unavailable."""
+    cached = getattr(_detail_to_masters, "_cache", None)
+    if cached is not None:
+        return cached
+    result: Dict[str, List[str]] = {}
+    try:
+        from pyegeria.view.base_report_formats import get_report_registry
+        for name, spec in get_report_registry().items():
+            for fmt in (getattr(spec, "formats", []) or []):
+                for col in (getattr(fmt, "attributes", []) or []):
+                    ds = getattr(col, "detail_spec", None)
+                    if ds and name not in result.get(ds, []):
+                        result.setdefault(ds, []).append(name)
+    except Exception:
+        pass
+    _detail_to_masters._cache = result  # type: ignore[attr-defined]
+    return result
 
 
 def _no_report_found(query: str) -> Dict[str, Any]:

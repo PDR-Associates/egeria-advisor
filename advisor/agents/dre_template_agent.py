@@ -24,15 +24,12 @@ class DrEgeriaTemplateAgent(BaseAdvisorAgent):
             "1. Call find_dre_template with the topic (e.g. 'create glossary', 'link term') "
             "and level='basic' unless the user asked for advanced/full details.\n"
             "2. Return the template content verbatim inside a fenced ```markdown block.\n"
-            "3. Add a brief explanation (2–4 sentences) covering:\n"
+            "3. Add a brief explanation (2–3 sentences) covering:\n"
             "   - What the command does.\n"
-            "   - Which fields are required vs optional.\n"
-            "   - How to use it in a Dr.Egeria Jupyter notebook (paste and fill in the "
-            "     required fields, then run the cell).\n"
-            "   - That templates can be regenerated with "
-            "     `generate_md_cmd_templates.py --advanced` for the full attribute set.\n\n"
+            "   - Which fields are required (marked 'Input Required: True') vs optional.\n\n"
             "Rules:\n"
             "- Never invent template syntax — only return what find_dre_template returns.\n"
+            "- Do NOT add Jupyter notebook usage instructions.\n"
             "- If no template is found, report which families are available and suggest "
             "  the user regenerate templates if the command is new.\n"
         )
@@ -72,9 +69,9 @@ class DrEgeriaTemplateAgent(BaseAdvisorAgent):
         user_prompt = (
             f"The user asked: {query}\n\n"
             f"Here is the Dr.Egeria template content:\n\n{template_content}\n\n"
-            f"Present this in a fenced ```markdown block, then add 2-4 sentences explaining "
-            f"what the command does, which fields are required (Input Required: True), "
-            f"and how to use it in a Dr.Egeria Jupyter notebook."
+            f"Present this in a fenced ```markdown block, then add 2-3 sentences explaining "
+            f"what the command does and which fields are required (Input Required: True). "
+            f"Do NOT add Jupyter notebook instructions."
         )
         try:
             return get_ollama_client().generate(user_prompt, system=system, max_tokens=1500)
@@ -88,6 +85,8 @@ def _make_result(query: str, response: str) -> dict:
         "query": query,
         "response": response,
         "query_type": "command",
+        "clarification_type": "plan_offer",
+        "original_query": query,
         "sources": [],
         "num_sources": 0,
         "retrieval_time": 0.0,

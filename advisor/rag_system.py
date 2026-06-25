@@ -213,9 +213,20 @@ class RAGSystem:
         q = query.strip().lower()
         return any(q.startswith(p) for p in self._INTERROGATIVE_PREFIXES)
 
-    # Patterns that indicate "what dr.egeria commands handle X" — answer from catalog.
+    # Patterns that indicate "what dr.egeria commands/templates handle X" — answer from catalog.
     _COMMAND_DISCOVERY_RE = re.compile(
-        r'\b(?:what|which|list|show)\s+(?:dr\.?\s*egeria\s+)?commands?\b',
+        r'(?:'
+        # Interrogative openers: "are there (any)", "is there (a)", "what/which/list/show/find"
+        r'(?:are\s+there(?:\s+any)?|is\s+there(?:\s+a(?:ny)?)?'
+        r'|(?:what|which|list|show|find|search\s+for|do\s+(?:we|you|i)\s+have'
+        r'|can\s+you\s+(?:show|list|find))[\w\s]{0,20})'
+        # optional "dr.egeria" qualifier
+        r'\s+(?:dr\.?\s*egeria\s+|dre\s+)?'
+        # "commands" or "templates" (with optional "markdown" prefix)
+        r'(?:commands?|templates?|markdown\s+commands?)'
+        r')'
+        # OR "how do I X with dr.egeria" form
+        r'|how\s+(?:do\s+(?:i|we)|can\s+(?:i|we))\s+.{0,60}(?:with|using|in)\s+dr\.?\s*egeria\b',
         re.IGNORECASE,
     )
 
@@ -227,12 +238,22 @@ class RAGSystem:
         from advisor.command_keyword_index import get_command_keyword_index
         idx = get_command_keyword_index()
 
-        # Extract the topic keyword after "about", "for", "related to", etc.
+        # Extract the topic keyword — try prepositions first, then verb objects.
         topic_m = re.search(
-            r'\b(?:about|for|related\s+to|regarding|on)\s+(.+?)[\?\.]*$',
+            r'\b(?:about|for|related\s+to|regarding|on|covering|deal(?:ing)?\s+with)\s+(.+?)[\?\.]*$',
+            query, re.IGNORECASE,
+        ) or re.search(
+            # "how do I create a glossary term with Dr.Egeria" → topic = "glossary term"
+            r'\b(?:creat|add|updat|link|classif|manag|defin)\w*\s+(?:a\s+|an\s+)?(.+?)'
+            r'(?:\s+(?:with|using|in)\s+dr\.?\s*egeria)?[\?\.]*$',
             query, re.IGNORECASE,
         )
-        topic = topic_m.group(1).strip() if topic_m else None
+        if topic_m:
+            # Use the last captured group that actually matched
+            topic = next((g for g in reversed(topic_m.groups()) if g), None)
+            topic = topic.strip() if topic else None
+        else:
+            topic = None
 
         if topic:
             groups = idx.search_by_keyword(topic)
@@ -296,10 +317,12 @@ class RAGSystem:
         Return True if the query is a data-retrieval request that the report
         pipeline can answer by running a report spec.
 
-        Semantic similarity against question_spec entries with three guards:
-        1. Score must be >= 0.50 (lowered from 0.65 — listing questions now in index).
-        2. Query must not start with a definitional phrase (those go to RAG).
-        3. Query must not explicitly request Python code / code examples.
+        Routes when EITHER:
+        1. The query strongly matches a known report *name* (so typing a report
+           name in chat works), OR
+        2. Semantic similarity against question_spec entries is >= 0.45 (questions
+           are hints, so the floor is forgiving).
+        Guarded so definitional and code-example queries still go to RAG.
         """
         q = query.strip().lower()
         if any(q.startswith(p) for p in self._DEFINITIONAL_PREFIXES):
@@ -307,8 +330,17 @@ class RAGSystem:
         if any(sig in q for sig in self._CODE_EXAMPLE_SIGNALS):
             return False
         try:
-            from advisor.report_pipeline import _question_index
-            hits = _question_index.search(query, top_k=1, threshold=0.50)
+            from advisor.report_pipeline import get_report_pipeline, _question_index
+            # Name-first: a short, name-like query (e.g. "Collections", "My User MD")
+            # routes here even though it isn't phrased as a question. Restricted to
+            # short inputs so conceptual questions that merely mention a report name
+            # (e.g. "tell me about collections") fall through to semantic matching.
+            if len(q.split()) <= 4:
+                name_match = get_report_pipeline().match_report_name(query)
+                if name_match and name_match[1] >= 0.9:
+                    logger.info(f"Report pre-check via name: {name_match[0]!r} (conf={name_match[1]:.2f})")
+                    return True
+            hits = _question_index.search(query, top_k=1, threshold=0.45)
             if hits:
                 logger.info(
                     f"Semantic report pre-check: {hits[0]['report_spec']} "
@@ -491,14 +523,16 @@ class RAGSystem:
                 logger.warning(f"Template start failed ({exc}), continuing normal routing")
 
         # ------------------------------------------------------------------ #
-        # Negative routing guard: interrogative forms bypass action agents   #
-        # regardless of the intent override.  "What is X" / "How does Y"    #
-        # must never reach GovernancePlanAgent, DrEgeriaActionAgent, or      #
-        # ExamplesAgent — even when intent=Plan is selected.                 #
+        # Negative routing guard: interrogative forms bypass plan creation.  #
+        # "What is X" / "How does Y" must never reach GovernancePlanAgent   #
+        # when intent=Plan is selected accidentally.                         #
+        # NOTE: 'command' (Dr.Egeria / Act) is intentionally excluded here  #
+        # — DrEgeriaTemplateAgent is safe for informational queries and the  #
+        # user may have explicitly chosen it via the clarification buttons.  #
         # The draft_id block above already handled active drafts; this guard #
         # fires only for new (draft-free) queries.                           #
         # ------------------------------------------------------------------ #
-        if self._is_interrogative(user_query) and query_type_override in ('plan', 'command', 'act'):
+        if self._is_interrogative(user_query) and query_type_override in ('plan', 'act'):
             logger.info(
                 f"Interrogative guard: query is informational; "
                 f"overriding intent '{query_type_override}' → explanation"
@@ -570,7 +604,9 @@ class RAGSystem:
                 "dr egeria", "dr. egeria", "dr_egeria", "dre",
             ))
             tech_roles = {"developer", "data_engineer"}
-            steward_roles = {"data_steward", "governance_officer"}
+            # Roles (and the empty "Anyone" role) that should see Python-vs-DrE
+            # disambiguation rather than silently routing to Python examples.
+            ambiguous_roles = {"data_steward", "governance_officer", "", None}
 
             # Respect the pattern classifier if it already identified a command:
             # "give me a dr. egeria example" is a command, not a Python example.
@@ -589,24 +625,24 @@ class RAGSystem:
                 except Exception as exc:
                     logger.warning(f"ExamplesAgent failed ({exc}), continuing normal routing")
 
-            elif perspective in steward_roles and example_signals \
+            elif perspective in ambiguous_roles and example_signals \
                     and not code_signals and not dre_signals and not pattern_is_command:
-                # Ambiguous: could be Dr.Egeria command or a conceptual/code example.
+                # Ambiguous: the query could be answered with a Python pyegeria example
+                # OR a Dr.Egeria markdown template.  Return a button-based clarification
+                # so the user can pick which path they want without re-typing.
                 logger.info(
-                    f"Role '{perspective}' + ambiguous example signal → returning clarification"
+                    f"Role '{perspective}' + ambiguous example signal → returning intent clarification"
                 )
                 return {
                     "query": user_query,
-                    "response": (
-                        "Would you like me to:\n\n"
-                        "1. **Show a Python (pyegeria) code example** — how to do this "
-                        "programmatically using the pyegeria SDK?\n"
-                        "2. **Show a Dr.Egeria markdown template** — the notebook command "
-                        "you paste into an Egeria Workspaces Jupyter cell and fill in?\n\n"
-                        "You can also click **Show me** (Python) or **Act** (Dr.Egeria) "
-                        "above to set your intent before asking."
-                    ),
+                    "response": "How would you like me to answer?",
                     "query_type": "clarification",
+                    "clarification_type": "intent_choice",
+                    "candidates": [
+                        "🐍 Python / pyegeria example",
+                        "📋 Dr.Egeria markdown template",
+                    ],
+                    "candidate_intents": ["code_search", "command"],
                     "routing_agent": "clarification",
                     "sources": [],
                     "num_sources": 0,
@@ -765,9 +801,11 @@ class RAGSystem:
                 logger.warning(f"ExamplesAgent failed ({exc}), falling back to RAG")
 
         # ── Command-discovery shortcut ──────────────────────────────────────
-        # "what dr.egeria commands are about X" → answer from keyword index,
-        # not from docs (docs have no structured command catalog).
-        if query_analysis['query_type'] == 'explanation' and self._is_command_discovery(user_query):
+        # "are there dr.egeria commands/templates for X" → answer from keyword index.
+        # Fires on explanation, command, and code_search so the user doesn't have to
+        # pick the right intent selector for a discovery question.
+        if query_analysis['query_type'] in ('explanation', 'command', 'code_search', 'general') \
+                and self._is_command_discovery(user_query):
             result = self._handle_command_discovery(user_query)
             if result:
                 return result

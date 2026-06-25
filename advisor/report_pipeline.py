@@ -55,6 +55,12 @@ def _run_async(coro, timeout: int = 90) -> Any:
     return asyncio.run(coro)
 
 
+class MCPToolError(Exception):
+    """An MCP tool returned an error response (e.g. unknown report, unsupported
+    output_format, Egeria 4xx). Raised by _unwrap_mcp_content so callers can
+    surface the real reason instead of treating it as an empty result."""
+
+
 def _unwrap_mcp_content(raw: Any) -> Any:
     """
     MCP tool results come back as a list of content blocks:
@@ -82,10 +88,12 @@ def _unwrap_mcp_content(raw: Any) -> Any:
 
         combined = "\n".join(texts).strip()
 
-        # Check for error responses from the MCP server
+        # Check for error responses from the MCP server. Raise (rather than
+        # return None) so callers can distinguish a genuine empty result from a
+        # tool error and surface the real reason.
         if combined.startswith("Error ") or "Error executing tool" in combined:
             logger.warning(f"MCP tool returned error: {combined[:200]}")
-            return None
+            raise MCPToolError(combined)
 
         return _maybe_parse_json(combined)
 
@@ -145,8 +153,13 @@ class QuestionSpecIndex:
     """
 
     _EMBED_MODEL = "all-MiniLM-L6-v2"
-    _DEFAULT_THRESHOLD = 0.35
+    # Questions are hints, not exact keys — keep the floor low so real-world
+    # phrasing still surfaces candidates (ranking + disambiguation handle precision).
+    _DEFAULT_THRESHOLD = 0.28
     _DEFAULT_TOP_K = 5
+    # Additive boost applied to a spec whose question_spec is tagged with the
+    # selected perspective (or "any"). A hint that re-ranks, never a gate.
+    _PERSPECTIVE_BOOST = 0.08
 
     # Paths relative to the egeria-advisor project root.
     # Add new per-perspective or per-domain JSON files here; no other code change needed.
@@ -330,13 +343,16 @@ class QuestionSpecIndex:
         query_vec = self._model.encode([query], normalize_embeddings=True, show_progress_bar=False)[0]
         scores: np.ndarray = self._embeddings @ query_vec  # cosine similarity, shape (N,)
 
-        # If perspective given, zero out entries whose perspectives don't include it
+        # Perspectives are *hints*, not gates: when a perspective is given, give a
+        # small additive boost to entries tagged with it (or "any"), so a report
+        # relevant to the selected role ranks higher — but a report is never hidden
+        # just because the role isn't tagged on it.
         if perspective:
             persp_lower = perspective.strip().lower()
             for i, (_, persp_list, _) in enumerate(self._entries):
                 normed = [p.strip().lower() for p in persp_list]
-                if persp_lower not in normed and "any" not in normed:
-                    scores[i] = 0.0
+                if persp_lower in normed or "any" in normed:
+                    scores[i] = float(scores[i]) + self._PERSPECTIVE_BOOST
 
         # Collect best score per unique spec name
         best_per_spec: Dict[str, float] = {}
@@ -386,6 +402,9 @@ class ReportPipeline:
         except Exception:
             self._default_page_size = 100
             self._starts_with_on_filter = True
+        # Set by run_report() to the failure reason when execution errors/times out;
+        # None means the last run either succeeded or returned a genuine empty result.
+        self._last_run_error: Optional[str] = None
 
     def _read_pyegeria_connection(self) -> Dict[str, str]:
         """Extract Egeria connection params from the pyegeria MCP server config section."""
@@ -561,44 +580,85 @@ class ReportPipeline:
         """
         effective_page_size = page_size if page_size is not None else self._default_page_size
         is_wildcard = not search_string or search_string.strip() in ("*", "")
-        try:
-            args: Dict[str, Any] = {
-                "report_name": report_name,
-                "search_string": search_string,
-                "output_type": output_type,
-                "page_size": effective_page_size,
-            }
-            # Prefix search is more efficient than full regex when a specific term is given
-            if not is_wildcard and self._starts_with_on_filter:
-                args["starts_with"] = True
-            raw = self._call_tool("run_report", args)
-            if raw is None:
-                return None
+        # Record why we return None so the caller can distinguish a genuine
+        # "no records" empty result from an execution error/timeout, and never
+        # mask a failure behind an unrelated convenience-listing fallback.
+        self._last_run_error = None
 
-            if isinstance(raw, str):
-                return raw
-            if isinstance(raw, dict):
-                kind = raw.get("kind")
-                # pyegeria format_set_executor shapes:
-                if kind == "empty":
-                    return None   # no records — caller shows "no results" message
-                if kind == "json" and "data" in raw:
-                    val = raw["data"]
-                    return val if isinstance(val, str) else json.dumps(val, indent=2)
-                if kind == "text" and "content" in raw:
-                    return raw["content"]
-                # Legacy / fallback shapes
-                for key in ("data", "output", "result", "content", "report", "text"):
-                    if key in raw:
-                        val = raw[key]
-                        return val if isinstance(val, str) else json.dumps(val, indent=2)
-                return json.dumps(raw, indent=2)
-            return str(raw)
-        except ConnectionError:
-            raise
-        except Exception as e:
-            logger.error(f"run_report({report_name}) failed [{type(e).__name__}]: {e}")
+        # Execute in-process via pyegeria's exec_report_spec (a fresh Egeria client
+        # bound to this call's event loop) rather than the MCP run_report tool.
+        # The MCP server reuses a single GLOBAL_EGERIA_CLIENT created in its startup
+        # loop, which intermittently CLIENT_ERROR_400s when used from its tool-handler
+        # loop. exec_report_spec is the same executor pyegeria's CLI uses and is
+        # reliable. It raises ValueError for unknown-report / unsupported-format and
+        # returns {"kind":"empty"} for no records.
+        # Import from the package top level (stable export) — importing the
+        # submodule directly can trip a circular import during lazy first load.
+        from pyegeria import exec_report_spec
+
+        conn = self._read_pyegeria_connection()
+        if not all((conn.get("view_server"), conn.get("platform_url"),
+                    conn.get("user_id"), conn.get("user_pwd"))):
+            raise ConnectionError("Egeria connection is not configured (config/mcp_servers.json → pyegeria.env)")
+
+        params: Dict[str, Any] = {
+            "search_string": search_string,
+            "page_size": effective_page_size,
+            "start_from": 0,
+        }
+        # Prefix search is more efficient than full regex when a specific term is given
+        if not is_wildcard and self._starts_with_on_filter:
+            params["starts_with"] = True
+
+        try:
+            raw = exec_report_spec(
+                report_name,
+                output_format=output_type,
+                params=params,
+                view_server=conn["view_server"],
+                view_url=conn["platform_url"],
+                user=conn["user_id"],
+                user_pass=conn["user_pwd"],
+            )
+        except ValueError as e:
+            # Unknown report, unsupported output_format, or missing action —
+            # surface honestly via _classify_run_error.
+            self._last_run_error = str(e)
+            logger.info(f"run_report({report_name}) report error: {e}")
             return None
+        except Exception as e:
+            err = type(e).__name__
+            msg = f"{err}: {e}"
+            if "timeout" in err.lower() or "timeout" in str(e).lower():
+                self._last_run_error = "The report timed out (Egeria took too long to respond)."
+                logger.error(f"run_report({report_name}) timed out: {e}")
+                return None
+            # Treat anything else (connection refused, 4xx/5xx transport) as a
+            # reachability problem so the caller shows the "Egeria not reachable" path.
+            logger.error(f"run_report({report_name}) failed [{err}]: {e}")
+            raise ConnectionError(msg) from e
+
+        if raw is None:
+            return None
+        if isinstance(raw, str):
+            return raw
+        if isinstance(raw, dict):
+            kind = raw.get("kind")
+            # pyegeria format_set_executor shapes:
+            if kind == "empty":
+                return None   # no records — caller shows "no results" message
+            if kind == "json" and "data" in raw:
+                val = raw["data"]
+                return val if isinstance(val, str) else json.dumps(val, indent=2)
+            if kind == "text" and "content" in raw:
+                return raw["content"]
+            # Legacy / fallback shapes
+            for key in ("data", "output", "result", "content", "report", "text"):
+                if key in raw:
+                    val = raw[key]
+                    return val if isinstance(val, str) else json.dumps(val, indent=2)
+            return json.dumps(raw, indent=2)
+        return str(raw)
 
     # ------------------------------------------------------------------
     # Output formatting helpers
@@ -612,11 +672,18 @@ class ReportPipeline:
         "tabular": "TABLE",
         "structured": "TABLE",
         # User asks for full report narrative
-        "full report": "MARKDOWN",
-        "as a report": "MARKDOWN",
-        "as report": "MARKDOWN",
-        "as markdown": "MARKDOWN",
-        "in markdown": "MARKDOWN",
+        "full report": "REPORT",
+        "as a report": "REPORT",
+        "as report": "REPORT",
+        "as markdown": "REPORT",
+        "in markdown": "REPORT",
+        # Editable Dr.Egeria form
+        "as a form": "FORM",
+        "as form": "FORM",
+        "editable form": "FORM",
+        # HTML
+        "as html": "HTML",
+        "in html": "HTML",
         # Raw JSON
         "as json": "JSON",
         "in json": "JSON",
@@ -628,62 +695,73 @@ class ReportPipeline:
     }
 
     # Maps the web UI fmt tag values and pyegeria output_type names to internal format codes
+    # Maps the fmt:'<tag>' value (lower-cased) set by the web UI / chat to the
+    # canonical executor token. pyegeria's MCP run_report now accepts the full
+    # set directly, so these are mostly identity; "markdown" is a friendly alias
+    # for REPORT.
     _FMT_TAG_MAP: Dict[str, str] = {
-        "list":     "LIST",
-        "table":    "TABLE",
-        "mermaid":  "MERMAID",
-        "md":       "MARKDOWN",
-        "markdown": "MARKDOWN",
-        "report":   "MARKDOWN",
-        "json":     "JSON",
-        "dict":     "DICT",
-        "form":     "DICT",
+        "list":         "LIST",
+        "table":        "TABLE",
+        "report":       "REPORT",
+        "report-graph": "REPORT-GRAPH",
+        "form":         "FORM",
+        "md":           "MD",
+        "markdown":     "REPORT",
+        "mermaid":      "MERMAID",
+        "html":         "HTML",
+        "graph":        "GRAPH",
+        "json":         "JSON",
+        "dict":         "DICT",
     }
 
     def _detect_output_format(self, query: str) -> str:
         """
-        Detect user-specified output format from query text.
+        Detect the requested output format from query text.
         Checks for an explicit fmt:'FORMAT' tag first (set by the web UI modal),
-        then falls back to keyword matching.
-        Returns "LIST", "DICT", "MARKDOWN", "JSON", "TABLE", or "MERMAID".
+        then falls back to keyword matching, then defaults to DICT (rendered as a
+        table). Returns a canonical executor token (LIST, TABLE, REPORT, FORM, MD,
+        MERMAID, HTML, DICT, JSON, ...).
         """
         fm = self._FMT_TAG_RE.search(query)
         if fm:
             tag = fm.group(1).strip().lower()
-            return self._FMT_TAG_MAP.get(tag, "LIST")
+            return self._FMT_TAG_MAP.get(tag, tag.upper())
         q = query.lower()
         for phrase, fmt in self._FORMAT_KEYWORDS.items():
             if phrase in q:
                 return fmt
         return "DICT"
 
+    # Formats pyegeria returns already-rendered as text (kind="text"); the advisor
+    # passes them through unchanged so the browser renders the Markdown / HTML.
+    _TEXT_FORMATS = {"LIST", "REPORT", "REPORT-GRAPH", "FORM", "MD", "MERMAID", "HTML", "GRAPH"}
+
     @staticmethod
     def _format_output(raw: Any, fmt: str, report_name: str) -> str:
         """
         Convert raw report output (dict / list / str) to the requested display format.
         """
-        # LIST output from pyegeria is already a rendered string
-        if fmt == "LIST" and isinstance(raw, str):
+        fmt = (fmt or "DICT").upper()
+
+        # Text formats are already rendered by pyegeria — return as-is.
+        if fmt in ReportPipeline._TEXT_FORMATS and isinstance(raw, str):
             return raw
 
-        # run_report() always stringifies its result — try to recover the structure
-        if isinstance(raw, str) and fmt in ("TABLE", "DICT"):
+        # run_report() stringifies structured results — recover the structure for
+        # TABLE/DICT/JSON rendering. If it isn't JSON, it's already-rendered text.
+        if isinstance(raw, str) and fmt in ("TABLE", "DICT", "JSON"):
             try:
                 raw = json.loads(raw)
             except (json.JSONDecodeError, ValueError):
-                # Not JSON — already a rendered narrative (markdown report)
                 return raw
 
         if isinstance(raw, str):
-            return raw  # MARKDOWN / MERMAID already rendered by pyegeria
+            return raw  # any other already-rendered text
 
         if fmt == "JSON":
             return f"```json\n{json.dumps(raw, indent=2)}\n```"
 
-        if fmt == "MERMAID":
-            return json.dumps(raw, indent=2)
-
-        # TABLE or DICT — render as markdown table
+        # TABLE or DICT — render as a Markdown table.
         return ReportPipeline._dict_to_markdown_table(raw, report_name)
 
     @staticmethod
@@ -733,19 +811,24 @@ class ReportPipeline:
 
         return "\n".join(lines)
 
+    # Convenience MCP listing tools are ONLY equivalent to the plain "list all X"
+    # report specs — never to a sub-type report (e.g. Glossary-Terms, which lists
+    # terms, not glossaries). Match the exact spec name, normalised, so a failed
+    # sub-type report is never silently answered with an unrelated listing.
+    _LISTING_TOOL_BY_SPEC = {
+        "glossaries": "egeria_list_glossaries",
+        "collections": "egeria_list_collections",
+    }
+
     def _try_listing_tool(self, report_name: str) -> Optional[str]:
         """
-        When run_report fails for a listing-style spec, try convenience MCP tools
-        (egeria_list_glossaries, egeria_list_collections) from the dr-egeria server.
-        Returns the output string or None.
+        When a plain "list all X" report spec returns *no records*, fall back to the
+        equivalent convenience MCP tool. Only fires for the exact all-listing specs
+        (Glossaries, Collections) — sub-type reports get None so the caller reports
+        the empty/failed result honestly instead of showing irrelevant data.
         """
-        name_lower = report_name.lower()
-        tool = None
-        if "glossar" in name_lower:
-            tool = "egeria_list_glossaries"
-        elif "collection" in name_lower:
-            tool = "egeria_list_collections"
-
+        key = re.sub(r"[-_\s]", "", report_name).lower()
+        tool = self._LISTING_TOOL_BY_SPEC.get(key)
         if tool is None:
             return None
 
@@ -824,27 +907,92 @@ class ReportPipeline:
     _FILTER_TAG_RE = re.compile(r"\s+filter:'([^']*)'", re.IGNORECASE)
     # Extracts an explicit output format tag appended by the web UI: fmt:'<FORMAT>'
     _FMT_TAG_RE = re.compile(r"\s+fmt:'([^']*)'", re.IGNORECASE)
+    # Detects "what/which/are there reports about X" — discovery, not execution.
+    _REPORT_DISCOVERY_RE = re.compile(
+        r"^(?:what|which|are\s+there|is\s+there|find|list|show|search\s+for"
+        r"|do\s+(?:we|you|i)\s+have|can\s+you\s+(?:show|list|find))"
+        r"[\w\s]*report[\w\s]*"
+        r"(?:about|for|on|covering|related\s+to|that|touching|deal(?:ing)?\s+with|regarding)\b",
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _norm_name(s: str) -> str:
+        return re.sub(r"[-_\s]", "", s or "").lower()
+
+    def _all_report_names(self) -> List[str]:
+        """All known report spec names: the in-process pyegeria registry (277+
+        specs) plus the curated JSON catalog. Cached after first build."""
+        cached = getattr(self, "_report_names_cache", None)
+        if cached is not None:
+            return cached
+        names: List[str] = []
+        seen: set = set()
+        try:
+            from pyegeria.view.base_report_formats import get_report_registry
+            for label, spec in get_report_registry().items():
+                if label not in seen and getattr(spec, "action", None) is not None:
+                    seen.add(label)
+                    names.append(label)
+        except Exception as exc:
+            logger.debug(f"_all_report_names: registry unavailable — {exc}")
+        try:
+            for label in _question_index._load_json_sources():
+                if label not in seen:
+                    seen.add(label)
+                    names.append(label)
+        except Exception as exc:
+            logger.debug(f"_all_report_names: JSON sources unavailable — {exc}")
+        self._report_names_cache = names
+        return names
+
+    def match_report_name(self, text: str) -> Optional[tuple]:
+        """
+        Forgivingly match free text to a known report spec name.
+
+        Returns ``(spec_name, confidence)`` for the best candidate, or ``None`` if
+        nothing is even weakly plausible. Confidence: 1.0 exact (normalised),
+        0.9 one normalised string contains the other, else a difflib similarity
+        ratio. Callers gate on confidence (e.g. ≥0.9 to dispatch directly).
+        """
+        from difflib import SequenceMatcher
+
+        if not text or not text.strip():
+            return None
+        t_norm = self._norm_name(text)
+        if not t_norm:
+            return None
+
+        best_name: Optional[str] = None
+        best_score = 0.0
+        for spec_name in self._all_report_names():
+            s_norm = self._norm_name(spec_name)
+            if not s_norm:
+                continue
+            if s_norm == t_norm:
+                return (spec_name, 1.0)
+            if len(t_norm) >= 4 and (s_norm in t_norm or t_norm in s_norm):
+                score = 0.9
+            else:
+                score = SequenceMatcher(None, t_norm, s_norm).ratio()
+            if score > best_score:
+                best_score, best_name = score, spec_name
+        if best_name is None:
+            return None
+        return (best_name, best_score)
 
     def _resolve_report_name(self, name: str) -> str:
         """
         Resolve a fuzzy or camelCase report name to the exact spec catalog name.
-
-        Normalises both the input and every known spec name by stripping spaces,
-        hyphens, underscores and lowercasing before comparing, so
-        "IntegrationConnectors" resolves to "Integration Connectors" etc.
-        Returns the original name unchanged if no match is found.
+        Used by the explicit "run report <name>" path, where the user has named a
+        specific report — so we accept a strong fuzzy match and only fall back to
+        the original string when nothing is close.
         """
-        def _norm(s: str) -> str:
-            return re.sub(r"[-_\s]", "", s).lower()
-
-        name_norm = _norm(name)
-        try:
-            spec_data = _question_index._load_json_sources()
-            for spec_name in spec_data:
-                if _norm(spec_name) == name_norm:
-                    return spec_name
-        except Exception as exc:
-            logger.debug(f"_resolve_report_name lookup failed: {exc}")
+        match = self.match_report_name(name)
+        if match and match[1] >= 0.72:
+            if match[0].lower() != name.lower():
+                logger.info(f"Resolved report name {name!r} → {match[0]!r} (conf={match[1]:.2f})")
+            return match[0]
         return name
 
     def _parse_report_directive(self, raw: str) -> tuple:
@@ -874,6 +1022,48 @@ class ReportPipeline:
 
         return raw, search_string
 
+    def _discover_reports(self, query: str, perspective: Optional[str]) -> Dict[str, Any]:
+        """Return a formatted list of report specs that match the query topic."""
+        try:
+            specs = self.find_specs(query, perspective=perspective)
+        except Exception:
+            specs = []
+        if not specs:
+            return {
+                "query": query,
+                "response": (
+                    "I couldn't find any report specs matching that topic. "
+                    "Try browsing the **Reports** tab in the left sidebar, or ask me to *list all reports*."
+                ),
+                "query_type": "report",
+                "sources": [], "num_sources": 0,
+                "retrieval_time": 0.0, "generation_time": 0.0,
+                "avg_relevance_score": 0.0, "context_length": 0,
+            }
+        ranked = self._rank_specs(specs)
+        lines = ["Here are the report specs that match:\n"]
+        for item in ranked[:10]:
+            name = item.get("report_spec") or item.get("name") or item.get("spec_name") or ""
+            q = item.get("question", "")
+            family = item.get("family", "")
+            if name:
+                label = f"- **{name}**"
+                if family:
+                    label += f" *(family: {family})*"
+                if q:
+                    label += f" — {q}"
+                lines.append(label)
+        lines.append("\nClick one in the **Reports** sidebar to run it, or say **run report \\<name\\>**.")
+        response = "\n".join(lines)
+        return {
+            "query": query,
+            "response": response,
+            "query_type": "report",
+            "sources": [], "num_sources": len(ranked),
+            "retrieval_time": 0.0, "generation_time": 0.0,
+            "avg_relevance_score": 0.0, "context_length": len(response),
+        }
+
     def process(
         self, query: str, perspective: Optional[str] = None,
         page_size: Optional[int] = None,
@@ -889,6 +1079,11 @@ class ReportPipeline:
             import threading
             threading.Thread(target=self._try_refresh_egeria_specs, daemon=True).start()
 
+        # Discovery: "what/which reports are about X" → list matching specs, don't run.
+        if self._REPORT_DISCOVERY_RE.match(query.strip()):
+            logger.info(f"Report discovery query: {query!r}")
+            return self._discover_reports(query, perspective)
+
         # Direct dispatch: "run report <name>" bypasses find_specs / disambiguation.
         m = self._RUN_REPORT_RE.match(query.strip())
         if m:
@@ -897,6 +1092,21 @@ class ReportPipeline:
             report_name = self._resolve_report_name(report_name)
             logger.info(f"Direct report dispatch: {report_name!r} search={search_string!r}")
             return self._execute_report(query, report_name, search_string=search_string, page_size=page_size)
+
+        # Name-first: if the user typed (or selected the Report intent and typed) a
+        # report name, match it directly before any semantic question matching.
+        # The typed name must be a strong match — a vague chat question won't trip
+        # this and falls through to find_specs below.
+        core, search_string = self._parse_report_directive(query.strip())
+        name_match = self.match_report_name(core)
+        if name_match and name_match[1] >= 0.9:
+            logger.info(
+                f"Name-first dispatch: {core!r} → {name_match[0]!r} "
+                f"(conf={name_match[1]:.2f}, search={search_string!r})"
+            )
+            return self._execute_report(
+                query, name_match[0], search_string=search_string, page_size=page_size
+            )
 
         try:
             specs = self.find_specs(query, perspective=perspective)
@@ -936,6 +1146,81 @@ class ReportPipeline:
 
         return self._execute_report(query, report_name, num_specs_found=len(ranked), page_size=page_size)
 
+    def _classify_run_error(self, run_error: str, report_name: str, fmt: str) -> str:
+        """
+        Turn pyegeria's raw execution error into an honest, specific user message.
+        pyegeria already distinguishes unknown-report, unsupported-format and
+        no-action cases — we surface that distinction instead of a generic failure.
+        """
+        # Strip a leading "ExceptionType: " prefix for readability.
+        detail = re.sub(r"^[A-Za-z_][A-Za-z0-9_]*Error:\s*", "", run_error or "").strip()
+        low = detail.lower()
+
+        if "does not support requested output_format" in low or "does not support" in low and "output_format" in low:
+            supported = self._spec_supported_formats_safe(report_name)
+            sup = f" — supported: {', '.join(supported)}" if supported else ""
+            return (
+                f"The **{report_name}** report doesn't support the **{fmt}** output format{sup}.\n\n"
+                f"> {detail}\n\n"
+                "Pick a supported format and run it again."
+            )
+        if "unknown report spec" in low or "no matching column set" in low:
+            return (
+                f"There's no report named **{report_name}**.\n\n"
+                f"> {detail}\n\n"
+                "Tips:\n"
+                "- Ask me to *list available reports*, or click one from the left sidebar\n"
+                "- Check the spelling — I match names forgivingly but this was too far off"
+            )
+        if "does not have an action property" in low:
+            masters = _detail_to_masters().get(report_name, [])
+            if masters:
+                master_hint = "Run the parent report instead — it includes this as a linked detail section:\n" + \
+                              "".join(f"- **{m}**\n" for m in masters)
+            else:
+                master_hint = "Run the parent report instead — it includes this as a linked detail section."
+            return (
+                f"**{report_name}** is a detail/sub-view and can't be run on its own.\n\n"
+                + master_hint
+            )
+        if "timeout" in low or "timed out" in low:
+            return (
+                f"The **{report_name}** report timed out (Egeria took too long).\n\n"
+                "Tips:\n"
+                "- Try again — transient timeouts often clear on a second run\n"
+                "- Add a search filter to reduce the result size\n"
+                f"- To run via Dr.Egeria: `[[{report_name}]]`"
+            )
+        # Generic, but still show the real reason.
+        return (
+            f"The report **{report_name}** could not be completed.\n\n"
+            f"> {detail}\n\n"
+            "Tips:\n"
+            "- Try again — transient errors can clear on a second run\n"
+            "- Narrow the request with a search filter\n"
+            f"- To run via Dr.Egeria: `[[{report_name}]]`"
+        )
+
+    def _spec_supported_formats_safe(self, report_name: str) -> List[str]:
+        """Best-effort list of the browser-renderable formats a spec declares
+        (for error hints). Returns [] if the registry is unavailable."""
+        try:
+            from pyegeria.view.base_report_formats import get_report_registry
+            fs = get_report_registry().get(report_name)
+            if fs is None:
+                return []
+            declared = {
+                t.upper()
+                for f in (getattr(fs, "formats", []) or [])
+                for t in (getattr(f, "types", []) or [])
+            }
+            browser = ["LIST", "TABLE", "REPORT", "FORM", "MERMAID", "HTML", "MD", "DICT", "JSON"]
+            if "ALL" in declared:
+                return browser
+            return [b for b in browser if b in declared]
+        except Exception:
+            return []
+
     def _execute_report(
         self, query: str, report_name: str, num_specs_found: int = 1,
         search_string: str = "*",
@@ -943,61 +1228,79 @@ class ReportPipeline:
     ) -> Dict[str, Any]:
         """Shared execution path: run a named report and format the result."""
         fmt = self._detect_output_format(query)
-        # Map internal display format to pyegeria output_type for the MCP call
-        _MCP_TYPE_MAP = {
-            "MARKDOWN": "MARKDOWN",
-            "MERMAID":  "MERMAID",
-            "LIST":     "LIST",
-            "TABLE":    "DICT",   # TABLE uses DICT from MCP, rendered as table here
-            "JSON":     "DICT",
-        }
-        mcp_output_type = _MCP_TYPE_MAP.get(fmt, "DICT")
+        # pyegeria's run_report now accepts the full output-format set, so pass the
+        # requested token straight through. Two adjustments: TABLE is fetched as
+        # DICT and rendered as a Markdown table by the advisor (pyegeria's TABLE is
+        # a Rich terminal table, not browser-friendly); legacy MARKDOWN → REPORT.
+        _MCP_TYPE_OVERRIDES = {"TABLE": "DICT", "MARKDOWN": "REPORT"}
+        mcp_output_type = _MCP_TYPE_OVERRIDES.get(fmt, fmt)
 
         logger.info(
             f"Running report: {report_name} (output_type={mcp_output_type}, "
             f"display_fmt={fmt}, search_string={search_string!r}, page_size={page_size or self._default_page_size})"
         )
-        mcp_connected = False
+        # Execution is in-process (run_report → exec_report_spec) and does not need
+        # the MCP agent; `egeria_reachable` reflects whether that in-process call
+        # could reach Egeria. The MCP agent is only needed for the optional
+        # listing-tool fallback below, which self-guards.
+        egeria_reachable = True
         connection_err: Optional[str] = None
         raw_output = None
         try:
-            self._ensure_agent()
-            mcp_connected = True
             raw_output = self.run_report(
                 report_name, search_string=search_string,
                 output_type=mcp_output_type, page_size=page_size,
             )
         except ConnectionError as exc:
+            egeria_reachable = False
             connection_err = str(exc)
 
-        if raw_output is None and mcp_connected:
-            raw_output = self._try_listing_tool(report_name)
+        # Distinguish a real execution failure/timeout from a genuine empty result.
+        run_error = getattr(self, "_last_run_error", None)
 
+        # Only fall back to a convenience listing tool when the report ran cleanly
+        # but returned no records — never to paper over an error/timeout, and only
+        # for the exact all-listing specs (handled inside _try_listing_tool).
+        if raw_output is None and egeria_reachable and not run_error:
+            try:
+                raw_output = self._try_listing_tool(report_name)
+            except Exception as exc:
+                logger.debug(f"listing-tool fallback skipped: {exc}")
 
         output = self._format_output(raw_output, fmt, report_name) if raw_output is not None else None
 
         if output is None:
-            if not mcp_connected:
+            if run_error:
+                err_response = self._classify_run_error(run_error, report_name, fmt)
+                return {
+                    "query": query,
+                    "response": err_response,
+                    "query_type": "report",
+                    "report_name": report_name,
+                    "sources": [],
+                    "num_sources": 0,
+                    "retrieval_time": 0.0,
+                    "generation_time": 0.0,
+                    "avg_relevance_score": 0.0,
+                    "context_length": 0,
+                }
+            if not egeria_reachable:
                 detail = f"\n\n*Connection detail: {connection_err}*" if connection_err else ""
                 err_response = (
-                    f"I found the **{report_name}** report that matches your query, "
-                    "but the Egeria MCP server is not reachable right now.\n\n"
+                    f"I found the **{report_name}** report, but Egeria is not reachable "
+                    "right now.\n\n"
                     f"To run this report via Dr.Egeria: `[[{report_name}]]`\n\n"
-                    "Make sure the pyegeria MCP server is running before retrying."
-                    + detail +
-                    "\n\n*Output format options: append \"as a table\", \"full report\", "
-                    "\"as json\", or \"as a diagram\" to your query.*"
+                    "Make sure the Egeria platform is running before retrying."
+                    + detail
                 )
             else:
+                # Ran cleanly but returned no records — say so plainly.
+                filt = "" if search_string in (None, "", "*") else f" matching *{search_string}*"
                 err_response = (
-                    f"The report **{report_name}** could not be executed — it may not exist "
-                    "or returned no results for the given search string.\n\n"
+                    f"**{report_name}** ran successfully but found no records{filt}.\n\n"
                     "Tips:\n"
-                    "- Ask me to *list available reports* to browse what's available\n"
-                    "- Try clicking a report from the left sidebar for exact name matching\n"
-                    f"- To run via Dr.Egeria: `[[{report_name}]]`\n\n"
-                    "*Output format options: append \"as a table\", \"full report\", "
-                    "\"as json\", or \"as a diagram\" to your query.*"
+                    "- Broaden or clear the search filter\n"
+                    "- Confirm there is data of this type in the connected Egeria instance"
                 )
             return {
                 "query": query,
@@ -1012,9 +1315,10 @@ class ReportPipeline:
                 "context_length": 0,
             }
 
+        labeled_output = f"**Report: {report_name}**\n\n{output}"
         return {
             "query": query,
-            "response": output,
+            "response": labeled_output,
             "query_type": "report",
             "report_name": report_name,
             "num_specs_found": num_specs_found,
@@ -1025,6 +1329,27 @@ class ReportPipeline:
             "avg_relevance_score": 0.0,
             "context_length": len(output),
         }
+
+
+def _detail_to_masters() -> Dict[str, List[str]]:
+    """Build reverse map: detail_spec_name → [master_spec_names] from the registry.
+    Cached on first call; returns {} if the registry is unavailable."""
+    cached = getattr(_detail_to_masters, "_cache", None)
+    if cached is not None:
+        return cached
+    result: Dict[str, List[str]] = {}
+    try:
+        from pyegeria.view.base_report_formats import get_report_registry
+        for name, spec in get_report_registry().items():
+            for fmt in (getattr(spec, "formats", []) or []):
+                for col in (getattr(fmt, "attributes", []) or []):
+                    ds = getattr(col, "detail_spec", None)
+                    if ds and name not in result.get(ds, []):
+                        result.setdefault(ds, []).append(name)
+    except Exception:
+        pass
+    _detail_to_masters._cache = result  # type: ignore[attr-defined]
+    return result
 
 
 def _no_report_found(query: str) -> Dict[str, Any]:

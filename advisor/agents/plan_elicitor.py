@@ -223,6 +223,35 @@ class PlanElicitor:
 
         phase = spec.get("phase", "confirm_commands")
 
+        # Draft/document desync check: "generate", "refine", and "template_offer"
+        # all assume spec["doc_id"] points at a live, editable document. If that
+        # document was trashed or purged out from under this draft, surface a
+        # clear message instead of letting the phase handler fail or misbehave
+        # (e.g. _apply_change silently writing to a document that's no longer there).
+        doc_id = spec.get("doc_id")
+        if phase in ("generate", "refine", "template_offer") and doc_id:
+            from advisor.governance_docs import get_doc_manager
+            folder = get_doc_manager().folder_of(doc_id)
+            if folder is None:
+                result = _clarification_result(
+                    spec,
+                    f"This plan's document (`{doc_id}`) no longer exists — it may have "
+                    f"been permanently deleted. Start a new plan, or check Version "
+                    f"History if you believe this is unexpected.",
+                    nav=["cancel"],
+                )
+                self._log_system_response(draft_id, spec, result)
+                return result
+            if folder == "trash":
+                result = _clarification_result(
+                    spec,
+                    f"This plan (`{doc_id}`) was deleted. Restore it from the Trash "
+                    f"section in the sidebar to continue editing it here, or start a new plan.",
+                    nav=["cancel"],
+                )
+                self._log_system_response(draft_id, spec, result)
+                return result
+
         if phase == "confirm_commands":
             result = self._handle_confirm_commands(spec, user_response)
         elif phase == "elicit_required":

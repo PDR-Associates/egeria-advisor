@@ -115,6 +115,24 @@
     details > summary::-webkit-details-marker { display:none; }
     details > summary::before { content:'▶'; font-size:.6rem; margin-right:.35rem; color:#64748b; transition:transform .15s; display:inline-block; }
     details[open] > summary::before { transform:rotate(90deg); }
+
+    /* Sidebar artifact-type tabs */
+    .sidebar-tab {
+      flex: 1;
+      padding: .375rem .5rem;
+      font-size: .7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      color: #94a3b8;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      transition: color .15s, border-color .15s, background .15s;
+    }
+    .sidebar-tab:hover { color: #cbd5e1; background: #1e293b44; }
+    .sidebar-tab.active { color: #e2e8f0; border-bottom-color: #06b6d4; background: #1e293b66; }
   </style>
 </head>
 <body class="dark bg-slate-900 text-slate-100 h-screen flex flex-col overflow-hidden">
@@ -127,11 +145,6 @@
     <span id="status-dot" class="w-2 h-2 rounded-full bg-slate-500" title="MCP status"></span>
   </div>
   <div class="flex items-center gap-3 text-xs text-slate-500">
-    <label class="flex items-center gap-1 cursor-pointer select-none">
-      <input type="checkbox" id="dre-toggle" onchange="loadReports()" class="accent-cyan-500">
-      <span>Show DrE specs</span>
-    </label>
-    <span>·</span>
     <span>Enter=send &nbsp; Shift+Enter=newline</span>
     <span>·</span>
     <span id="current-user" class="hidden text-cyan-400 font-medium"></span>
@@ -153,23 +166,35 @@
   <!-- ── Sidebar ─────────────────────────────────────────────────────────── -->
   <aside id="left-sidebar" class="flex flex-col bg-slate-800 border-r border-slate-700 overflow-hidden" style="flex:0 0 288px;min-width:160px">
 
-    <!-- Top pane: Available Reports -->
+    <!-- Tab strip -->
+    <div class="flex shrink-0 border-b border-slate-700">
+      <button class="sidebar-tab active" data-tab="reports" onclick="setSidebarTab('reports')">Reports</button>
+      <button class="sidebar-tab" data-tab="plans" onclick="setSidebarTab('plans')">Plans</button>
+      <button class="sidebar-tab" data-tab="recent" onclick="setSidebarTab('recent')">Recent</button>
+    </div>
+
+    <!-- Reports panel -->
     <div id="sidebar-reports" class="flex flex-col flex-1 sidebar-pane min-h-0">
       <div class="px-3 pt-3 pb-1 shrink-0 flex items-center justify-between">
         <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Available Reports</span>
-        <span id="report-count" class="text-xs text-slate-600"></span>
+        <div class="flex items-center gap-2">
+          <label class="flex items-center gap-1 cursor-pointer select-none text-xs text-slate-500">
+            <input type="checkbox" id="dre-toggle" onchange="loadReports()" class="accent-cyan-500">
+            <span>DrE</span>
+          </label>
+          <span id="report-count" class="text-xs text-slate-600"></span>
+        </div>
       </div>
       <div id="report-catalog" class="px-2 pb-2 flex flex-col gap-0.5 text-sm"></div>
     </div>
 
-    <div id="resize-reports-plans" class="resize-handle"></div>
-
-    <!-- Middle pane: Plans (Drafts / Inbox / Outbox) -->
-    <div id="sidebar-plans" class="flex flex-col sidebar-pane shrink-0">
+    <!-- Plans panel -->
+    <div id="sidebar-plans" class="flex flex-col flex-1 sidebar-pane min-h-0 hidden">
       <div class="px-3 pt-2 pb-1 shrink-0 flex items-center justify-between">
         <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Plans</span>
         <div class="flex items-center gap-2">
           <button onclick="openBuilderModal()" class="text-xs text-violet-400 hover:text-violet-200 transition-colors font-medium" title="New Plan (Builder) — browse and select Dr.Egeria commands directly">+ Builder</button>
+          <button onclick="openImportModal()" class="text-xs text-slate-400 hover:text-slate-200 transition-colors font-medium" title="Import a Dr.Egeria markdown file (paste or upload)">⇧ Import</button>
           <button onclick="loadPlans();loadDrafts();" class="text-xs text-slate-600 hover:text-slate-400 transition-colors" title="Refresh plans and drafts">↺</button>
         </div>
       </div>
@@ -178,10 +203,8 @@
       <div id="plan-list" class="px-2 pb-2 flex flex-col gap-0.5 text-xs overflow-y-auto"></div>
     </div>
 
-    <div id="resize-plans-recent" class="resize-handle"></div>
-
-    <!-- Bottom pane: Recent Queries -->
-    <div id="sidebar-recent" class="flex flex-col sidebar-pane shrink-0">
+    <!-- Recent Queries panel -->
+    <div id="sidebar-recent" class="flex flex-col flex-1 sidebar-pane min-h-0 hidden">
       <div class="px-3 pt-2 pb-1 shrink-0 flex items-center justify-between">
         <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Recent Queries</span>
         <button onclick="clearHistory()" class="text-xs text-slate-600 hover:text-slate-400 transition-colors">clear</button>
@@ -298,18 +321,42 @@
 
 </div>
 
-<!-- ── Builder: New Plan title modal ──────────────────────────────────────── -->
+<!-- ── Title prompt modal — shared by Builder (new plan) and Fork (copy plan) ── -->
 <div id="builder-title-modal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50" onclick="if(event.target===this)closeBuilderModal()">
   <div class="bg-slate-800 border border-slate-600 rounded-xl p-5 w-96 shadow-2xl">
-    <h3 class="text-sm font-semibold text-slate-200 mb-3">New Plan (Builder)</h3>
-    <p class="text-xs text-slate-400 mb-3">Give your plan a title, then browse and add Dr.Egeria commands directly from the canvas.</p>
+    <h3 id="builder-title-modal-heading" class="text-sm font-semibold text-slate-200 mb-3">New Plan (Builder)</h3>
+    <p id="builder-title-modal-desc" class="text-xs text-slate-400 mb-3">Give your plan a title, then browse and add Dr.Egeria commands directly from the canvas.</p>
     <input id="builder-title-input" type="text" placeholder="e.g. Sales Forecasting Architecture"
       class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-slate-200
              focus:outline-none focus:border-violet-500 mb-4"
-      onkeydown="if(event.key==='Enter')createBuilderPlan()" />
+      onkeydown="if(event.key==='Enter')submitTitleModal()" />
     <div class="flex gap-2 justify-end">
       <button onclick="closeBuilderModal()" class="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>
-      <button onclick="createBuilderPlan()" class="px-4 py-1.5 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition-colors">Create Plan</button>
+      <button id="builder-title-modal-submit" onclick="submitTitleModal()" class="px-4 py-1.5 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition-colors">Create Plan</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Import Plan modal ───────────────────────────────────────────────────── -->
+<div id="import-plan-modal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50" onclick="if(event.target===this)closeImportModal()">
+  <div class="bg-slate-800 border border-slate-600 rounded-xl p-5 w-[32rem] shadow-2xl">
+    <h3 class="text-sm font-semibold text-slate-200 mb-3">Import Plan</h3>
+    <p class="text-xs text-slate-400 mb-3">
+      Paste or upload a Dr.Egeria markdown file — either a full plan or just the
+      command blocks. It will be managed here like any other plan (validate, execute, edit).
+    </p>
+    <input id="import-file-input" type="file" accept=".md,text/markdown,text/plain"
+      class="w-full text-xs text-slate-300 mb-2"
+      onchange="_handleImportFileChosen(event)" />
+    <textarea id="import-content-input" rows="10" placeholder="## Create Solution Blueprint&#10;&#10;### Display Name&#10;..."
+      class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-xs text-slate-200 font-mono
+             focus:outline-none focus:border-violet-500 mb-3"></textarea>
+    <input id="import-title-input" type="text" placeholder="Title (optional — derived from content if left blank)"
+      class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-slate-200
+             focus:outline-none focus:border-violet-500 mb-4" />
+    <div class="flex gap-2 justify-end">
+      <button onclick="closeImportModal()" class="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>
+      <button onclick="submitImportPlan()" class="px-4 py-1.5 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition-colors">Import</button>
     </div>
   </div>
 </div>
@@ -351,15 +398,10 @@
       Output format
       <span class="text-slate-600 ml-1">(how to render the results)</span>
     </label>
+    <!-- Options are populated per-report from the spec's supported formats -->
     <select id="output-format-select"
       class="w-full bg-slate-700 text-slate-100 rounded-lg px-3 py-1.5 text-sm
              border border-slate-600 focus:outline-none focus:border-cyan-500 mb-3">
-      <option value="LIST">LIST — concise summary list (default)</option>
-      <option value="TABLE">TABLE — structured data table</option>
-      <option value="MERMAID">MERMAID — diagram / mind map</option>
-      <option value="MD">MD — full Markdown narrative report</option>
-      <option value="JSON">JSON — raw JSON</option>
-      <option value="DICT">DICT — property dictionary</option>
     </select>
     <label class="text-xs text-slate-400 block mb-1">
       Max results
@@ -399,13 +441,15 @@ let pendingClarification = null;  // { candidates: [string] } when disambiguatio
 let selectedIntent = '';          // '', 'explanation', 'code_search', 'report', 'command', 'debugging'
 let selectedPerspective = '';     // '', 'developer', 'data_engineer', 'data_steward', 'governance_officer'
 let pendingReportName = null;     // report name awaiting search-string confirmation
+let reportFormats = {};           // {spec_name: [supported format tokens]} from /api/reports
+let reportFormatLabels = {};      // {format token: human label} from /api/reports
 let recentQueries = JSON.parse(sessionStorage.getItem('ea_recent') || '[]');
 let _activeDraftId = sessionStorage.getItem('ea_active_draft') || null;
 
 // ── Init ───────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   initLeftSidebarResize();
-  initSidebarResize();
+  setSidebarTab(localStorage.getItem('ea_sidebar_tab') || 'reports');
   initCanvasResize();
   initCanvasButtons();
 
@@ -450,6 +494,8 @@ async function loadReports() {
   const dre = document.getElementById('dre-toggle').checked;
   const r = await fetch(`/api/reports?include_dre=${dre}`, { headers: Auth.getHeaders() });
   const data = await r.json();
+  reportFormats = data.formats || {};
+  reportFormatLabels = data.format_labels || {};
   document.getElementById('report-count').textContent = `${data.total}`;
   const el = document.getElementById('report-catalog');
   el.innerHTML = '';
@@ -477,12 +523,32 @@ async function loadReports() {
   }
 }
 
+// Preferred default order — first supported format becomes the dropdown default.
+// TABLE is preferred over LIST: it renders cleanly in the browser and avoids the
+// pyegeria MCP LIST master-detail issue (see PROJECT notes). LIST stays selectable.
+const _FORMAT_DEFAULT_PREF = ['TABLE', 'REPORT', 'DICT', 'LIST'];
+
+function populateFormatOptions(name) {
+  const sel = document.getElementById('output-format-select');
+  sel.innerHTML = '';
+  const supported = (reportFormats && reportFormats[name]) || ['DICT'];
+  supported.forEach(fmt => {
+    const opt = document.createElement('option');
+    opt.value = fmt;
+    opt.textContent = reportFormatLabels[fmt] || fmt;
+    sel.appendChild(opt);
+  });
+  // Choose a sensible default: first preferred format the spec actually supports.
+  const def = _FORMAT_DEFAULT_PREF.find(f => supported.includes(f)) || supported[0];
+  sel.value = def;
+}
+
 function runReport(name) {
   pendingReportName = name;
   document.getElementById('modal-report-name').textContent = name;
   document.getElementById('search-string-input').value = '';
   document.getElementById('page-size-input').value = '';
-  document.getElementById('output-format-select').value = 'LIST';
+  populateFormatOptions(name);
   document.getElementById('search-modal').classList.remove('hidden');
   setTimeout(() => document.getElementById('search-string-input').focus(), 50);
 }
@@ -497,7 +563,7 @@ function confirmRunReport() {
   const filter = document.getElementById('search-string-input').value.trim();
   const pageSizeRaw = document.getElementById('page-size-input').value.trim();
   const pageSize = pageSizeRaw ? parseInt(pageSizeRaw, 10) : null;
-  const outputFmt = document.getElementById('output-format-select').value || 'LIST';
+  const outputFmt = document.getElementById('output-format-select').value || 'DICT';
   closeSearchModal();
   if (!name) return;
   const fmtLabel = outputFmt !== 'LIST' ? ` (${outputFmt})` : '';
@@ -579,6 +645,8 @@ async function loadPerspectives() {
 }
 
 // ── Plans sidebar ──────────────────────────────────────────────────────────────
+let _trashExpanded = false;
+
 async function loadPlans() {
   let data;
   try {
@@ -589,86 +657,190 @@ async function loadPlans() {
   el.innerHTML = '';
   const inbox = data.inbox || [];
   const outbox = data.outbox || [];
-  if (!inbox.length && !outbox.length) {
+  const trash = data.trash || [];
+  if (!inbox.length && !outbox.length && !trash.length) {
     el.innerHTML = '<div class="px-2 text-slate-600 italic">No plans yet</div>';
     return;
   }
-  const renderGroup = (items, folder) => {
+
+  const makeRow = (plan, folder) => {
+    const row = document.createElement('div');
+    row.className = 'flex items-center gap-1';
+    const btn = document.createElement('button');
+    const colorCls = folder === 'inbox' ? 'text-violet-300 hover:bg-violet-900/40'
+                    : folder === 'outbox' ? 'text-emerald-400 hover:bg-emerald-900/30'
+                    : 'text-slate-500 hover:bg-slate-800/50 line-through';
+    btn.className = `flex-1 text-left px-2 py-0.5 rounded transition-colors truncate ${colorCls}`;
+    btn.title = plan.doc_id;
+    btn.textContent = plan.title && plan.title !== '(untitled)' ? plan.title : plan.doc_id;
+    btn.onclick = () => openPlanEditor(plan.doc_id, plan.draft_id || null);
+    row.appendChild(btn);
+
+    if (folder === 'inbox') {
+      const execBtn = document.createElement('button');
+      execBtn.className = 'shrink-0 px-1.5 py-0.5 rounded bg-violet-800 hover:bg-violet-700 text-white text-xs transition-colors';
+      execBtn.title = 'Execute this plan';
+      execBtn.textContent = '▶';
+      execBtn.onclick = e => {
+        e.stopPropagation();
+        appendMessage('you', `execute the plan ${plan.doc_id}`);
+        submitQuery(`execute the plan ${plan.doc_id}`, {});
+      };
+      row.appendChild(execBtn);
+    } else if (folder === 'outbox') {
+      const retryBtn = document.createElement('button');
+      retryBtn.className = 'shrink-0 px-1.5 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs transition-colors';
+      retryBtn.title = 'Edit this plan before re-running';
+      retryBtn.textContent = '✏';
+      retryBtn.onclick = async e => {
+        e.stopPropagation();
+        retryBtn.disabled = true; retryBtn.textContent = '…';
+        try {
+          const r = await fetch(`/api/plans/${encodeURIComponent(plan.doc_id)}/recover`, { method: 'POST', headers: Auth.getHeaders() });
+          if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            throw new Error(err.detail || `Server error ${r.status}`);
+          }
+          await loadPlans();
+          openPlanEditor(plan.doc_id, null);
+        } catch (err) {
+          alert(`Could not move plan to inbox: ${err.message}`);
+          retryBtn.disabled = false; retryBtn.textContent = '✏';
+        }
+      };
+      row.appendChild(retryBtn);
+
+      const rerunBtn = document.createElement('button');
+      rerunBtn.className = 'shrink-0 px-1.5 py-0.5 rounded bg-emerald-800 hover:bg-emerald-700 text-white text-xs transition-colors';
+      rerunBtn.title = 'Re-execute this plan now, as-is';
+      rerunBtn.textContent = '▶';
+      rerunBtn.onclick = async e => {
+        e.stopPropagation();
+        if (!confirm(`Re-run "${plan.title || plan.doc_id}" now? This submits its commands to Egeria again.`)) return;
+        rerunBtn.disabled = true; rerunBtn.textContent = '…';
+        try {
+          const r = await fetch(`/api/plans/${encodeURIComponent(plan.doc_id)}/rerun`, { method: 'POST', headers: Auth.getHeaders() });
+          if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            throw new Error(err.detail || `Server error ${r.status}`);
+          }
+          await loadPlans();
+          openPlanEditor(plan.doc_id, null);
+        } catch (err) {
+          alert(`Could not re-run plan: ${err.message}`);
+        } finally {
+          rerunBtn.disabled = false; rerunBtn.textContent = '▶';
+        }
+      };
+      row.appendChild(rerunBtn);
+    } else if (folder === 'trash') {
+      const restoreBtn = document.createElement('button');
+      restoreBtn.className = 'shrink-0 px-1.5 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs transition-colors';
+      restoreBtn.title = 'Restore this plan to Inbox';
+      restoreBtn.textContent = '↺';
+      restoreBtn.onclick = async e => {
+        e.stopPropagation();
+        restoreBtn.disabled = true;
+        try {
+          const r = await fetch(`/api/plans/${encodeURIComponent(plan.doc_id)}/restore-trash`, { method: 'POST', headers: Auth.getHeaders() });
+          if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            throw new Error(err.detail || `Server error ${r.status}`);
+          }
+          await loadPlans();
+        } catch (err) {
+          alert(`Could not restore plan: ${err.message}`);
+          restoreBtn.disabled = false;
+        }
+      };
+      row.appendChild(restoreBtn);
+
+      const purgeBtn = document.createElement('button');
+      purgeBtn.className = 'shrink-0 px-1 py-0.5 rounded text-slate-600 hover:text-red-400 hover:bg-red-950/40 text-xs transition-colors';
+      purgeBtn.title = 'Permanently delete (version history is kept)';
+      purgeBtn.textContent = '🗑';
+      purgeBtn.onclick = async e => {
+        e.stopPropagation();
+        const label = plan.title && plan.title !== '(untitled)' ? plan.title : plan.doc_id;
+        if (!confirm(`Permanently delete "${label}"?\n\nThis cannot be undone from the sidebar (version history is still kept on disk).`)) return;
+        purgeBtn.disabled = true;
+        try {
+          const r = await fetch(`/api/plans/${encodeURIComponent(plan.doc_id)}/purge`, { method: 'DELETE', headers: Auth.getHeaders() });
+          if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            throw new Error(err.detail || `Server error ${r.status}`);
+          }
+          loadPlans();
+        } catch (err) {
+          alert(`Could not purge plan: ${err.message}`);
+          purgeBtn.disabled = false;
+        }
+      };
+      row.appendChild(purgeBtn);
+      return row; // trash rows have no separate delete button — purge is the delete
+    }
+
+    // Export button — inbox and outbox only
+    const exportBtn = document.createElement('button');
+    exportBtn.className = 'shrink-0 px-1 py-0.5 rounded text-slate-600 hover:text-slate-300 hover:bg-slate-800/50 text-xs transition-colors';
+    exportBtn.title = 'Download this plan as a markdown file';
+    exportBtn.textContent = '⤓';
+    exportBtn.onclick = e => {
+      e.stopPropagation();
+      window.open(`/api/plans/${encodeURIComponent(plan.doc_id)}/export`, '_blank');
+    };
+    row.appendChild(exportBtn);
+
+    // Delete button — inbox and outbox only (moves to trash)
+    const delBtn = document.createElement('button');
+    delBtn.className = 'shrink-0 px-1 py-0.5 rounded text-slate-600 hover:text-red-400 hover:bg-red-950/40 text-xs transition-colors';
+    delBtn.title = 'Move this plan to Trash (a version backup is saved first)';
+    delBtn.textContent = '×';
+    delBtn.onclick = async e => {
+      e.stopPropagation();
+      const label = plan.title && plan.title !== '(untitled)' ? plan.title : plan.doc_id;
+      if (!confirm(`Move "${label}" to Trash?\n\nA backup version will be saved first, and it can be restored from the Trash section.`)) return;
+      delBtn.disabled = true;
+      try {
+        const r = await fetch(`/api/plans/${encodeURIComponent(plan.doc_id)}`, {
+          method: 'DELETE', headers: Auth.getHeaders(),
+        });
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          throw new Error(err.detail || `Server error ${r.status}`);
+        }
+        loadPlans();
+      } catch (err) {
+        alert(`Could not delete plan: ${err.message}`);
+        delBtn.disabled = false;
+      }
+    };
+    row.appendChild(delBtn);
+    return row;
+  };
+
+  const renderGroup = (items, folder, label) => {
     if (!items.length) return;
     const hdr = document.createElement('div');
     hdr.className = 'px-2 pt-1 text-slate-600 uppercase text-xs font-semibold tracking-wider';
-    hdr.textContent = folder === 'inbox' ? 'Inbox' : 'Outbox';
+    hdr.textContent = label;
     el.appendChild(hdr);
-    items.forEach(plan => {
-      const row = document.createElement('div');
-      row.className = 'flex items-center gap-1';
-      const btn = document.createElement('button');
-      btn.className = 'flex-1 text-left px-2 py-0.5 rounded transition-colors truncate ' +
-        (folder === 'inbox' ? 'text-violet-300 hover:bg-violet-900/40' : 'text-emerald-400 hover:bg-emerald-900/30');
-      btn.title = plan.doc_id;
-      btn.textContent = plan.title && plan.title !== '(untitled)' ? plan.title : plan.doc_id;
-      btn.onclick = () => openPlanEditor(plan.doc_id, plan.draft_id || null);
-      row.appendChild(btn);
-      if (folder === 'inbox') {
-        const execBtn = document.createElement('button');
-        execBtn.className = 'shrink-0 px-1.5 py-0.5 rounded bg-violet-800 hover:bg-violet-700 text-white text-xs transition-colors';
-        execBtn.title = 'Execute this plan';
-        execBtn.textContent = '▶';
-        execBtn.onclick = e => {
-          e.stopPropagation();
-          appendMessage('you', `execute the plan ${plan.doc_id}`);
-          submitQuery(`execute the plan ${plan.doc_id}`, {});
-        };
-        row.appendChild(execBtn);
-      } else {
-        const retryBtn = document.createElement('button');
-        retryBtn.className = 'shrink-0 px-1.5 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs transition-colors';
-        retryBtn.title = 'Re-run or edit this plan';
-        retryBtn.textContent = '↺';
-        retryBtn.onclick = async e => {
-          e.stopPropagation();
-          if (!confirm(`Move "${plan.title || plan.doc_id}" back to Inbox to edit and re-run?`)) return;
-          retryBtn.disabled = true; retryBtn.textContent = '…';
-          try {
-            const r = await fetch(`/api/plans/${encodeURIComponent(plan.doc_id)}/recover`, { method: 'POST', headers: Auth.getHeaders() });
-            if (!r.ok) {
-              const err = await r.json().catch(() => ({}));
-              throw new Error(err.detail || `Server error ${r.status}`);
-            }
-            await loadPlans();
-            openPlanEditor(plan.doc_id, null);
-          } catch (err) {
-            alert(`Could not recover plan: ${err.message}`);
-            retryBtn.disabled = false; retryBtn.textContent = '↺';
-          }
-        };
-        row.appendChild(retryBtn);
-      }
-      // Delete button — both inbox and outbox
-      const delBtn = document.createElement('button');
-      delBtn.className = 'shrink-0 px-1 py-0.5 rounded text-slate-600 hover:text-red-400 hover:bg-red-950/40 text-xs transition-colors';
-      delBtn.title = 'Delete this plan (a version backup is saved first)';
-      delBtn.textContent = '×';
-      delBtn.onclick = async e => {
-        e.stopPropagation();
-        const label = plan.title && plan.title !== '(untitled)' ? plan.title : plan.doc_id;
-        if (!confirm(`Delete "${label}"?\n\nA backup version will be saved first.`)) return;
-        delBtn.disabled = true;
-        try {
-          await fetch(`/api/plans/${encodeURIComponent(plan.doc_id)}`, {
-            method: 'DELETE', headers: Auth.getHeaders(),
-          });
-          loadPlans();
-        } catch (err) {
-          delBtn.disabled = false;
-        }
-      };
-      row.appendChild(delBtn);
-      el.appendChild(row);
-    });
+    items.forEach(plan => el.appendChild(makeRow(plan, folder)));
   };
-  renderGroup(inbox, 'inbox');
-  renderGroup(outbox, 'outbox');
+
+  renderGroup(inbox, 'inbox', 'Inbox');
+  renderGroup(outbox, 'outbox', 'Outbox');
+
+  if (trash.length) {
+    const hdr = document.createElement('div');
+    hdr.className = 'px-2 pt-1 flex items-center gap-1 cursor-pointer text-slate-600 uppercase text-xs font-semibold tracking-wider hover:text-slate-400';
+    hdr.textContent = `${_trashExpanded ? '▾' : '▸'} Trash (${trash.length})`;
+    hdr.onclick = () => { _trashExpanded = !_trashExpanded; loadPlans(); };
+    el.appendChild(hdr);
+    if (_trashExpanded) {
+      trash.forEach(plan => el.appendChild(makeRow(plan, 'trash')));
+    }
+  }
 }
 
 async function restorePlan(doc_id, folder, title) {
@@ -780,6 +952,15 @@ function setIntent(btn) {
   document.querySelectorAll('.intent-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   selectedIntent = btn.dataset.intent;
+}
+
+// ── Sidebar tab switcher ───────────────────────────────────────────────────────
+function setSidebarTab(name) {
+  document.querySelectorAll('.sidebar-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  ['reports', 'plans', 'recent'].forEach(t => {
+    document.getElementById('sidebar-' + t).classList.toggle('hidden', t !== name);
+  });
+  localStorage.setItem('ea_sidebar_tab', name);
 }
 
 // ── Send / query ───────────────────────────────────────────────────────────────
@@ -940,6 +1121,10 @@ async function submitQuery(query, extra = {}) {
   const isClarify = qtype === 'clarification';
   const candidates = result.candidates || [];
 
+  if (isClarify && result.clarification_type === 'intent_choice') {
+    renderIntentClarification(result.response, candidates, result.candidate_intents || [], query);
+    return;
+  }
   if (isClarify && candidates.length) {
     renderClarification(result.response, candidates);
     pendingClarification = { candidates };
@@ -980,6 +1165,7 @@ function _applyQueryResult(query, result, wrap) {
   if (_activeDraftId) {
     sessionStorage.setItem('ea_active_draft', _activeDraftId);
     PlanCanvas.open(_activeDraftId);
+    setSidebarTab('plans');
   } else {
     sessionStorage.removeItem('ea_active_draft');
     // Don't close canvas on plan_executed — user may want to see what was executed
@@ -993,7 +1179,12 @@ function _applyQueryResult(query, result, wrap) {
     badge.style.color = intent.color || '#64748b';
   }
 
-  // If disambiguation, render as buttons
+  // If Python-vs-DrE intent choice, render dedicated buttons
+  if (isClarify && result.clarification_type === 'intent_choice') {
+    renderIntentClarification(result.response, candidates, result.candidate_intents || [], query);
+    return;
+  }
+  // If report disambiguation, render as numbered buttons
   if (isClarify && candidates.length) {
     renderClarification(result.response, candidates);
     pendingClarification = { candidates };
@@ -1004,6 +1195,11 @@ function _applyQueryResult(query, result, wrap) {
   // Refresh plan sidebar after any plan lifecycle event
   if (qtype === 'plan' || qtype === 'plan_executed' || qtype === 'plan_validated') loadPlans();
   if (isPlanQA) { loadDrafts(); if (_activeDraftId) PlanCanvas.refresh(_activeDraftId); }
+
+  // Dr.Egeria template → offer to start a plan
+  if (result.clarification_type === 'plan_offer') {
+    renderPlanOffer(result.original_query || query, wrap);
+  }
 
   // Plan Document banner — shown when the agent saved a new plan to inbox/
   if (qtype === 'plan' && result.doc_id) {
@@ -1160,6 +1356,77 @@ function renderClarification(mdText, candidates) {
   messages.scrollTop = messages.scrollHeight;
 }
 
+// ── Intent-choice clarification (Python vs Dr.Egeria) ─────────────────────────
+function renderIntentClarification(mdText, labels, intents, originalQuery) {
+  const messages = document.getElementById('messages');
+  const wrap = document.createElement('div');
+  wrap.className = 'msg-clarify pl-3 pr-2 py-2 rounded-r-lg bg-slate-800/60';
+
+  const header = document.createElement('div');
+  header.className = 'text-xs font-semibold mb-1 text-amber-400';
+  header.textContent = 'Assistant · how would you like to proceed?';
+  wrap.appendChild(header);
+
+  const body = document.createElement('div');
+  body.className = 'prose prose-invert text-sm text-slate-200 max-w-none mb-2';
+  body.innerHTML = marked.parse(mdText);
+  wrap.appendChild(body);
+
+  const btnRow = document.createElement('div');
+  btnRow.className = 'flex flex-wrap gap-2';
+
+  const STYLES = [
+    'border-cyan-700 bg-cyan-900/40 text-cyan-300 hover:bg-cyan-800/60',   // Python
+    'border-violet-700 bg-violet-900/40 text-violet-300 hover:bg-violet-800/60', // Dr.Egeria
+  ];
+
+  labels.forEach((label, i) => {
+    const intent = intents[i] || 'code_search';
+    const btn = document.createElement('button');
+    btn.className = 'px-4 py-1.5 rounded text-sm font-medium transition-colors border ' +
+      (STYLES[i] || STYLES[0]);
+    btn.textContent = label;
+    btn.onclick = () => {
+      wrap.querySelectorAll('button').forEach(b => b.disabled = true);
+      appendMessage('you', label);
+      submitQuery(originalQuery, { intent_override: intent });
+    };
+    btnRow.appendChild(btn);
+  });
+
+  wrap.appendChild(btnRow);
+  messages.appendChild(wrap);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function renderPlanOffer(originalQuery, wrap) {
+  const offer = document.createElement('div');
+  offer.className = 'mt-3 px-3 py-2 rounded bg-violet-950/60 border border-violet-700/50 text-xs flex items-center gap-3';
+
+  const msg = document.createElement('span');
+  msg.className = 'text-slate-300 flex-1';
+  msg.innerHTML = '<span class="text-violet-300 font-semibold">Would you like to create a Dr.Egeria plan</span> using this template?';
+  offer.appendChild(msg);
+
+  const yesBtn = document.createElement('button');
+  yesBtn.className = 'px-3 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold shrink-0 transition-colors';
+  yesBtn.textContent = 'Yes, start a plan';
+  yesBtn.onclick = () => {
+    offer.remove();
+    appendMessage('you', 'Yes, start a plan');
+    submitQuery(originalQuery, { intent_override: 'plan' });
+  };
+  offer.appendChild(yesBtn);
+
+  const noBtn = document.createElement('button');
+  noBtn.className = 'px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs font-semibold shrink-0 transition-colors';
+  noBtn.textContent = 'No thanks';
+  noBtn.onclick = () => offer.remove();
+  offer.appendChild(noBtn);
+
+  wrap.appendChild(offer);
+}
+
 function clearClarification() {
   pendingClarification = null;
   document.getElementById('clarify-hint').classList.add('hidden');
@@ -1184,7 +1451,7 @@ function appendMessage(role, text, opts = {}) {
   wrap.appendChild(header);
 
   const body = document.createElement('div');
-  body.className = 'prose prose-invert text-sm text-slate-200 max-w-none';
+  body.className = 'msg-body prose prose-invert text-sm text-slate-200 max-w-none';
   body.innerHTML = marked.parse(preprocessMarkdown(text));
   wrap.appendChild(body);
   // Render Mermaid diagrams inside this message
@@ -1242,73 +1509,6 @@ function setThinking(on) {
   document.getElementById('thinking').classList.toggle('hidden', !on);
   document.getElementById('send-btn').disabled = on;
   document.getElementById('send-btn').classList.toggle('opacity-50', on);
-}
-
-// ── Sidebar resize ─────────────────────────────────────────────────────────────
-function initSidebarResize() {
-  const panePlans  = document.getElementById('sidebar-plans');
-  const paneRecent = document.getElementById('sidebar-recent');
-  const sidebar    = panePlans.closest('aside');
-
-  const MIN_H = 48; // minimum pane height in px
-
-  function sidebarH() { return sidebar.clientHeight; }
-
-  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
-
-  // Load or initialise heights
-  let planH   = parseInt(localStorage.getItem('ea_sidebar_plan_h'))   || 0;
-  let recentH = parseInt(localStorage.getItem('ea_sidebar_recent_h')) || 0;
-
-  function applyHeights() {
-    const total = sidebarH();
-    if (!planH)   planH   = Math.round(total * 0.30);
-    if (!recentH) recentH = Math.round(total * 0.18);
-    panePlans.style.height  = planH   + 'px';
-    paneRecent.style.height = recentH + 'px';
-  }
-
-  function saveHeights() {
-    localStorage.setItem('ea_sidebar_plan_h',   planH);
-    localStorage.setItem('ea_sidebar_recent_h', recentH);
-  }
-
-  applyHeights();
-
-  function startDrag(e, handle) {
-    e.preventDefault();
-    handle.classList.add('dragging');
-    const startY       = e.clientY;
-    const startPlanH   = planH;
-    const startRecentH = recentH;
-
-    function onMove(ev) {
-      const dy = ev.clientY - startY;
-      if (handle.id === 'resize-reports-plans') {
-        // Handle is above Plans pane: dragging UP means Plans grows (dy is negative → negate).
-        planH = clamp(startPlanH - dy, MIN_H, sidebarH() - recentH - MIN_H - 10);
-      } else {
-        // Moving this handle redistributes between Plans and Recent.
-        const poolH = startPlanH + startRecentH;
-        planH   = clamp(startPlanH + dy,       MIN_H, poolH - MIN_H);
-        recentH = poolH - planH;
-      }
-      applyHeights();
-    }
-
-    function onUp() {
-      handle.classList.remove('dragging');
-      saveHeights();
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup',   onUp);
-    }
-
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup',   onUp);
-  }
-
-  document.getElementById('resize-reports-plans').addEventListener('mousedown', e => startDrag(e, document.getElementById('resize-reports-plans')));
-  document.getElementById('resize-plans-recent').addEventListener('mousedown',  e => startDrag(e, document.getElementById('resize-plans-recent')));
 }
 
 // ── Left sidebar resize (horizontal, ew-resize) ────────────────────────────────
@@ -1441,18 +1641,52 @@ function initCanvasResize() {
   });
 }
 
-// ── Builder modal ──────────────────────────────────────────────────────────────
+// ── Title prompt modal — shared by Builder (new plan) and Fork (copy plan) ──────
+let _titleModalMode = 'builder';   // 'builder' | 'fork'
+let _titleModalCtx  = null;        // fork context: { doc_id, version_file }
+
 function openBuilderModal() {
+  _titleModalMode = 'builder';
+  _titleModalCtx  = null;
+  document.getElementById('builder-title-modal-heading').textContent = 'New Plan (Builder)';
+  document.getElementById('builder-title-modal-desc').textContent =
+    'Give your plan a title, then browse and add Dr.Egeria commands directly from the canvas.';
+  document.getElementById('builder-title-modal-submit').textContent = 'Create Plan';
+  document.getElementById('builder-title-input').value = '';
   document.getElementById('builder-title-modal').classList.remove('hidden');
   setTimeout(() => document.getElementById('builder-title-input').focus(), 50);
 }
+
+function openForkModal(doc_id, version_file, defaultTitle) {
+  _titleModalMode = 'fork';
+  _titleModalCtx  = { doc_id, version_file };
+  document.getElementById('builder-title-modal-heading').textContent = 'Fork as New Plan';
+  document.getElementById('builder-title-modal-desc').textContent =
+    'Creates an independent plan seeded from this one. Objects it already created ' +
+    '(by Qualified Name / GUID) are carried forward for reference — editing the fork never changes the original.';
+  document.getElementById('builder-title-modal-submit').textContent = 'Fork';
+  const input = document.getElementById('builder-title-input');
+  input.value = defaultTitle ? `${defaultTitle} (copy)` : '';
+  document.getElementById('builder-title-modal').classList.remove('hidden');
+  setTimeout(() => { input.focus(); input.select(); }, 50);
+}
+
 function closeBuilderModal() {
   document.getElementById('builder-title-modal').classList.add('hidden');
   document.getElementById('builder-title-input').value = '';
 }
-async function createBuilderPlan() {
+
+async function submitTitleModal() {
   const title = document.getElementById('builder-title-input').value.trim();
   if (!title) return;
+  if (_titleModalMode === 'fork') {
+    await _doFork(title);
+  } else {
+    await createBuilderPlan(title);
+  }
+}
+
+async function createBuilderPlan(title) {
   closeBuilderModal();
   try {
     const r = await fetch('/api/drafts/builder', {
@@ -1464,6 +1698,7 @@ async function createBuilderPlan() {
     _activeDraftId = spec.draft_id;
     sessionStorage.setItem('ea_active_draft', _activeDraftId);
     PlanCanvas.open(_activeDraftId);
+    setSidebarTab('plans');
     loadDrafts();
     appendMessage('assistant',
       `**${title}** — plan canvas is open. Use **+ Add step** to browse and add ` +
@@ -1471,6 +1706,64 @@ async function createBuilderPlan() {
     );
   } catch (e) {
     appendMessage('assistant', 'Could not create builder plan: ' + e.message);
+  }
+}
+
+async function _doFork(title) {
+  const ctx = _titleModalCtx;
+  closeBuilderModal();
+  try {
+    const r = await fetch(`/api/plans/${encodeURIComponent(ctx.doc_id)}/fork`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      body: JSON.stringify({ title, version_file: ctx.version_file || null }),
+    });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
+    const result = await r.json();
+    await loadPlans();
+    openPlanEditor(result.doc_id, null);
+    _showToast(`Forked as "${title}" — opened in the editor.`);
+  } catch (e) {
+    alert(`Could not fork plan: ${e.message}`);
+  }
+}
+
+// ── Import Plan modal ─────────────────────────────────────────────────────────
+function openImportModal() {
+  document.getElementById('import-content-input').value = '';
+  document.getElementById('import-title-input').value = '';
+  document.getElementById('import-file-input').value = '';
+  document.getElementById('import-plan-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('import-content-input').focus(), 50);
+}
+function closeImportModal() {
+  document.getElementById('import-plan-modal').classList.add('hidden');
+}
+function _handleImportFileChosen(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => { document.getElementById('import-content-input').value = reader.result; };
+  reader.readAsText(file);
+}
+async function submitImportPlan() {
+  const content = document.getElementById('import-content-input').value.trim();
+  if (!content) return;
+  const title = document.getElementById('import-title-input').value.trim() || null;
+  closeImportModal();
+  try {
+    const r = await fetch('/api/plans/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      body: JSON.stringify({ content, title }),
+    });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
+    const result = await r.json();
+    await loadPlans();
+    openPlanEditor(result.doc_id, null);
+    _showToast('Plan imported — review and Validate before executing.');
+  } catch (e) {
+    alert(`Could not import plan: ${e.message}`);
   }
 }
 
@@ -1613,6 +1906,11 @@ function _esc(s) {
       class="px-3 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition-colors disabled:opacity-40">
       ▶ Execute
     </button>
+    <button onclick="window.open(`/api/plans/${encodeURIComponent(_ped.doc_id)}/export`, '_blank')"
+      class="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 text-xs font-semibold transition-colors"
+      title="Download this plan as a markdown file">
+      ⤓ Export
+    </button>
     <button onclick="closePlanEditor()"
       class="ml-2 px-2 py-1 rounded hover:bg-slate-700 text-slate-400 hover:text-slate-100 text-sm transition-colors">
       ✕
@@ -1623,12 +1921,16 @@ function _esc(s) {
   <div id="ped-status-bar" class="px-4 py-1 text-xs text-slate-500 bg-slate-900 border-b border-slate-800 shrink-0"></div>
 
   <!-- Recovery bar — only visible for outbox plans -->
-  <div id="ped-recovery-bar" class="hidden shrink-0 px-4 py-2 bg-amber-950/60 border-b border-amber-800/50 flex items-center gap-3 text-xs text-amber-200">
-    <span class="font-semibold">⚠ This plan is in the Outbox (read-only).</span>
-    <span class="text-amber-400/70">Edit &amp; re-run, or restore an earlier version:</span>
+  <div id="ped-recovery-bar" class="hidden shrink-0 px-4 py-2 bg-slate-800/60 border-b border-slate-700/50 flex items-center gap-3 text-xs text-slate-300">
+    <span class="font-semibold">This plan has been executed.</span>
+    <span class="text-slate-400">Re-run it as-is, edit it first, or fork it to build on what it created:</span>
+    <button onclick="pedRerunNow()"
+      class="px-3 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white font-semibold transition-colors">
+      ▶ Re-run Now
+    </button>
     <button onclick="pedRecoverForEditing()"
-      class="px-3 py-1 rounded bg-amber-700 hover:bg-amber-600 text-white font-semibold transition-colors">
-      Recover for Editing
+      class="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 font-semibold transition-colors">
+      ✏ Edit &amp; Re-run
     </button>
     <button onclick="pedShowVersionHistory()"
       class="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 font-semibold transition-colors">
@@ -1739,8 +2041,8 @@ function _esc(s) {
   </div>
 </div>
 
-<script src="/static/artifact_canvas.js?v=20260615f"></script>
-<script src="/static/plan_canvas.js?v=20260615f"></script>
-<script src="/static/plan_editor.js?v=20260615f"></script>
+<script src="/static/artifact_canvas.js?v=20260616c"></script>
+<script src="/static/plan_canvas.js?v=20260616c"></script>
+<script src="/static/plan_editor.js?v=20260616c"></script>
 </body>
 </html>

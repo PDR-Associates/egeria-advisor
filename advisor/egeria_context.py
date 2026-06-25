@@ -62,7 +62,9 @@ class EgeriaContext:
         self._project_mgr = None
         self._gov_officer = None
         self._glossary_mgr = None
+        self._automated_curation_client = None
         self._zone_cache: list[str] | None = None
+        self._tech_type_cache: list[str] | None = None
 
     # ── Connection ─────────────────────────────────────────────────────────────
 
@@ -150,6 +152,15 @@ class EgeriaContext:
                 self._glossary_mgr = False
         return self._glossary_mgr or None
 
+    def _automated_curation(self):
+        if self._automated_curation_client is None:
+            try:
+                from pyegeria.omvs.automated_curation import AutomatedCuration
+                self._automated_curation_client = self._make_client(AutomatedCuration) or False
+            except ImportError:
+                self._automated_curation_client = False
+        return self._automated_curation_client or None
+
     # ── Public API ─────────────────────────────────────────────────────────────
 
     def find_actor_by_name(self, name: str) -> dict | None:
@@ -211,6 +222,39 @@ class EgeriaContext:
         except Exception as exc:
             logger.debug(f"EgeriaContext.list_governance_zones: {exc}")
             self._zone_cache = []
+            return []
+
+    def list_technology_types(self) -> list[str]:
+        """
+        Return all Egeria Technology Type display names as a list of strings.
+        Backs the "Planned Deployed Implementation Type" attribute on Create
+        Solution Component (and similar) — a different live source than
+        generic ValidValueDefinitions.
+        Cached for the lifetime of this instance. Returns [] if Egeria is unreachable.
+        """
+        if self._tech_type_cache is not None:
+            return self._tech_type_cache
+
+        client = self._automated_curation()
+        if not client:
+            self._tech_type_cache = []
+            return []
+        try:
+            results = client.get_all_technology_types(output_format="JSON")
+            if not isinstance(results, list):
+                self._tech_type_cache = []
+                return []
+            names = sorted({
+                item.get("displayName")
+                for item in results
+                if isinstance(item, dict) and item.get("displayName")
+            })
+            self._tech_type_cache = names
+            logger.debug(f"EgeriaContext: found {len(names)} technology type(s)")
+            return names
+        except Exception as exc:
+            logger.debug(f"EgeriaContext.list_technology_types: {exc}")
+            self._tech_type_cache = []
             return []
 
     def find_project_by_name(self, name: str) -> dict | None:

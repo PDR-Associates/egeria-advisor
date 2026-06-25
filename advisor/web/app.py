@@ -17,7 +17,9 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, Request
+from datetime import datetime
+
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -153,8 +155,71 @@ def _is_dre(name: str) -> bool:
     return "-dre-" in name.lower()
 
 
+# Canonical, ordered set of browser-renderable output formats. `value` is the
+# token sent to pyegeria (via the fmt:'<value>' query tag); `label` is shown in
+# the picker. A spec's declared `formats[].types` are intersected with this set
+# (and `ALL` expands to all of it) to build a spec-aware dropdown.
+_BROWSER_FORMATS: List[tuple] = [
+    ("LIST",    "List — compact Markdown table"),
+    ("TABLE",   "Table — structured data table"),
+    ("REPORT",  "Report — full narrative (Mermaid, graphs)"),
+    ("FORM",    "Form — Dr.Egeria editable form"),
+    ("MERMAID", "Diagram — Mermaid graph"),
+    ("HTML",    "HTML — rendered page"),
+    ("MD",      "Markdown — simple"),
+    ("DICT",    "Dict — materialized properties"),
+    ("JSON",    "JSON — raw Egeria response"),
+]
+_BROWSER_FORMAT_VALUES = [v for v, _ in _BROWSER_FORMATS]
+
+
+def _spec_supported_formats(name: str) -> List[str]:
+    """Return the browser-renderable output formats a spec supports, in canonical
+    order. Reads the in-process pyegeria registry; `ALL` expands to every browser
+    format. Falls back to a safe default if the spec/registry is unavailable."""
+    try:
+        from pyegeria.view.base_report_formats import get_report_registry
+        fs = get_report_registry().get(name)
+        if fs is None:
+            return list(_BROWSER_FORMAT_VALUES)
+        declared = {
+            t.upper()
+            for fmt in (getattr(fs, "formats", []) or [])
+            for t in (getattr(fmt, "types", []) or [])
+        }
+        if "ALL" in declared:
+            return list(_BROWSER_FORMAT_VALUES)
+        supported = [v for v in _BROWSER_FORMAT_VALUES if v in declared]
+        # Always offer at least DICT so the report is runnable from the picker.
+        return supported or ["DICT"]
+    except Exception as exc:
+        logger.debug(f"_spec_supported_formats({name}) failed: {exc}")
+        return list(_BROWSER_FORMAT_VALUES)
+
+
+def _catalog_formats(catalog: Dict[str, List[str]]) -> Dict[str, List[str]]:
+    """Build {spec_name: [supported formats]} for every spec in the catalog."""
+    formats: Dict[str, List[str]] = {}
+    for names in catalog.values():
+        for name in names:
+            formats[name] = _spec_supported_formats(name)
+    return formats
+
+
+def _is_runnable_spec(name: str) -> bool:
+    """Return True if the spec has an action (can be executed standalone)."""
+    try:
+        from pyegeria.view.base_report_formats import get_report_registry
+        spec = get_report_registry().get(name)
+        if spec is None:
+            return True  # unknown to registry — assume runnable, let executor decide
+        return getattr(spec, "action", None) is not None
+    except Exception:
+        return True  # registry unavailable — assume runnable
+
+
 def _load_report_catalog(include_dre: bool = False) -> Dict[str, List[str]]:
-    """Return {topic: [spec_name, ...]} from spec JSON files."""
+    """Return {topic: [spec_name, ...]} from spec JSON files, runnable specs only."""
     catalog: Dict[str, List[str]] = {}
     seen: set = set()
     for path in _SPEC_FILES:
@@ -167,6 +232,8 @@ def _load_report_catalog(include_dre: bool = False) -> Dict[str, List[str]]:
                     continue
                 seen.add(name)
                 if not include_dre and _is_dre(name):
+                    continue
+                if not _is_runnable_spec(name):
                     continue
                 topic = _topic_for(name)
                 catalog.setdefault(topic, []).append(name)
@@ -393,7 +460,14 @@ async def list_reports(include_dre: bool = False) -> Dict[str, Any]:
     """Return the report spec catalog grouped by topic."""
     catalog = _load_report_catalog(include_dre=include_dre)
     total = sum(len(v) for v in catalog.values())
-    return {"catalog": catalog, "total": total, "include_dre": include_dre}
+    formats = _catalog_formats(catalog)
+    return {
+        "catalog": catalog,
+        "formats": formats,
+        "format_labels": dict(_BROWSER_FORMATS),
+        "total": total,
+        "include_dre": include_dre,
+    }
 
 
 @app.get("/api/status")
@@ -419,14 +493,36 @@ async def system_status() -> Dict[str, Any]:
     return {"mcp_servers": mcp_status, "rag": "ok"}
 
 
+@app.post("/api/plans/import")
+async def import_plan(body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Import an externally-written Dr.Egeria/LGCI markdown document as a new
+    managed plan in inbox. Detects whether the content is already LGCI-structured
+    or a bare Dr.Egeria command file and wraps the latter automatically.
+    """
+    from advisor.governance_docs import get_doc_manager
+    from fastapi import HTTPException
+    content = (body.get("content") or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content required")
+    title = (body.get("title") or "").strip() or None
+    dm = get_doc_manager()
+    try:
+        doc_id = dm.import_document(content, title=title)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"status": "ok", "doc_id": doc_id, "folder": "inbox"}
+
+
 @app.get("/api/plans")
 async def list_plans() -> Dict[str, Any]:
-    """Return inbox and outbox plan document lists, annotated with active draft IDs."""
+    """Return inbox, outbox, and trash plan document lists, annotated with active draft IDs."""
     from advisor.governance_docs import get_doc_manager
     from advisor.governance_draft import get_draft_manager
     dm = get_doc_manager()
     inbox = dm.list_inbox()
     outbox = dm.list_outbox()
+    trash = dm.list_trash()
 
     # Build doc_id → draft_id map for plans that have an active refine/generate draft
     doc_to_draft: Dict[str, str] = {}
@@ -437,20 +533,79 @@ async def list_plans() -> Dict[str, Any]:
     for entry in inbox:
         entry["draft_id"] = doc_to_draft.get(entry.get("doc_id"))
 
-    return {"inbox": inbox, "outbox": outbox}
+    return {"inbox": inbox, "outbox": outbox, "trash": trash}
 
 
 @app.get("/api/plans/{doc_id}")
 async def get_plan(doc_id: str) -> Dict[str, Any]:
-    """Return the content of a plan document by doc_id."""
+    """Return the content of a plan document by doc_id (inbox, outbox, or trash)."""
+    from fastapi import HTTPException
+    from advisor.governance_docs import get_doc_manager
+    dm = get_doc_manager()
+    content = dm.load(doc_id, include_trash=True)
+    if content is None:
+        raise HTTPException(status_code=404, detail=f"Plan {doc_id!r} not found")
+    folder = dm.folder_of(doc_id) or "outbox"
+    return {"doc_id": doc_id, "content": content, "folder": folder}
+
+
+@app.get("/api/plans/{doc_id}/export")
+async def export_plan(doc_id: str) -> Response:
+    """Download the full current content of a plan document (inbox or outbox)."""
     from fastapi import HTTPException
     from advisor.governance_docs import get_doc_manager
     dm = get_doc_manager()
     content = dm.load(doc_id)
     if content is None:
         raise HTTPException(status_code=404, detail=f"Plan {doc_id!r} not found")
-    folder = "inbox" if (dm.inbox_path() / f"{doc_id}.md").exists() else "outbox"
-    return {"doc_id": doc_id, "content": content, "folder": folder}
+    return Response(
+        content=content,
+        media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="{doc_id}.md"'},
+    )
+
+
+@app.get("/api/plans/{doc_id}/report-export")
+async def export_plan_report(doc_id: str) -> Response:
+    """
+    Download just the report content (Mermaid diagrams, result tables) extracted
+    from an executed plan's Dr.Egeria output — shareable independent of the plan
+    that produced it.
+    """
+    from fastapi import HTTPException
+    from advisor.governance_docs import get_doc_manager, DocumentManager
+    from advisor.agents.outcome_reporter import _extract_report_sections
+
+    dm = get_doc_manager()
+    content = dm.load_outbox(doc_id)
+    if content is None:
+        raise HTTPException(status_code=404, detail=f"Plan {doc_id!r} not found in outbox")
+
+    # The raw Dr.Egeria output lives inside the collapsible "## Dr.Egeria Execution
+    # Output" section appended by GovernancePlanAgent.execute() — pull it out.
+    m = re.search(
+        r'<summary>.*?</summary>\n\n(.*?)\n\n</details>',
+        content, re.DOTALL,
+    )
+    raw_output = m.group(1) if m else content
+    report_md = _extract_report_sections(raw_output)
+    if not report_md:
+        raise HTTPException(
+            status_code=404,
+            detail="No extractable report content (Mermaid diagram or result table) found in this plan's output",
+        )
+
+    title = DocumentManager._extract_title(content)
+    final = (
+        f"# {title} — Report\n\n"
+        f"*Generated from plan `{doc_id}` on {datetime.now().strftime('%Y-%m-%d %H:%M')}*\n\n"
+        f"{report_md}\n"
+    )
+    return Response(
+        content=final,
+        media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="{doc_id}_report.md"'},
+    )
 
 
 @app.put("/api/plans/{doc_id}")
@@ -490,6 +645,20 @@ async def retry_plan(doc_id: str) -> Dict[str, Any]:
     return result
 
 
+@app.post("/api/plans/{doc_id}/rerun")
+async def rerun_plan(doc_id: str) -> Dict[str, Any]:
+    """
+    Re-execute an outbox plan directly, in place — no inbox detour.
+    Appends a new "## Outcome (Run N)" section to the same outbox document.
+    """
+    from advisor.agents.governance_plan_agent import get_governance_plan_agent
+    agent = get_governance_plan_agent()
+    result = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: agent.execute(doc_id, source_folder="outbox")
+    )
+    return result
+
+
 @app.post("/api/plans/{doc_id}/recover")
 async def recover_plan(doc_id: str) -> Dict[str, Any]:
     """Move an outbox plan back to inbox for editing (does NOT re-execute)."""
@@ -523,16 +692,64 @@ async def restore_plan_version(doc_id: str, version_file: str) -> Dict[str, Any]
     return {"status": "ok", "doc_id": doc_id, "restored_from": version_file}
 
 
+@app.post("/api/plans/{doc_id}/fork")
+async def fork_plan(doc_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Create a new, independent plan seeded from doc_id (or a specific version
+    of it). Known objects (Qualified Name + GUID) from the source's Command
+    Results table are carried forward as a reference appendix.
+    """
+    from advisor.governance_docs import get_doc_manager
+    from fastapi import HTTPException
+    title = (body.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title required")
+    version_file = body.get("version_file") or None
+    dm = get_doc_manager()
+    try:
+        new_doc_id = dm.fork(doc_id, title, version_file=version_file)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return {"status": "ok", "doc_id": new_doc_id, "forked_from": doc_id}
+
+
 @app.delete("/api/plans/{doc_id}")
 async def delete_plan(doc_id: str) -> Dict[str, Any]:
-    """Delete a plan document from inbox or outbox (saves a version first)."""
+    """Move a plan document from inbox or outbox to trash (saves a version first). Reversible."""
     from advisor.governance_docs import get_doc_manager
     from fastapi import HTTPException
     dm = get_doc_manager()
     ok = dm.delete(doc_id)
     if not ok:
         raise HTTPException(status_code=404, detail=f"Plan {doc_id!r} not found")
-    return {"status": "deleted", "doc_id": doc_id}
+    return {"status": "trashed", "doc_id": doc_id}
+
+
+@app.post("/api/plans/{doc_id}/restore-trash")
+async def restore_plan_from_trash(doc_id: str) -> Dict[str, Any]:
+    """Restore a plan document from trash back to inbox."""
+    from advisor.governance_docs import get_doc_manager
+    from fastapi import HTTPException
+    dm = get_doc_manager()
+    ok = dm.restore_from_trash(doc_id)
+    if not ok:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Plan {doc_id!r} not in trash, or already exists in inbox",
+        )
+    return {"status": "restored", "doc_id": doc_id}
+
+
+@app.delete("/api/plans/{doc_id}/purge")
+async def purge_plan(doc_id: str) -> Dict[str, Any]:
+    """Permanently delete a plan document from trash. Version history is preserved."""
+    from advisor.governance_docs import get_doc_manager
+    from fastapi import HTTPException
+    dm = get_doc_manager()
+    ok = dm.purge(doc_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Plan {doc_id!r} not in trash")
+    return {"status": "purged", "doc_id": doc_id}
 
 
 @app.get("/api/drafts")
@@ -695,6 +912,7 @@ async def get_template_fields(command_name: str, level: str = "basic") -> Dict[s
 
     # Enrich valid_values for known field patterns with live Egeria data
     zone_values: list[str] = []
+    tech_type_values: list[str] = []
     for a in template["attributes"]:
         name_low = a["name"].lower()
         if not a.get("valid_values") and "zone" in name_low:
@@ -706,6 +924,15 @@ async def get_template_fields(command_name: str, level: str = "basic") -> Dict[s
                     pass
             if zone_values:
                 a["valid_values"] = zone_values
+        elif not a.get("valid_values") and "deployed implementation type" in name_low:
+            if not tech_type_values:
+                try:
+                    from advisor.egeria_context import EgeriaContext
+                    tech_type_values = EgeriaContext().list_technology_types()
+                except Exception:
+                    pass
+            if tech_type_values:
+                a["valid_values"] = tech_type_values
 
     return {
         "level": level,

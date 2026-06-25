@@ -364,16 +364,19 @@ class GovernancePlanAgent:
         doc_id: str,
         perspective: str | None = None,
         dry_run: bool = False,
+        source_folder: str = "inbox",
     ) -> Dict[str, Any]:
         """
         Execute an approved plan document and append the outcome section.
 
         Steps:
-          1. Load document from inbox
+          1. Load document from source_folder ("inbox" — normal first execution;
+             "outbox" — Re-run Now, re-executing an already-executed plan in place)
           2. Extract the Command Sequence section
           3. Submit to Dr.Egeria via DrEgeriaActionAgent.execute()
           4. Run OutcomeReporter to produce outcome section
-          5. Move document to outbox with outcome appended
+          5. inbox source: move document to outbox with outcome appended
+             outbox source: append a new "## Outcome (Run N)" section in place
 
         Returns a standard result dict with query_type="plan_executed".
         """
@@ -382,13 +385,15 @@ class GovernancePlanAgent:
         from advisor.agents.outcome_reporter import get_outcome_reporter
 
         doc_manager = get_doc_manager()
-        plan_content = doc_manager.load(doc_id)
+        plan_content = (
+            doc_manager.load_outbox(doc_id) if source_folder == "outbox"
+            else doc_manager.load(doc_id)
+        )
 
         if not plan_content:
             return _error_result(
                 doc_id,
-                f"Plan document `{doc_id}` not found in inbox. "
-                f"It may have already been executed or archived.",
+                f"Plan document `{doc_id}` not found in {source_folder}.",
             )
 
         # Extract the Command Sequence section for execution
@@ -472,14 +477,22 @@ class GovernancePlanAgent:
         # This contains the augmented plan markdown, View Report output, and Mermaid diagrams.
         raw_section = _build_raw_output_section(ex_output or execution_output)
 
-        # Move to outbox with outcome + raw output appended
-        moved = doc_manager.move_to_outbox(doc_id, outcome_md + "\n\n" + raw_section)
-        if moved:
-            logger.info(f"GovernancePlanAgent.execute: moved {doc_id} to outbox")
+        # inbox source: move to outbox with outcome + raw output appended.
+        # outbox source (Re-run Now): append a new run's outcome in place.
+        if source_folder == "outbox":
+            moved = doc_manager.append_rerun_outcome(doc_id, outcome_md + "\n\n" + raw_section)
+            if moved:
+                logger.info(f"GovernancePlanAgent.execute: appended re-run outcome to {doc_id}")
+            else:
+                logger.warning(f"GovernancePlanAgent.execute: could not append re-run outcome to {doc_id}")
         else:
-            logger.warning(
-                f"GovernancePlanAgent.execute: could not move {doc_id} to outbox"
-            )
+            moved = doc_manager.move_to_outbox(doc_id, outcome_md + "\n\n" + raw_section)
+            if moved:
+                logger.info(f"GovernancePlanAgent.execute: moved {doc_id} to outbox")
+            else:
+                logger.warning(
+                    f"GovernancePlanAgent.execute: could not move {doc_id} to outbox"
+                )
 
         status_line = self._extract_status_from_outcome(outcome_md)
 

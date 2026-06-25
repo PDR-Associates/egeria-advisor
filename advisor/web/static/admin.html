@@ -697,6 +697,8 @@ function _triageCls(status) {
 async function loadFeedbackReview() {
   const el = document.getElementById('fb-review-body');
   if (!el) return;
+  // Don't rebuild while the user is editing a textarea — the refresh would wipe their text.
+  if (el.contains(document.activeElement) && document.activeElement.tagName === 'TEXTAREA') return;
   let records = [];
   try {
     const r = await fetch('/api/feedback/extended');

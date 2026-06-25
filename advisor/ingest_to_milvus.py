@@ -506,15 +506,29 @@ class CodeIngester:
             Tuple of (files_processed, chunks_created, entity_ids)
         """
         try:
-            # Check if this is a Python file - if so, extract code structure
             if file_path.suffix == '.py':
                 return self._ingest_python_file(file_path)
+            elif file_path.suffix == '.java':
+                result = self._ingest_text_file(file_path)
+                # Also extract symbols into SQLite (text chunks still go to pgvector)
+                self._extract_java_symbols(file_path)
+                return result
             else:
                 return self._ingest_text_file(file_path)
-            
+
         except Exception as e:
             logger.error(f"Error ingesting {file_path}: {e}")
             return 0, 0, []
+
+    def _extract_java_symbols(self, file_path: Path) -> None:
+        try:
+            from advisor.data_prep.java_symbol_extractor import extract_java_symbols
+            from advisor.code_symbol_store import get_symbol_store
+            symbols = extract_java_symbols(file_path)
+            if symbols:
+                get_symbol_store().upsert_symbols(self.collection_name, symbols)
+        except Exception as exc:
+            logger.warning(f"Java symbol extraction failed for {file_path}: {exc}")
     
     def _ingest_python_file(self, file_path: Path) -> Tuple[int, int, List[str]]:
         """
@@ -749,7 +763,7 @@ class CodeIngester:
         logger.info(f"Found {len(files)} files matching {file_pattern}")
 
         # Clear stale symbols for this collection before re-ingesting
-        if file_pattern.endswith(".py"):
+        if file_pattern.endswith((".py", ".java")):
             try:
                 from advisor.code_symbol_store import get_symbol_store
                 get_symbol_store().clear_collection(self.collection_name)

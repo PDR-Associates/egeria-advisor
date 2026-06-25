@@ -329,14 +329,28 @@ class AnalyticsManager:
         # ── Live symbol-store queries (populated at ingest time) ──────────
 
         if ss:
+            import re as _re
+
+            # "largest/biggest class" — check BEFORE generic "classes in" list
+            if any(p in query_lower for p in ("largest class", "biggest class",
+                                               "most methods", "class with most")):
+                rows = ss.largest_classes(collection, limit=10)
+                if not rows:
+                    return "No class data available yet."
+                lines = [f"**Top {len(rows)} largest classes** in {scope}:\n"]
+                for r in rows:
+                    lines.append(
+                        f"- **{r['name']}** — {r['method_count']} methods, "
+                        f"{r.get('loc', 0)} lines ({r['collection']})"
+                    )
+                return "\n".join(lines)
+
             # "what classes are in pyegeria?" / "list classes in pyegeria_cli"
             if any(p in query_lower for p in ("what class", "list class", "show class",
                                                "which class", "classes in", "classes does")):
                 rows = ss.list_classes(collection)
                 return self._format_class_list(rows, scope)
 
-            # "what methods does GlossaryManager have?" / "methods on AssetManager"
-            import re as _re
             # "most complex methods" / "highest complexity" — check BEFORE class-method
             # regex so "most complex methods in pyegeria" doesn't misparse "pyegeria" as a class
             if any(p in query_lower for p in ("most complex", "highest complex",
@@ -364,20 +378,6 @@ class AnalyticsManager:
                 class_name = m.group(1)
                 rows = ss.methods_for_class(class_name, collection)
                 return self._format_method_list(rows, class_name)
-
-            # "largest classes" / "biggest class"
-            if any(p in query_lower for p in ("largest class", "biggest class",
-                                               "most methods", "class with most")):
-                rows = ss.largest_classes(collection, limit=10)
-                if not rows:
-                    return "No class data available yet."
-                lines = [f"**Top {len(rows)} largest classes** in {scope}:\n"]
-                for r in rows:
-                    lines.append(
-                        f"- **{r['name']}** — {r['method_count']} methods, "
-                        f"{r.get('loc', 0)} lines ({r['collection']})"
-                    )
-                return "\n".join(lines)
 
             # "find method X" / "search for symbol X"
             _search_re = _re.compile(

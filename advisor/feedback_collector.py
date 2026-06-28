@@ -168,6 +168,37 @@ class FeedbackCollector:
             # Log to MLflow if available
             self.log_feedback_to_mlflow(entry, sentiment_result)
             
+            # Update query_metrics in Postgres
+            try:
+                from advisor.db_consolidated import get_db_manager
+                db_manager = get_db_manager()
+                success_val = rating != "negative"
+                update_sql = """
+                    UPDATE query_metrics
+                    SET success = %s,
+                        rating = %s,
+                        star_rating = %s,
+                        suggested_collection = %s,
+                        feedback_text = %s
+                    WHERE id = (
+                        SELECT id FROM query_metrics
+                        WHERE query_text = %s
+                        ORDER BY timestamp DESC
+                        LIMIT 1
+                    )
+                """
+                db_manager.execute_update(update_sql, (
+                    success_val,
+                    rating,
+                    star_rating,
+                    suggested_collection,
+                    feedback_text or user_comment,
+                    query
+                ))
+                logger.info(f"Updated query_metrics in Postgres with rating '{rating}' for query: {query[:50]}")
+            except Exception as db_err:
+                logger.warning(f"Failed to update query_metrics in Postgres with feedback: {db_err}")
+            
             logger.info(f"Recorded {rating} feedback for query: {query[:50]}...")
             return True
             
@@ -229,7 +260,7 @@ class FeedbackCollector:
                     if category:
                         if category not in stats["by_category"]:
                             stats["by_category"][category] = {
-                                "total": 0, "positive": 0, "negative": 0, "star_ratings": []
+                                "total": 0, "positive": 0, "neutral": 0, "negative": 0, "star_ratings": []
                             }
                         stats["by_category"][category]["total"] += 1
                         stats["by_category"][category][rating] = \
@@ -241,7 +272,7 @@ class FeedbackCollector:
                     query_type = entry.get("query_type", "unknown")
                     if query_type not in stats["by_query_type"]:
                         stats["by_query_type"][query_type] = {
-                            "total": 0, "positive": 0, "negative": 0
+                            "total": 0, "positive": 0, "neutral": 0, "negative": 0
                         }
                     stats["by_query_type"][query_type]["total"] += 1
                     stats["by_query_type"][query_type][rating] = \
@@ -251,7 +282,7 @@ class FeedbackCollector:
                     for collection in entry.get("collections_searched", []):
                         if collection not in stats["by_collection"]:
                             stats["by_collection"][collection] = {
-                                "total": 0, "positive": 0, "negative": 0
+                                "total": 0, "positive": 0, "neutral": 0, "negative": 0
                             }
                         stats["by_collection"][collection]["total"] += 1
                         stats["by_collection"][collection][rating] = \
@@ -264,26 +295,26 @@ class FeedbackCollector:
                             "searched": entry["collections_searched"],
                             "suggested": entry["suggested_collection"]
                         })
-
+ 
                     # Phase 2: by_perspective
                     persp = entry.get("perspective") or "none"
                     if persp not in stats["by_perspective"]:
-                        stats["by_perspective"][persp] = {"total": 0, "positive": 0, "negative": 0}
+                        stats["by_perspective"][persp] = {"total": 0, "positive": 0, "neutral": 0, "negative": 0}
                     stats["by_perspective"][persp]["total"] += 1
                     stats["by_perspective"][persp][rating] = \
                         stats["by_perspective"][persp].get(rating, 0) + 1
-
+ 
                     # Phase 2: by_routing_agent
                     agent = entry.get("routing_agent") or "unknown"
                     if agent not in stats["by_routing_agent"]:
-                        stats["by_routing_agent"][agent] = {"total": 0, "positive": 0, "negative": 0}
+                        stats["by_routing_agent"][agent] = {"total": 0, "positive": 0, "neutral": 0, "negative": 0}
                     stats["by_routing_agent"][agent]["total"] += 1
                     stats["by_routing_agent"][agent][rating] = \
                         stats["by_routing_agent"][agent].get(rating, 0) + 1
             
-            # Calculate satisfaction rate
+            # Calculate satisfaction rate (weighted: positive = 1.0, neutral = 0.5)
             if stats["total"] > 0:
-                stats["satisfaction_rate"] = stats["positive"] / stats["total"]
+                stats["satisfaction_rate"] = (stats.get("positive", 0) + 0.5 * stats.get("neutral", 0)) / stats["total"]
             else:
                 stats["satisfaction_rate"] = 0.0
             

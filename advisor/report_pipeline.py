@@ -337,11 +337,16 @@ class QuestionSpecIndex:
         Returns [] if nothing exceeds *threshold*.
         """
         self._ensure_built()
-        if self._embeddings is None or not self._entries:
+        with self._lock:
+            embeddings = self._embeddings
+            model = self._model
+            entries = self._entries
+
+        if embeddings is None or model is None or not entries:
             return []
 
-        query_vec = self._model.encode([query], normalize_embeddings=True, show_progress_bar=False)[0]
-        scores: np.ndarray = self._embeddings @ query_vec  # cosine similarity, shape (N,)
+        query_vec = model.encode([query], normalize_embeddings=True, show_progress_bar=False)[0]
+        scores: np.ndarray = embeddings @ query_vec  # cosine similarity, shape (N,)
 
         # Perspectives are *hints*, not gates: when a perspective is given, give a
         # small additive boost to entries tagged with it (or "any"), so a report
@@ -349,18 +354,18 @@ class QuestionSpecIndex:
         # just because the role isn't tagged on it.
         if perspective:
             persp_lower = perspective.strip().lower()
-            for i, (_, persp_list, _) in enumerate(self._entries):
+            for i, (_, persp_list, _) in enumerate(entries):
                 normed = [p.strip().lower() for p in persp_list]
                 if persp_lower in normed or "any" in normed:
                     scores[i] = float(scores[i]) + self._PERSPECTIVE_BOOST
 
         # Collect best score per unique spec name
         best_per_spec: Dict[str, float] = {}
-        for idx in range(len(self._entries)):
+        for idx in range(len(entries)):
             s = float(scores[idx])
             if s < threshold:
                 continue
-            spec_name = self._entries[idx][0]
+            spec_name = entries[idx][0]
             if s > best_per_spec.get(spec_name, -1.0):
                 best_per_spec[spec_name] = s
 
@@ -526,6 +531,12 @@ class ReportPipeline:
                 if raw is not None:
                     specs = _normalise_spec_list(raw)
                     if specs:
+                        # Assign keyword-match score based on name overlap with query keywords
+                        for s in specs:
+                            if "score" not in s or s["score"] == 0.0:
+                                name = (s.get("report_spec") or s.get("name") or "").lower()
+                                hits = sum(1 for kw in keywords if kw in name)
+                                s["score"] = min(0.5 + 0.1 * hits, 0.75)
                         return _deduplicate_specs(specs)
             except Exception as e:
                 logger.warning(f"find_report_specs({term!r}) failed: {e}")
@@ -557,8 +568,10 @@ class ReportPipeline:
             matches = []
             for name in all_specs.keys():
                 name_lower = name.lower()
-                if any(kw in name_lower for kw in keywords):
-                    matches.append({"report_spec": name, "perspectives": [], "questions": []})
+                hits = sum(1 for kw in keywords if kw in name_lower)
+                if hits:
+                    matches.append({"report_spec": name, "score": min(0.4 + 0.1 * hits, 0.65),
+                                    "perspectives": [], "questions": []})
 
             return sorted(matches, key=lambda d: d["report_spec"])
         except Exception as e:
@@ -571,6 +584,7 @@ class ReportPipeline:
         search_string: str = "*",
         output_type: str = "DICT",
         page_size: Optional[int] = None,
+        extra_params: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
         """
         Execute a named report and return the output string.
@@ -609,6 +623,13 @@ class ReportPipeline:
         # Prefix search is more efficient than full regex when a specific term is given
         if not is_wildcard and self._starts_with_on_filter:
             params["starts_with"] = True
+        if extra_params:
+            params.update(extra_params)
+        # Egeria type names are always PascalCase — auto-capitalize first letter
+        if "metadata_element_type" in params and isinstance(params["metadata_element_type"], str):
+            met = params["metadata_element_type"].strip()
+            if met and met[0].islower():
+                params["metadata_element_type"] = met[0].upper() + met[1:]
 
         try:
             raw = exec_report_spec(
@@ -849,7 +870,7 @@ class ReportPipeline:
     _DRE_SCORE_PENALTY = 0.30
 
     # If the top two candidates are within this margin after re-ranking, ask.
-    _DISAMBIG_GAP = 0.12
+    _DISAMBIG_GAP = 0.15
 
     # Score above which we run the top spec without asking (overwhelming match).
     _AUTO_RUN_SCORE = 0.85
@@ -883,16 +904,21 @@ class ReportPipeline:
             name = c.get("report_spec") or c.get("name") or ""
             score = c.get("score", 0.0)
             tag = " *(Dr.Egeria operator view)*" if self._is_dre_spec(name) else ""
-            lines.append(f"{i}. **{name}**{tag} — confidence {score:.0%}")
+            # Only show confidence for semantic scores (≥0.70); keyword-match scores
+            # are heuristic and displaying them as percentages is misleading.
+            score_str = f" — confidence {score:.0%}" if score >= 0.70 else ""
+            lines.append(f"{i}. **{name}**{tag}{score_str}")
         lines.append(
             "\nReply with the number or the report name, "
             "or say **\"run report [name]\"** directly."
         )
+        _names = [c.get("report_spec") or c.get("name") for c in candidates]
         return {
             "query": query,
             "response": "\n".join(lines),
             "query_type": "clarification",
-            "candidates": [c.get("report_spec") or c.get("name") for c in candidates],
+            "candidates": _names,
+            "next_context": {"task": "report_disambiguation", "candidates": _names},
             "sources": [],
             "num_sources": 0,
             "retrieval_time": 0.0,
@@ -1099,7 +1125,7 @@ class ReportPipeline:
         # this and falls through to find_specs below.
         core, search_string = self._parse_report_directive(query.strip())
         name_match = self.match_report_name(core)
-        if name_match and name_match[1] >= 0.9:
+        if name_match and name_match[1] >= 0.95:
             logger.info(
                 f"Name-first dispatch: {core!r} → {name_match[0]!r} "
                 f"(conf={name_match[1]:.2f}, search={search_string!r})"
@@ -1165,6 +1191,25 @@ class ReportPipeline:
                 "Pick a supported format and run it again."
             )
         if "unknown report spec" in low or "no matching column set" in low:
+            # If the user asked for a non-standard format (MERMAID, HTML, …) the spec
+            # may exist but simply not declare that format — pyegeria raises "unknown
+            # report spec" in both cases.  Probe with DICT to distinguish.
+            _rich_fmts = {"MERMAID", "HTML", "GRAPH", "REPORT-GRAPH"}
+            if fmt.upper() in _rich_fmts:
+                supported = self._spec_supported_formats_safe(report_name)
+                if supported:
+                    sup = ", ".join(supported)
+                    return (
+                        f"The **{report_name}** report doesn't support **{fmt}** output.\n\n"
+                        f"Supported formats for this report: {sup}\n\n"
+                        "Switch to one of those formats and run again."
+                    )
+                # spec found in registry but supported-format probe returned empty —
+                # still likely a format issue, not a missing spec
+                return (
+                    f"**{report_name}** was found but doesn't appear to support **{fmt}** output.\n\n"
+                    "Try **REPORT**, **LIST**, or **TABLE** format instead."
+                )
             return (
                 f"There's no report named **{report_name}**.\n\n"
                 f"> {detail}\n\n"
@@ -1225,15 +1270,18 @@ class ReportPipeline:
         self, query: str, report_name: str, num_specs_found: int = 1,
         search_string: str = "*",
         page_size: Optional[int] = None,
+        extra_params: Optional[Dict[str, Any]] = None,
+        output_type: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Shared execution path: run a named report and format the result."""
-        fmt = self._detect_output_format(query)
-        # pyegeria's run_report now accepts the full output-format set, so pass the
-        # requested token straight through. Two adjustments: TABLE is fetched as
-        # DICT and rendered as a Markdown table by the advisor (pyegeria's TABLE is
-        # a Rich terminal table, not browser-friendly); legacy MARKDOWN → REPORT.
-        _MCP_TYPE_OVERRIDES = {"TABLE": "DICT", "MARKDOWN": "REPORT"}
-        mcp_output_type = _MCP_TYPE_OVERRIDES.get(fmt, fmt)
+        # Normalise to exact catalog name (catches camelCase / hyphen / space variants)
+        report_name = self._resolve_report_name(report_name)
+        fmt = output_type or self._detect_output_format(query)
+        display_fmt = "REPORT" if fmt == "MARKDOWN" else fmt
+        # For TABLE display we request DICT from pyegeria (full structured data) and
+        # render the markdown table ourselves via _dict_to_markdown_table.  Pyegeria's
+        # native TABLE format is terminal-optimised and can omit columns.
+        mcp_output_type = "DICT" if display_fmt == "TABLE" else display_fmt
 
         logger.info(
             f"Running report: {report_name} (output_type={mcp_output_type}, "
@@ -1250,6 +1298,7 @@ class ReportPipeline:
             raw_output = self.run_report(
                 report_name, search_string=search_string,
                 output_type=mcp_output_type, page_size=page_size,
+                extra_params=extra_params,
             )
         except ConnectionError as exc:
             egeria_reachable = False

@@ -8,6 +8,16 @@ import pytest
 import numpy as np
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
+import advisor.embeddings_onnx
+
+
+
+@pytest.fixture(autouse=True)
+def mock_onnx_internal_methods():
+    """Mock internal ONNX methods to simplify test setups."""
+    with patch('advisor.embeddings_onnx.ONNXEmbeddingGenerator._test_inference'), \
+         patch('advisor.embeddings_onnx.ONNXEmbeddingGenerator._get_embedding_dim', return_value=384):
+        yield
 
 
 class TestONNXEmbeddingGenerator:
@@ -25,7 +35,7 @@ class TestONNXEmbeddingGenerator:
         """Create a mock ONNX Runtime session."""
         session = Mock()
         # Mock output: (batch_size, seq_length, hidden_size)
-        session.run.return_value = [np.random.randn(1, 10, 384)]
+        session.run.return_value = [np.random.randn(1, 3, 384)]
         return session
     
     @patch('advisor.embeddings_onnx.ort.InferenceSession')
@@ -57,7 +67,7 @@ class TestONNXEmbeddingGenerator:
         
         # Setup mocks
         mock_session = Mock()
-        mock_session.run.return_value = [np.random.randn(1, 10, 384)]
+        mock_session.run.return_value = [np.random.randn(1, 3, 384)]
         mock_session_class.return_value = mock_session
         
         mock_tok = Mock()
@@ -87,7 +97,7 @@ class TestONNXEmbeddingGenerator:
         
         # Setup mocks
         mock_session = Mock()
-        mock_session.run.return_value = [np.random.randn(3, 10, 384)]
+        mock_session.run.return_value = [np.random.randn(3, 3, 384)]
         mock_session_class.return_value = mock_session
         
         mock_tok = Mock()
@@ -118,7 +128,7 @@ class TestONNXEmbeddingGenerator:
         
         # Setup mocks
         mock_session = Mock()
-        mock_session.run.return_value = [np.random.randn(1, 10, 384)]
+        mock_session.run.return_value = [np.random.randn(1, 3, 384)]
         mock_session_class.return_value = mock_session
         
         mock_tok = Mock()
@@ -203,13 +213,13 @@ class TestBackendSelection:
         advisor.embeddings._embedding_generator = None
         
         # Mock config
+        emb_config = MagicMock()
+        emb_config.backend = "pytorch"
+        emb_config.model = "test-model"
+        emb_config.device = "cpu"
+        emb_config.batch_size = 32
         mock_config.return_value = {
-            "embeddings": {
-                "backend": "pytorch",
-                "model": "test-model",
-                "device": "cpu",
-                "batch_size": 32
-            }
+            "embeddings": emb_config
         }
         
         with patch('advisor.embeddings.EmbeddingGenerator') as mock_gen:
@@ -226,20 +236,18 @@ class TestBackendSelection:
         advisor.embeddings._embedding_generator = None
         
         # Mock config
+        emb_config = MagicMock()
+        emb_config.backend = "onnx"
+        emb_config.model = "test-model"
+        emb_config.batch_size = 32
+        emb_config.max_length = 512
+        emb_config.onnx.model_path = "test.onnx"
+        emb_config.onnx.providers = None
         mock_config.return_value = {
-            "embeddings": {
-                "backend": "onnx",
-                "model": "test-model",
-                "batch_size": 32,
-                "max_length": 512,
-                "onnx": {
-                    "model_path": "test.onnx",
-                    "providers": None
-                }
-            }
+            "embeddings": emb_config
         }
         
-        with patch('advisor.embeddings.ONNXEmbeddingGenerator') as mock_onnx:
+        with patch('advisor.embeddings_onnx.ONNXEmbeddingGenerator') as mock_onnx:
             with patch('advisor.embeddings.logger'):
                 generator = get_embedding_generator()
                 mock_onnx.assert_called_once()
@@ -254,18 +262,16 @@ class TestBackendSelection:
         advisor.embeddings._embedding_generator = None
         
         # Mock config
+        emb_config = MagicMock()
+        emb_config.backend = "onnx"
+        emb_config.model = "test-model"
+        emb_config.batch_size = 32
+        emb_config.onnx.model_path = "nonexistent.onnx"
         mock_config.return_value = {
-            "embeddings": {
-                "backend": "onnx",
-                "model": "test-model",
-                "batch_size": 32,
-                "onnx": {
-                    "model_path": "nonexistent.onnx"
-                }
-            }
+            "embeddings": emb_config
         }
         
-        with patch('advisor.embeddings.ONNXEmbeddingGenerator', side_effect=Exception("ONNX failed")):
+        with patch('advisor.embeddings_onnx.ONNXEmbeddingGenerator', side_effect=Exception("ONNX failed")):
             with patch('advisor.embeddings.EmbeddingGenerator') as mock_pytorch:
                 with patch('advisor.embeddings.logger'):
                     generator = get_embedding_generator()
@@ -286,7 +292,7 @@ class TestEmbeddingQuality:
         
         # Setup mocks with deterministic output
         mock_session = Mock()
-        output = np.ones((1, 10, 384))
+        output = np.ones((1, 3, 384))
         mock_session.run.return_value = [output]
         mock_session_class.return_value = mock_session
         

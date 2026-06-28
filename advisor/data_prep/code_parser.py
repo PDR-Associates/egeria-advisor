@@ -25,6 +25,7 @@ class CodeElement:
     is_async: bool = False
     is_private: bool = False
     complexity: int = 0
+    bases: List[str] = field(default_factory=list)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for storage."""
@@ -44,6 +45,7 @@ class CodeElement:
             "is_async": self.is_async,
             "is_private": self.is_private,
             "complexity": self.complexity,
+            "bases": self.bases,
         }
     
     @property
@@ -222,6 +224,7 @@ class CodeParser:
                 body=ast.unparse(node),
                 decorators=decorators,
                 is_private=is_private,
+                bases=bases,
             )
         except Exception as e:
             logger.warning(f"Error parsing class {node.name} in {file_path}: {e}")
@@ -345,39 +348,3 @@ class CodeParser:
             "errors": len(self.errors),
             "error_details": self.errors,
         }
-
-
-if __name__ == "__main__":
-    # Test the parser
-    import sys
-    from advisor.config import settings
-
-    if len(sys.argv) > 1:
-        test_path = Path(sys.argv[1])
-    else:
-        test_path = settings.advisor_data_path / "pyegeria"
-    
-    parser = CodeParser()
-    
-    if test_path.is_file():
-        elements = parser.parse_file(test_path)
-        print(f"\nFound {len(elements)} code elements in {test_path}")
-    else:
-        elements = parser.parse_directory(
-            test_path,
-            recursive=True,
-            exclude_patterns=["**/test_*.py", "**/__pycache__/**", "**/deprecated/**"]
-        )
-        print(f"\nFound {len(elements)} code elements in {test_path}")
-    
-    # Print first 10 elements
-    for elem in elements[:10]:
-        print(f"  - {elem.type}: {elem.full_name} at line {elem.line_number}")
-        if elem.docstring:
-            print(f"    Doc: {elem.docstring[:60]}...")
-    
-    # Print statistics
-    stats = parser.get_statistics()
-    print(f"\nStatistics:")
-    print(f"  Files parsed: {stats['files_parsed']}")
-    print(f"  Errors: {stats['errors']}")

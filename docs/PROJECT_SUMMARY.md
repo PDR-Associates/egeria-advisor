@@ -1,6 +1,6 @@
 # Egeria Advisor — Project Summary: Phases, Capabilities, Lessons Learned
 
-**Last updated:** 2026-06-15  
+**Last updated:** 2026-06-25  
 **Repository:** `/Users/dwolfson/localGit/egeria-v6/egeria-advisor`  
 **GitHub:** `https://github.com/dwolfson/egeria-advisor`
 
@@ -201,6 +201,149 @@ The expand/collapse trigger on each command card was a tiny `▾` character. Rep
 | `8ec1ff8` | Multi-item extraction + In Solution Blueprints pre-fill + Generate Now/Completely Wrong buttons |
 | `334d55e` | Unique `_answers_key` + qualified name auto-gen + expand button + docs |
 
+### Phase 11e — Report Selection & Execution Rework (Jun 17–20, 2026)
+
+**Context:** All three report invocation paths were broken in different ways: (1) sidebar modal never executed because `LIST`/`MERMAID` formats were rejected by a Pydantic literal guard in the MCP server; (2) typing a report name with `intent_override='report'` returned "does not exist" because the pipeline only matched the literal prefix `"run report <name>"`; (3) plain-language chat over-filtered via perspectives/questions as hard gates. The fix widened the MCP contract, added name-first resolution, and converted perspectives/questions from hard gates to soft ranking hints.
+
+**MCP contract widened** ✓ (commit `1e59f0d`)
+- `run_report_tool` in pyegeria MCP server: `output_type` Literal widened from `["DICT","JSON","MARKDOWN"]` to the full executable set: `DICT`, `JSON`, `LIST`, `TABLE`, `REPORT`, `REPORT-GRAPH`, `FORM`, `MD`, `MERMAID`, `HTML`, `GRAPH`.
+- `MARKDOWN` retained as a friendly alias → `REPORT`. All other formats pass through as-is.
+- MCP-side allow-list updated to match.
+
+**Per-spec supported formats in catalog API** ✓
+- `/api/reports` enriched with a `formats` map: each spec's supported output types unioned from `formats[].types` (expanding `ALL` to the browser-useful set).
+- Non-runnable specs (type=`"survey"` or zero executable formats) filtered from sidebar listing and from name-matching; only specs with at least one runnable format appear.
+
+**Dynamic, spec-aware format picker** ✓ (commit `e16379f`)
+- Frontend `runReport(name)` rebuilds `#output-format-select` from the `formats[name]` list delivered by `/api/reports`, defaulting to the most browser-friendly available format (`LIST` → `REPORT` → `DICT`).
+- Previous behaviour: hardcoded six options, many of which were invalid for the selected spec.
+
+**Name-first resolution + honest errors** ✓
+- `ReportPipeline._resolve_report_name()` extended: strips spaces/hyphens/underscores + lowercases, then also searches `get_report_registry()` aliases and does forgiving substring/fuzzy matching, returning the best candidate.
+- `process()` gains a **name-first** step for all paths (not just the `"run report <name>"` prefix): if the query or intent resolves to a known spec with strong confidence, dispatch directly to `_execute_report`; only fall to semantic question matching when no name matches.
+- Honest errors surfaced: pyegeria's structured ValueError distinguishes unknown report vs unsupported format; both now reach the user-facing message with distinct text.
+
+**Perspectives & questions as soft hints** ✓
+- `QuestionSpecIndex.search()`: perspective filter changed from hard zero-out to a soft additive score boost when the perspective matches. A relevant report is never hidden because the role tag doesn't match.
+- Semantic similarity threshold relaxed; name-first path carries exact/near-exact selection so the question-matching layer is a ranking aid only.
+
+**Report discovery queries** ✓ (commit `b9c6485`)
+- `_is_report_discovery_query()` + `_handle_report_discovery()` in `rag_system.py`: queries like "what reports are about assets?" or "are there any reports on glossary terms?" are intercepted before RAG and answered from `CommandKeywordIndex`/`QuestionSpecIndex` with a structured grouped response.
+- `_REPORT_DISCOVERY_RE` covers are-there, list, show me, find forms; "what dr egeria commands are about X?" covered by a companion handler.
+- Previously these queries hallucinated from documentation chunks.
+
+**Commits:**
+
+| SHA | Summary |
+|---|---|
+| `9b179b9` | Fixes for plans and maybe report execution (pre-rework fixes) |
+| `1e59f0d` | Reliable report selection & execution across all three paths |
+| `e16379f` | Output format dropdown in report sidebar modal |
+| `b9c6485` | Filter non-runnable specs; surface master names; report discovery queries |
+| `1989219` | Extend report discovery regex to cover more interrogative forms |
+| `1e102e5` | Extend Dr.Egeria command/template discovery to cover are-there, templates, how-do-I |
+
+---
+
+### Phase 11f — UI Artifact Lifecycle Refactoring (Jun 20–22, 2026)
+
+**Theme:** The left sidebar was a cramped stack of three drag-resize panes. Artifact types now each get the full column height via a tab strip, and the Dr.Egeria template flow was redesigned to offer a plan instead of hallucinating Jupyter notebook usage instructions.
+
+**Tabbed left column** ✓ (commit `5c18362`)
+- Replaced `#sidebar-reports` / `#sidebar-plans` / `#sidebar-recent` stacked panes (separated by `#resize-reports-plans` and `#resize-plans-recent` drag handles) with a tab bar: **Reports | Plans | Recent**.
+- Each tab fills the full sidebar height; only one panel visible at a time.
+- `setSidebarTab(name)` function mirrors `setIntent()`; active tab persists to `localStorage['ea_sidebar_tab']`; defaults to `Reports`.
+- `initSidebarResize()` (vertical inter-pane handles) deleted; horizontal width resize (`initLeftSidebarResize()`) untouched.
+- Auto-switch to Plans tab when a draft is opened or created (one `setSidebarTab('plans')` call at the draft-open/create site).
+- All existing render functions (`loadReports()`, `loadPlans()`, `loadDrafts()`, `renderRecent()`) and API endpoints unchanged — purely a layout refactor.
+
+**Dr.Egeria template → plan offer CTA** ✓ (commit `ac636f9`)
+- `DrEgeriaTemplateAgent._make_result()` now returns `clarification_type: "plan_offer"` and `original_query` alongside the template markdown.
+- Jupyter notebook usage instructions removed from the agent's system prompt and fallback LLM prompt entirely — the agent was inventing steps that don't apply to the Dr.Egeria workflow.
+- Frontend `_applyQueryResult()` detects `clarification_type === 'plan_offer'` and calls `renderPlanOffer(originalQuery, wrap)`, which appends a violet CTA bar: "Would you like to create a Dr.Egeria plan using this template?" with **Yes** and **No** buttons. Yes invokes `submitQuery(originalQuery, { intent_override: 'plan' })`; No removes the bar.
+
+**Python-vs-DrEgeria intent clarification** ✓ (commit `b13d6e7`)
+- When a user with role Anyone, Data Steward, or Governance Officer asks an ambiguous example query (e.g. "show me how to create a collection") without a Python keyword, the routing layer returns a clarification response with two buttons: **Python example** and **Dr.Egeria template**.
+- Each button re-submits with the appropriate `intent_override`, avoiding the previous behaviour of silently picking one path.
+- Developer and Data Engineer roles still route directly to ExamplesAgent (no clarification).
+
+**Interrogative guard fix** ✓ (commit `afe12a5`)
+- Removed `'command'` from the interrogative guard's redirect condition. Previously "How do I create a Collection?" with `intent_override='command'` (from the clarification button) was silently redirected to DocAgent instead of DrEgeriaTemplateAgent. The guard now only overrides `plan` and `act` intents for interrogative queries.
+- `DrEgeriaTemplateAgent` is safe for informational queries: "how do I" is already a `_template_signals` keyword.
+
+**Admin console fixes** ✓ (commit `1127176`)
+- Analysis notes textarea in the admin console no longer auto-refreshes away edits mid-typing (auto-refresh guard added).
+- `response_text` captured and stored in feedback records when a thumbs up/down vote is cast — previously only the query and intent were saved, making feedback analysis incomplete.
+
+**Commits:**
+
+| SHA | Summary |
+|---|---|
+| `5c18362` | Replace stacked sidebar panes with artifact-type tabs (Reports \| Plans \| Recent) |
+| `ac636f9` | DrEgeria template response → plan offer CTA instead of Jupyter hallucination |
+| `b13d6e7` | Python-vs-DrEgeria intent clarification with buttons for Anyone/Steward/Governance |
+| `afe12a5` | Interrogative guard no longer overrides explicit 'command' intent |
+| `1127176` | Admin console analysis notes editable; response text captured in feedback |
+
+---
+
+### Phase 11g — Code Intelligence & Symbol Analysis (Jun 22–24, 2026)
+
+**Theme:** Structural questions about the codebase ("how many classes are in pyegeria?", "list methods on AssetManager", "what are the most complex methods in egeria_java?") previously hallucinated from RAG chunks. A SQLite symbol table populated at ingest time now answers them with live SQL — no LLM involvement.
+
+**`CodeSymbolStore`** ✓ (commit `9c7f25f`)
+- New file: `advisor/code_symbol_store.py`
+- SQLite database at `data/code_symbols.db` (path: `cache_dir.parent / "code_symbols.db"`)
+- Schema: `collection`, `file_path`, `language`, `kind` (class/interface/enum/method/function/constructor), `name`, `qualified_name`, `signature`, `docstring`, `parent_class`, `return_type`, `start_line`, `end_line`, `is_private`, `is_async`, `complexity`
+- Key methods: `upsert_symbols()`, `clear_collection()`, `collection_summary()`, `count_by_kind()`, `list_classes()`, `methods_for_class()`, `search_symbols()`, `most_complex()`, `largest_classes()`
+- `get_symbol_store()` module-level singleton
+
+**Python symbol ingestion** ✓
+- `advisor/ingest_to_milvus.py`: after `_ingest_python_file()` processes a `.py` file, the extracted `CodeElement` list is also upserted into `CodeSymbolStore`
+- `ingest_directory()` calls `clear_collection()` for Python collections at the start of a full re-index, keeping the symbol table in sync
+- Python source uses existing `CodeParser` (AST-based, already used for pgvector ingestion)
+
+**Java symbol extraction** ✓ (commit `3cdd645`)
+- New file: `advisor/data_prep/java_symbol_extractor.py`
+- `JavaSymbolExtractor` uses tree-sitter (`tree-sitter-java>=0.23.0`, added to `pyproject.toml`) to parse `.java` files
+- Extracts: classes, interfaces, enums, records, annotation types, methods, constructors — including nested types
+- Javadoc: `_preceding_javadoc()` finds the preceding `block_comment` sibling starting with `/**`
+- Cyclomatic complexity: counts `if_statement`, `for_statement`, `enhanced_for_statement`, `while_statement`, `do_statement`, `catch_clause`, `switch_expression`, `conditional_expression` nodes
+- `JavaSymbol` dataclass matches the `CodeElement` interface expected by `CodeSymbolStore`
+- Lazy parser init: `_get_parser()` caches `_PARSER`/`_LANG` globally; module is importable even without tree-sitter installed
+- `ingest_to_milvus.py`: `.java` files trigger text ingest + `_extract_java_symbols()` side-call; `ingest_directory()` clears Java collection symbols at re-index start
+
+**`backfill_code_symbols.py`** ✓
+- New script: `scripts/backfill_code_symbols.py`
+- Populates the symbol table from already-ingested source repos without re-indexing pgvector
+- Resolves Python source from `settings.advisor_data_path`; Java source from `_ADVISOR_ROOT.parent / "egeria"` (sibling repo)
+- Supports `--collection <name>` for single-collection backfill or all Python+Java collections by default
+
+**Structural query routing** ✓ (commit `9f6664b`)
+- `_STRUCTURAL_QUERY_RE` + `_is_structural_query()` + `_handle_structural_query()` added to `rag_system.py`
+- Intercepts queries like "what classes are in pyegeria", "list methods on AssetManager", "most complex methods in egeria_java", "how many classes/functions" before RAG dispatch
+- Fires for `quantitative`, `code_search`, `general`, `explanation` query types when no `intent_override` is set
+- Returns structured SQL answer from `CodeSymbolStore` directly — no LLM call, no hallucination
+
+**Live SQL answers in `analytics.py`** ✓
+- `answer_quantitative_query()` checks `CodeSymbolStore` first for: largest class (before generic "classes in" check), list classes, most complex, class-method lookup (CamelCase-only — prevents false match on collection names), search symbols, collection summary, count by kind
+- Helper functions: `_symbol_store()`, `_collection_for_filter()`, `_format_class_list()`, `_format_method_list()`, `_format_symbol_search()`, `_collection_summary_text()`
+
+**Bugs fixed during this work:**
+- `collection_summary()` typo: `"class" + "s"` = `"classs"` always showed 0 classes. Fixed with explicit kind map: `{"class": "classes", "function": "functions", "method": "methods"}`.
+- `re.IGNORECASE` on class-method regex caused collection names like "pyegeria" to be treated as class names. Fixed: CamelCase requirement (`[A-Z]`) enforced; `IGNORECASE` removed.
+- "Largest classes" check was shadowed by "list classes" check (same keyword overlap). Fixed by ordering `largest_classes` before `list_classes`.
+
+**Scale:** backfill of `egeria_java` processed 4,181 `.java` files and wrote ~38,900 symbols.
+
+**Commits:**
+
+| SHA | Summary |
+|---|---|
+| `9c7f25f` | SQLite code symbol table — queryable code structure at ingest time |
+| `9f6664b` | Fix symbol store typo, structural query routing, and regex safety |
+| `3cdd645` | Java symbol extraction via tree-sitter for egeria_java collection |
+
 ---
 
 ## Architecture evolution (Mermaid diagrams)
@@ -325,14 +468,15 @@ flowchart LR
 ### Query / RAG
 - **Explain** — conceptual answers from indexed Egeria docs (9 collections, ~88,900 entities)
 - **Show me / Code** — runnable Python examples; API reference (ExamplesAgent)
-- **Report** — live data from Egeria via MCP report specs (200+ reports)
-- **Act** — Dr.Egeria command execution and template lookup
+- **Report** — live data from Egeria via MCP report specs (200+ reports); all three invocation paths (sidebar, typed name, plain chat) reliable
+- **Act** — Dr.Egeria command execution and template lookup; template responses offer plan CTA
 - **Plan** — LGCI multi-step plan generation (see above)
 - **Troubleshoot** — debugging guidance
+- **Structural code questions** — "how many classes are in pyegeria?", "list methods on AssetManager", "most complex methods in egeria_java" answered via live SQL from symbol store (no LLM hallucination)
 
 ### Web UI (http://localhost:8880)
 - Chat with markdown rendering, source citations, 👍/👎 feedback
-- Left sidebar: Available Reports (grouped by topic), Plans (inbox/outbox), Active Drafts, Recent Queries
+- Left sidebar: tabbed — **Reports** (grouped by topic, spec-specific format picker) | **Plans** (drafts/inbox/outbox) | **Recent Queries**; auto-switches to Plans on plan activity
 - Role selector (As:) — Anyone / Developer / Data Engineer / Data Steward / Governance
 - Intent override (Auto / Explain / Show me / Report / Act / Plan / Troubleshoot)
 - **Plan Canvas** — persistent split-view panel alongside chat when a plan is active:
@@ -477,6 +621,7 @@ advisor/
   plan_templates.py          — PlanTemplateManager
   session_logger.py          — SessionLogger (JSONL transcripts)
   egeria_context.py          — EgeriaContext: live actor/project/zone lookups
+  code_symbol_store.py       — CodeSymbolStore: SQLite symbol table (data/code_symbols.db)
   agents/
     governance_plan_agent.py — GovernancePlanAgent (two-stage extraction + keyword index)
     plan_elicitor.py         — PlanElicitor (confirm→generate→refine + restart path)
@@ -485,6 +630,9 @@ advisor/
     examples_agent.py        — ExamplesAgent
     doc_agent.py             — DocAgent
     outcome_reporter.py      — OutcomeReporter (partial execution detection)
+  data_prep/
+    code_parser.py           — CodeParser: Python AST symbol extraction (classes, functions, methods)
+    java_symbol_extractor.py — JavaSymbolExtractor: tree-sitter Java symbol extraction
   web/
     app.py                   — FastAPI routes (incl. /api/actions, /api/drafts/builder)
     static/
@@ -498,6 +646,10 @@ config/
   dr_egeria_actions.yaml     — action catalog (138 actions, 10 families)
   governance_report_map.yaml — family → report_spec mapping
   routing.yaml               — query classification patterns
+scripts/
+  backfill_code_symbols.py   — Populate symbol table from existing source repos (no pgvector re-index)
+  count_vectors.py           — Count indexed entities per collection
+  test_end_to_end.py         — E2E test suite
 docs/
   literate-governance-plan.md — LGCI design (v5, comprehensive)
   user-docs/
@@ -647,21 +799,29 @@ docs/
 
 ## Current state and next steps (Jun 2026)
 
-**LGCI phases complete:**
+**Phases complete:**
 - Phase 1 ✓ — canvas, conversational planning, confirm→generate→refine flow
 - Phase 2 ✓ — execution, outcome reporter, partial execution detection
 - Phase 3 partial — ArtifactCanvas extracted; Report Spec canvas needs design
 - Phase 11b ✓ — auth, pattern library, Egeria context enrichment, zone valid values
 - Phase 11c ✓ — routing fixes, catalog expansion, keyword index, plan editor
 - Phase 11d ✓ — execution quality, GUID/QN in results, raw output preservation, UX fixes
+- Phase 11e ✓ — report selection & execution rework (all three paths fixed, name-first resolution, dynamic format picker)
+- Phase 11f ✓ — UI artifact lifecycle refactoring (tabbed sidebar, plan offer CTA, Python-vs-DrEgeria clarification)
+- Phase 11g ✓ — code intelligence & symbol analysis (SQLite symbol table, Python + Java, structural query routing)
 
-**What's working end-to-end (Jun 15, 2026):**
+**What's working end-to-end (Jun 25, 2026):**
 - Plans generate via conversational Q&A or Plan Editor builder mode
 - Execution reaches Dr.Egeria MCP → Egeria REST API; objects created in Egeria confirmed by GUID in output
 - Outbox plan shows: structured Outcome with GUID/QN per command + filtered Execution Results (Mermaid diagrams) + collapsible raw Dr.Egeria output
 - Validate button works for both inbox and outbox plans
 - Command discovery ("what Dr.Egeria commands are about solutions?") routes correctly via keyword index
 - Delete, recover, and re-execute flows for inbox/outbox plans
+- All three report invocation paths (sidebar modal, typed name, plain chat) execute reliably; format picker is spec-specific
+- Left sidebar is tabbed (Reports / Plans / Recent); Plans auto-switches when a plan is active
+- Dr.Egeria template responses offer a plan CTA instead of hallucinating Jupyter notebook usage
+- "How many classes are in pyegeria?", "list methods on AssetManager", "most complex methods in egeria_java" — all answered via live SQL from symbol store
+- Java symbol table: ~38,900 symbols from 4,181 `.java` files in the egeria_java collection
 
 **Planned next (in priority order):**
 
@@ -697,7 +857,7 @@ docs/
 
 ## How to resume in a new conversation
 
-1. Read `CLAUDE.md` — full maintenance context, design rules (13–19 for LGCI)
+1. Read `CLAUDE.md` — full maintenance context, design rules (13–25 for LGCI)
 2. Read `docs/literate-governance-plan.md` — complete LGCI design including lessons
 3. Read `docs/PROJECT_SUMMARY.md` (this document) for overall phase history
 4. Run `git log --oneline -10` to see recent commits

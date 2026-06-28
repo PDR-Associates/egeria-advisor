@@ -477,8 +477,7 @@ class GovernancePlanAgent:
         # This contains the augmented plan markdown, View Report output, and Mermaid diagrams.
         raw_section = _build_raw_output_section(ex_output or execution_output)
 
-        # inbox source: move to outbox with outcome + raw output appended.
-        # outbox source (Re-run Now): append a new run's outcome in place.
+        outbox_doc_id = doc_id
         if source_folder == "outbox":
             moved = doc_manager.append_rerun_outcome(doc_id, outcome_md + "\n\n" + raw_section)
             if moved:
@@ -486,9 +485,10 @@ class GovernancePlanAgent:
             else:
                 logger.warning(f"GovernancePlanAgent.execute: could not append re-run outcome to {doc_id}")
         else:
-            moved = doc_manager.move_to_outbox(doc_id, outcome_md + "\n\n" + raw_section)
-            if moved:
-                logger.info(f"GovernancePlanAgent.execute: moved {doc_id} to outbox")
+            moved_doc_id = doc_manager.move_to_outbox(doc_id, outcome_md + "\n\n" + raw_section)
+            if moved_doc_id:
+                outbox_doc_id = moved_doc_id
+                logger.info(f"GovernancePlanAgent.execute: moved {doc_id} to outbox as {outbox_doc_id}")
             else:
                 logger.warning(
                     f"GovernancePlanAgent.execute: could not move {doc_id} to outbox"
@@ -499,7 +499,7 @@ class GovernancePlanAgent:
         try:
             from advisor.metrics_collector import get_metrics_collector
             get_metrics_collector().record_plan_event(
-                doc_id, "executed",
+                outbox_doc_id, "executed",
                 outcome_status=status_line,
                 perspective=perspective,
             )
@@ -507,7 +507,7 @@ class GovernancePlanAgent:
             pass
 
         response = (
-            f"Plan **{doc_id}** has been executed.\n\n"
+            f"Plan **{outbox_doc_id}** has been executed.\n\n"
             f"**Status:** {status_line}\n\n"
             f"The completed document (plan + outcome) has been saved to your outbox.\n\n"
             f"---\n\n{outcome_md}"
@@ -517,7 +517,7 @@ class GovernancePlanAgent:
             "query": doc_id,
             "response": response,
             "query_type": "plan_executed",
-            "doc_id": doc_id,
+            "doc_id": outbox_doc_id,
             "dry_run": False,
             "execution_output": execution_output[:500],
             "sources": [],
@@ -610,14 +610,14 @@ class GovernancePlanAgent:
         from advisor.governance_docs import get_doc_manager
         doc_manager = get_doc_manager()
 
-        moved = doc_manager.move_to_inbox(doc_id)
-        if not moved:
+        inbox_doc_id = doc_manager.move_to_inbox(doc_id)
+        if not inbox_doc_id:
             return _error_result(
                 doc_id,
                 f"Could not move `{doc_id}` back to inbox. "
                 f"It may not be in the outbox, or the inbox already has a file with that name.",
             )
-        return self.execute(doc_id, perspective=perspective)
+        return self.execute(inbox_doc_id, perspective=perspective)
 
     @staticmethod
     def _extract_command_section(plan_content: str) -> str:

@@ -5,7 +5,6 @@ This module provides functionality to detect file changes and update
 only modified content in the vector store, avoiding full re-indexing.
 """
 
-import sqlite3
 import hashlib
 import json
 import time
@@ -19,6 +18,7 @@ from advisor.vector_store import get_vector_store
 from advisor.embeddings import get_embedding_generator
 from advisor.ingest_to_milvus import CodeIngester
 from advisor.mlflow_tracking import track_operation
+from advisor.db_consolidated import get_db_manager
 
 
 class FileChange(NamedTuple):
@@ -63,53 +63,21 @@ class UpdateResult:
 
 class FileTracker:
     """
-    Track file states and detect changes using SQLite.
+    Track file states and detect changes using consolidated PostgreSQL.
     
     Maintains a database of indexed files with their modification times,
     content hashes, and associated Milvus entity IDs.
     """
     
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Optional[Path] = None):
         """
         Initialize file tracker.
         
         Args:
-            db_path: Path to SQLite database file
+            db_path: Ignored, retained for signature compatibility.
         """
-        self.db_path = db_path
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_database()
-    
-    def _init_database(self):
-        """Initialize database schema."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS indexed_files (
-                    file_path TEXT PRIMARY KEY,
-                    collection_name TEXT NOT NULL,
-                    last_modified REAL NOT NULL,
-                    content_hash TEXT NOT NULL,
-                    last_indexed REAL NOT NULL,
-                    chunk_count INTEGER NOT NULL,
-                    entity_ids TEXT NOT NULL
-                )
-            """)
-            
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS index_metadata (
-                    collection_name TEXT PRIMARY KEY,
-                    last_full_index REAL NOT NULL,
-                    total_files INTEGER NOT NULL,
-                    total_chunks INTEGER NOT NULL
-                )
-            """)
-            
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_collection 
-                ON indexed_files(collection_name)
-            """)
-            
-            conn.commit()
+        self.db_manager = get_db_manager()
+        self.db_manager.connect()
     
     def compute_file_hash(self, file_path: Path) -> str:
         """
@@ -143,14 +111,9 @@ class FileTracker:
         Returns:
             Dict with file info or None if not tracked
         """
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute(
-                "SELECT * FROM indexed_files WHERE file_path = ? AND collection_name = ?",
-                (str(file_path), collection_name)
-            )
-            row = cursor.fetchone()
-            return dict(row) if row else None
+        sql = "SELECT * FROM indexed_files WHERE file_path = %s AND collection_name = %s"
+        rows = self.db_manager.execute_query(sql, (str(file_path), collection_name))
+        return rows[0] if rows else None
     
     def track_file(
         self,
@@ -173,22 +136,27 @@ class FileTracker:
         now = time.time()
         mtime = file_path.stat().st_mtime
         
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                INSERT OR REPLACE INTO indexed_files
-                (file_path, collection_name, last_modified, content_hash, 
-                 last_indexed, chunk_count, entity_ids)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                str(file_path),
-                collection_name,
-                mtime,
-                content_hash,
-                now,
-                chunk_count,
-                json.dumps(entity_ids)
-            ))
-            conn.commit()
+        sql = """
+            INSERT INTO indexed_files
+            (file_path, collection_name, last_modified, content_hash, 
+             last_indexed, chunk_count, entity_ids)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (file_path, collection_name) DO UPDATE SET
+                last_modified = EXCLUDED.last_modified,
+                content_hash = EXCLUDED.content_hash,
+                last_indexed = EXCLUDED.last_indexed,
+                chunk_count = EXCLUDED.chunk_count,
+                entity_ids = EXCLUDED.entity_ids
+        """
+        self.db_manager.execute_update(sql, (
+            str(file_path),
+            collection_name,
+            mtime,
+            content_hash,
+            now,
+            chunk_count,
+            json.dumps(entity_ids)
+        ))
     
     def untrack_file(self, file_path: str, collection_name: str) -> Optional[List[str]]:
         """
@@ -207,12 +175,8 @@ class FileTracker:
         
         entity_ids = json.loads(tracked['entity_ids'])
         
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                "DELETE FROM indexed_files WHERE file_path = ? AND collection_name = ?",
-                (file_path, collection_name)
-            )
-            conn.commit()
+        sql = "DELETE FROM indexed_files WHERE file_path = %s AND collection_name = %s"
+        self.db_manager.execute_update(sql, (file_path, collection_name))
         
         return entity_ids
     
@@ -226,13 +190,9 @@ class FileTracker:
         Returns:
             Dict mapping file paths to file info
         """
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute(
-                "SELECT * FROM indexed_files WHERE collection_name = ?",
-                (collection_name,)
-            )
-            return {row['file_path']: dict(row) for row in cursor.fetchall()}
+        sql = "SELECT * FROM indexed_files WHERE collection_name = %s"
+        rows = self.db_manager.execute_query(sql, (collection_name,))
+        return {row['file_path']: row for row in rows}
     
     def update_metadata(self, collection_name: str, total_files: int, total_chunks: int):
         """
@@ -244,13 +204,16 @@ class FileTracker:
             total_chunks: Total number of chunks
         """
         now = time.time()
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                INSERT OR REPLACE INTO index_metadata
-                (collection_name, last_full_index, total_files, total_chunks)
-                VALUES (?, ?, ?, ?)
-            """, (collection_name, now, total_files, total_chunks))
-            conn.commit()
+        sql = """
+            INSERT INTO index_metadata
+            (collection_name, last_full_index, total_files, total_chunks)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (collection_name) DO UPDATE SET
+                last_full_index = EXCLUDED.last_full_index,
+                total_files = EXCLUDED.total_files,
+                total_chunks = EXCLUDED.total_chunks
+        """
+        self.db_manager.execute_update(sql, (collection_name, now, total_files, total_chunks))
     
     def get_metadata(self, collection_name: str) -> Optional[Dict]:
         """
@@ -262,14 +225,9 @@ class FileTracker:
         Returns:
             Dict with metadata or None
         """
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute(
-                "SELECT * FROM index_metadata WHERE collection_name = ?",
-                (collection_name,)
-            )
-            row = cursor.fetchone()
-            return dict(row) if row else None
+        sql = "SELECT * FROM index_metadata WHERE collection_name = %s"
+        rows = self.db_manager.execute_query(sql, (collection_name,))
+        return rows[0] if rows else None
 
 
 class IncrementalIndexer:

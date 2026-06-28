@@ -44,7 +44,10 @@ class CollectionRouter:
         self,
         query: str,
         query_terms: Optional[List[str]] = None,
-        max_collections: int = 3
+        max_collections: int = 3,
+        intent: Optional[str] = None,
+        boosted_collections: Optional[List[str]] = None,
+        feedback_adjustments: Optional[Dict[str, float]] = None
     ) -> List[str]:
         """
         Route a query to appropriate collection(s).
@@ -53,6 +56,9 @@ class CollectionRouter:
             query: User query string
             query_terms: Optional pre-extracted query terms
             max_collections: Maximum number of collections to search
+            intent: Optional resolved intent string
+            boosted_collections: Optional list of collections/types to boost
+            feedback_adjustments: Optional feedback-based multipliers
             
         Returns:
             List of collection names to search, ordered by priority
@@ -61,7 +67,13 @@ class CollectionRouter:
         query_terms = query_terms or self._extract_terms(query_lower)
         
         # Find matching collections
-        matches = self._find_matching_collections(query_lower, query_terms)
+        matches = self._find_matching_collections(
+            query_lower,
+            query_terms,
+            intent=intent,
+            boosted_collections=boosted_collections,
+            feedback_adjustments=feedback_adjustments
+        )
         
         if not matches:
             # No specific matches, use default strategy
@@ -84,7 +96,10 @@ class CollectionRouter:
     def _find_matching_collections(
         self,
         query_lower: str,
-        query_terms: List[str]
+        query_terms: List[str],
+        intent: Optional[str] = None,
+        boosted_collections: Optional[List[str]] = None,
+        feedback_adjustments: Optional[Dict[str, float]] = None
     ) -> List[str]:
         """
         Find collections that match the query.
@@ -92,6 +107,9 @@ class CollectionRouter:
         Args:
             query_lower: Lowercase query string
             query_terms: Extracted query terms
+            intent: Resolved query intent
+            boosted_collections: Collections to boost
+            feedback_adjustments: Boost adjustment multipliers
             
         Returns:
             List of matching collection names, ordered by priority
@@ -112,9 +130,9 @@ class CollectionRouter:
         }
         
         detected_intent = None
-        for intent, keywords in intent_keywords.items():
+        for intent_kw, keywords in intent_keywords.items():
             if any(kw in query_lower for kw in keywords):
-                detected_intent = intent
+                detected_intent = intent_kw
                 break
         
         for collection in self.collections:
@@ -125,8 +143,19 @@ class CollectionRouter:
             match_count = 0
             intent_boost = 0.0
 
-            # Check for explicit collection name mention (highest priority)
-            # Use word boundaries to avoid substring matches (e.g., "pyegeria" shouldn't match "pyegeria_drE")
+            # 1. Apply policy-defined boosted_collections
+            if boosted_collections:
+                for boosted in boosted_collections:
+                    boosted_lower = boosted.lower()
+                    if (collection.name.lower() == boosted_lower or
+                        collection.content_type.value == boosted_lower or
+                        collection.language.value == boosted_lower or
+                        (boosted_lower == "code_elements" and collection.content_type.value == "code")):
+                        intent_boost = 12.0
+                        match_count += 2
+                        break
+
+            # 2. Check for explicit collection name mention (highest priority)
             collection_name_variants = [
                 collection.name.lower(),
                 collection.name.lower().replace("_", " "),
@@ -142,7 +171,7 @@ class CollectionRouter:
                     intent_boost = 15.0  # Maximum boost
                     break
             
-            # Check if collection matches query via domain terms
+            # 3. Check if collection matches query via domain terms
             for domain_term in collection.domain_terms:
                 term_lower = domain_term.lower()
                 
@@ -154,16 +183,26 @@ class CollectionRouter:
                 if term_lower in [t.lower() for t in query_terms]:
                     match_count += 1
             
-            # Apply intent-based boosting (only if not already boosted by collection name)
+            # Apply general intent-based boosting (only if not already boosted by policy or name match)
             if intent_boost == 0.0:
                 if detected_intent == "documentation" and collection.content_type.value == "documentation":
-                    intent_boost = 15.0  # Very strong boost for docs when "documentation" mentioned
+                    intent_boost = 10.0  # Very strong boost for docs when "documentation" mentioned
                 elif detected_intent == "example" and collection.content_type.value == "examples":
                     intent_boost = 8.0
                 elif detected_intent == "cli" and "cli" in collection.name:
                     intent_boost = 8.0
                 elif detected_intent == "code" and collection.content_type.value == "code":
                     intent_boost = 3.0  # Moderate boost for code
+            
+            # 4. Apply feedback adjustments
+            if feedback_adjustments and collection.name in feedback_adjustments:
+                adjustment = feedback_adjustments[collection.name]
+                if adjustment < 1.0:
+                    intent_boost *= adjustment
+                    match_count = int(match_count * adjustment)
+                else:
+                    intent_boost = max(intent_boost * adjustment, 5.0)
+                    match_count = int(match_count * adjustment) + 1
             
             if match_count > 0:
                 matches.append((collection.name, collection.priority, match_count, intent_boost))

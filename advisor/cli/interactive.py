@@ -7,7 +7,7 @@ This module provides an interactive session with command history and context pre
 import sys
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
@@ -187,35 +187,52 @@ class InteractiveSession:
             self.console.print(f"[yellow]Unknown command:[/yellow] {cmd}")
             self.console.print("[dim]Type /help for available commands[/dim]")
     
-    def _resolve_clarification(self, user_input: str) -> Optional[str]:
+    def _resolve_clarification(self, user_input: str) -> Optional[Tuple[str, Optional[str]]]:
         """
         If we are waiting for a disambiguation reply, resolve the user's input
-        (a digit or a candidate name) to a "run report <name>" query.
+        (a digit or a candidate name) to a query and optional override.
 
-        Returns the resolved query string, or None if not in clarification state
-        or the input doesn't match any candidate.
+        Returns (resolved_query, query_type_override), or "" if bad numeric selection (stay in clarification),
+        or None if not in clarification state or unrecognised (treat as new query).
         """
         if not self._pending_clarification:
             return None
 
         candidates: List[str] = self._pending_clarification.get("candidates", [])
+        candidate_intents: List[str] = self._pending_clarification.get("candidate_intents", [])
+        clarification_type = self._pending_clarification.get("clarification_type", "report_choice")
+        original_query = self._pending_clarification.get("original_query", "")
+
         text = user_input.strip()
+
+        # Helper to get the resolved choice based on index
+        def resolve_idx(idx: int) -> Tuple[str, Optional[str]]:
+            if clarification_type == "intent_choice" and candidate_intents:
+                return original_query, candidate_intents[idx]
+            else:
+                return f"run report {candidates[idx]}", None
 
         # Numeric choice: "1", "2", "3"
         if text.isdigit():
             idx = int(text) - 1
             if 0 <= idx < len(candidates):
-                return f"run report {candidates[idx]}"
+                return resolve_idx(idx)
             self.console.print(
                 f"[yellow]Please enter a number between 1 and {len(candidates)}.[/yellow]"
             )
             return ""  # Stay in clarification state, don't clear
 
-        # Name match (full or partial, case-insensitive)
+        # Name/Text match (full or partial, case-insensitive)
         text_lower = text.lower()
-        for name in candidates:
+        for idx, name in enumerate(candidates):
             if text_lower == name.lower() or text_lower in name.lower():
-                return f"run report {name}"
+                return resolve_idx(idx)
+
+        # If intent choice, also allow entering the intent string directly (e.g. "explanation")
+        if clarification_type == "intent_choice" and candidate_intents:
+            for idx, intent in enumerate(candidate_intents):
+                if text_lower == intent.lower():
+                    return resolve_idx(idx)
 
         # Not recognised — fall through to normal query processing and clear state
         return None
@@ -230,15 +247,16 @@ class InteractiveSession:
             User's query
         """
         # --- Clarification intercept ---
+        query_type_override = None
         if self._pending_clarification:
-            resolved = self._resolve_clarification(query)
-            if resolved == "":
+            resolved_info = self._resolve_clarification(query)
+            if resolved_info == "":
                 # Bad number — stay in clarification state, prompt again
                 return
-            if resolved is not None:
-                # Good selection — clear state and re-run with resolved query
+            if resolved_info is not None:
+                # Good selection — clear state and re-run with resolved query and override
                 self._pending_clarification = None
-                query = resolved
+                query, query_type_override = resolved_info
             else:
                 # Unrecognised input — treat as new query, clear state
                 self._pending_clarification = None
@@ -258,6 +276,7 @@ class InteractiveSession:
                     include_context=True,
                     track_metrics=self.track_metrics,
                     dry_run=self.dry_run,
+                    query_type_override=query_type_override,
                 )
 
                 self.last_query = query
@@ -282,6 +301,8 @@ class InteractiveSession:
                 if result.get('query_type') == 'clarification' and result.get('candidates'):
                     self._pending_clarification = {
                         'candidates': result['candidates'],
+                        'candidate_intents': result.get('candidate_intents'),
+                        'clarification_type': result.get('clarification_type', 'intent_choice'),
                         'original_query': query,
                     }
 

@@ -134,6 +134,20 @@ class QueryProcessor:
             # Detect query type
             query_type = self._detect_query_type(query_lower)
             
+            # LLM semantic fallback for general queries
+            if query_type == QueryType.GENERAL:
+                try:
+                    from advisor.llm_intent_classifier import get_intent_classifier
+                    refined_str = get_intent_classifier().classify(query)
+                    if refined_str != "general":
+                        try:
+                            query_type = QueryType(refined_str)
+                            logger.info(f"QueryProcessor: LLM intent classifier refined 'general' -> '{refined_str}'")
+                        except ValueError:
+                            logger.warning(f"QueryProcessor: Refined intent '{refined_str}' is not a valid QueryType")
+                except Exception as exc:
+                    logger.warning(f"QueryProcessor: LLM intent classification failed: {exc}")
+            
             # Extract keywords
             keywords = self._extract_keywords(query)
             
@@ -255,12 +269,17 @@ class QueryProcessor:
         for priority in sorted(self.pattern_priorities.keys(), key=lambda p: p.value):
             priority_patterns = self.pattern_priorities[priority]
             
+            # Gather all patterns at this priority level with their query type
+            all_patterns = []
             for query_type, patterns in priority_patterns.items():
-                # Sort patterns by length descending (check longer patterns first)
-                sorted_patterns = sorted(patterns, key=len, reverse=True)
-                for pattern in sorted_patterns:
-                    if pattern in query_lower:
-                        return query_type
+                for pattern in patterns:
+                    all_patterns.append((pattern, query_type))
+            
+            # Sort all patterns at this priority by length descending (check longer patterns first)
+            sorted_patterns = sorted(all_patterns, key=lambda x: len(x[0]), reverse=True)
+            for pattern, query_type in sorted_patterns:
+                if pattern in query_lower:
+                    return query_type
         
         # Default to general if no patterns match
         return QueryType.GENERAL
@@ -568,6 +587,16 @@ class QueryProcessor:
         """Determine search strategy based on query type."""
         strategies = {
             QueryType.CODE_SEARCH: {
+                "top_k": 10,
+                "min_score": 0.3,
+                "format_style": "compact"
+            },
+            QueryType.CODE_HELP: {
+                "top_k": 10,
+                "min_score": 0.3,
+                "format_style": "compact"
+            },
+            QueryType.CODE_INTEL: {
                 "top_k": 10,
                 "min_score": 0.3,
                 "format_style": "compact"

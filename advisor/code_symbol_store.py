@@ -1,4 +1,4 @@
-"""SQLite-backed symbol table for queryable code structure across all ingested collections.
+"""PostgreSQL-backed symbol table for queryable code structure across all ingested collections.
 
 Populated during ingestion alongside pgvector embeddings. Enables direct SQL answers
 to structural questions ("what classes does pyegeria have?", "how many methods does
@@ -6,80 +6,32 @@ GlossaryManager expose?") without going through vector search.
 """
 from __future__ import annotations
 
-import sqlite3
-from pathlib import Path
 from typing import Any
-
 from loguru import logger
 
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS code_symbols (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    collection     TEXT    NOT NULL,
-    file_path      TEXT    NOT NULL,
-    language       TEXT    NOT NULL DEFAULT 'python',
-    kind           TEXT    NOT NULL,
-    name           TEXT    NOT NULL,
-    qualified_name TEXT    NOT NULL,
-    signature      TEXT    NOT NULL DEFAULT '',
-    docstring      TEXT    NOT NULL DEFAULT '',
-    parent_class   TEXT    NOT NULL DEFAULT '',
-    return_type    TEXT    NOT NULL DEFAULT '',
-    start_line     INTEGER NOT NULL DEFAULT 0,
-    end_line       INTEGER NOT NULL DEFAULT 0,
-    is_private     INTEGER NOT NULL DEFAULT 0,
-    is_async       INTEGER NOT NULL DEFAULT 0,
-    complexity     INTEGER NOT NULL DEFAULT 0,
-    UNIQUE(collection, file_path, qualified_name)
-);
-CREATE INDEX IF NOT EXISTS idx_cs_collection_kind ON code_symbols(collection, kind);
-CREATE INDEX IF NOT EXISTS idx_cs_collection_name ON code_symbols(collection, name);
-CREATE INDEX IF NOT EXISTS idx_cs_parent_class    ON code_symbols(collection, parent_class);
-"""
-
-_PYTHON_COLLECTIONS = {"pyegeria", "pyegeria_cli", "pyegeria_dre", "pyegeria_drE"}
-
-
-def _db_path() -> Path:
-    from advisor.config import settings
-    cache = getattr(settings, "advisor_cache_dir", None)
-    if cache:
-        p = Path(cache).parent / "code_symbols.db"
-    else:
-        p = Path("data") / "code_symbols.db"
-    p.parent.mkdir(parents=True, exist_ok=True)
-    return p
+from advisor.db_consolidated import get_db_manager
 
 
 class CodeSymbolStore:
-    """Stores and queries code symbols extracted during ingestion."""
+    """Stores and queries code symbols extracted during ingestion in consolidated PostgreSQL."""
 
-    def __init__(self, db_path: Path | None = None) -> None:
-        self.db_path = db_path or _db_path()
-        self._init_db()
-
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        return conn
-
-    def _init_db(self) -> None:
-        with self._connect() as conn:
-            conn.executescript(_SCHEMA)
-        logger.info(f"CodeSymbolStore ready at {self.db_path}")
+    def __init__(self, db_path: Any | None = None) -> None:
+        # db_path parameter is ignored but kept for compatibility
+        self.db_manager = get_db_manager()
+        self.db_manager.connect()
+        logger.info("CodeSymbolStore initialized with consolidated PostgreSQL")
 
     # ── write ──────────────────────────────────────────────────────────────
 
     def clear_collection(self, collection: str) -> None:
-        with self._connect() as conn:
-            conn.execute("DELETE FROM code_symbols WHERE collection = ?", (collection,))
-        logger.info(f"CodeSymbolStore: cleared symbols for '{collection}'")
+        self.db_manager.execute_update("DELETE FROM code_symbols WHERE collection = %s", (collection,))
+        self.db_manager.execute_update("DELETE FROM code_relationships WHERE collection = %s", (collection,))
+        logger.info(f"CodeSymbolStore: cleared symbols and relationships for '{collection}'")
 
     def upsert_symbols(self, collection: str, elements: list[Any]) -> int:
         """Accept a list of CodeElement objects (from advisor/data_prep/code_parser.py)."""
         rows = []
+        relationships = []
         for el in elements:
             qname = f"{el.parent_class}.{el.name}" if el.parent_class else el.name
             rows.append((
@@ -95,10 +47,26 @@ class CodeSymbolStore:
                 el.return_type or "",
                 el.line_number,
                 el.end_line_number,
-                int(el.is_private),
-                int(el.is_async),
+                bool(el.is_private),
+                bool(el.is_async),
                 el.complexity,
             ))
+
+            if el.type == 'class':
+                for base in getattr(el, 'bases', []):
+                    relationships.append((
+                        collection,
+                        'inherits_from',
+                        qname,  # child class qualified name
+                        base    # parent class name
+                    ))
+            elif el.type == 'method' and el.parent_class:
+                relationships.append((
+                    collection,
+                    'contains_method',
+                    el.parent_class,  # parent class name
+                    el.name           # method name
+                ))
 
         if not rows:
             return 0
@@ -108,34 +76,53 @@ class CodeSymbolStore:
                 (collection, file_path, language, kind, name, qualified_name,
                  signature, docstring, parent_class, return_type,
                  start_line, end_line, is_private, is_async, complexity)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT(collection, file_path, qualified_name)
             DO UPDATE SET
-                kind=excluded.kind, signature=excluded.signature,
-                docstring=excluded.docstring, parent_class=excluded.parent_class,
-                return_type=excluded.return_type, start_line=excluded.start_line,
-                end_line=excluded.end_line, is_private=excluded.is_private,
-                is_async=excluded.is_async, complexity=excluded.complexity
+                kind=EXCLUDED.kind, signature=EXCLUDED.signature,
+                docstring=EXCLUDED.docstring, parent_class=EXCLUDED.parent_class,
+                return_type=EXCLUDED.return_type, start_line=EXCLUDED.start_line,
+                end_line=EXCLUDED.end_line, is_private=EXCLUDED.is_private,
+                is_async=EXCLUDED.is_async, complexity=EXCLUDED.complexity
         """
-        with self._connect() as conn:
-            conn.executemany(sql, rows)
-        logger.debug(f"CodeSymbolStore: upserted {len(rows)} symbols into '{collection}'")
+
+        rel_sql = """
+            INSERT INTO code_relationships
+                (collection, relationship_type, source_name, target_name)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (collection, relationship_type, source_name, target_name) DO NOTHING
+        """
+
+        conn = self.db_manager.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.executemany(sql, rows)
+                if relationships:
+                    cur.executemany(rel_sql, relationships)
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Failed to upsert symbols or relationships: {e}")
+            raise
+        finally:
+            self.db_manager.put_connection(conn)
+
+        logger.debug(f"CodeSymbolStore: upserted {len(rows)} symbols and {len(relationships)} relationships into '{collection}'")
         return len(rows)
 
     # ── aggregate queries ──────────────────────────────────────────────────
 
     def collection_summary(self, collection: str | None = None) -> dict[str, Any]:
         """Per-collection counts of classes / functions / methods / LOC."""
-        where = "WHERE collection = ?" if collection else ""
-        params: tuple = (collection,) if collection else ()
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"SELECT collection, kind, COUNT(*) n, "
-                f"SUM(end_line - start_line + 1) loc "
-                f"FROM code_symbols {where} "
-                f"GROUP BY collection, kind",
-                params,
-            ).fetchall()
+        where = "WHERE collection = %s" if collection else ""
+        params = (collection,) if collection else ()
+        sql = f"""
+            SELECT collection, kind, COUNT(*) AS n,
+            SUM(end_line - start_line + 1) AS loc
+            FROM code_symbols {where}
+            GROUP BY collection, kind
+        """
+        rows = self.db_manager.execute_query(sql, params)
 
         _kind_key = {"class": "classes", "function": "functions", "method": "methods"}
         summary: dict[str, Any] = {}
@@ -144,8 +131,8 @@ class CodeSymbolStore:
             if col not in summary:
                 summary[col] = {"classes": 0, "functions": 0, "methods": 0, "loc": 0}
             key = _kind_key.get(r["kind"], r["kind"] + "s")
-            summary[col][key] = r["n"]
-            summary[col]["loc"] = summary[col].get("loc", 0) + (r["loc"] or 0)
+            summary[col][key] = int(r["n"])
+            summary[col]["loc"] = summary[col].get("loc", 0) + int(r["loc"] or 0)
         return summary
 
     def count_by_kind(
@@ -154,15 +141,16 @@ class CodeSymbolStore:
         collection: str | None = None,
         include_private: bool = True,
     ) -> int:
-        parts = ["SELECT COUNT(*) FROM code_symbols WHERE kind = ?"]
+        parts = ["SELECT COUNT(*) AS count FROM code_symbols WHERE kind = %s"]
         params: list = [kind]
         if collection:
-            parts.append("AND collection = ?")
+            parts.append("AND collection = %s")
             params.append(collection)
         if not include_private:
-            parts.append("AND is_private = 0")
-        with self._connect() as conn:
-            return conn.execute(" ".join(parts), params).fetchone()[0]
+            parts.append("AND is_private = FALSE")
+        sql = " ".join(parts)
+        rows = self.db_manager.execute_query(sql, tuple(params))
+        return rows[0]["count"] if rows else 0
 
     # ── structural queries ─────────────────────────────────────────────────
 
@@ -174,20 +162,18 @@ class CodeSymbolStore:
         where = ["kind = 'class'"]
         params: list = []
         if collection:
-            where.append("collection = ?")
+            where.append("collection = %s")
             params.append(collection)
         if not include_private:
-            where.append("is_private = 0")
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT name, collection, file_path, start_line, "
-                "end_line - start_line + 1 AS loc, docstring "
-                "FROM code_symbols "
-                f"WHERE {' AND '.join(where)} "
-                "ORDER BY name",
-                params,
-            ).fetchall()
-        return [dict(r) for r in rows]
+            where.append("is_private = FALSE")
+        sql = f"""
+            SELECT name, collection, file_path, start_line,
+            end_line - start_line + 1 AS loc, docstring
+            FROM code_symbols
+            WHERE {' AND '.join(where)}
+            ORDER BY name
+        """
+        return self.db_manager.execute_query(sql, tuple(params))
 
     def methods_for_class(
         self,
@@ -195,22 +181,20 @@ class CodeSymbolStore:
         collection: str | None = None,
         include_private: bool = False,
     ) -> list[dict]:
-        where = ["kind = 'method'", "parent_class = ?"]
+        where = ["kind = 'method'", "parent_class = %s"]
         params: list = [class_name]
         if collection:
-            where.append("collection = ?")
+            where.append("collection = %s")
             params.append(collection)
         if not include_private:
-            where.append("is_private = 0")
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT name, signature, return_type, is_async, complexity, docstring "
-                "FROM code_symbols "
-                f"WHERE {' AND '.join(where)} "
-                "ORDER BY name",
-                params,
-            ).fetchall()
-        return [dict(r) for r in rows]
+            where.append("is_private = FALSE")
+        sql = f"""
+            SELECT name, signature, return_type, is_async, complexity, docstring
+            FROM code_symbols
+            WHERE {' AND '.join(where)}
+            ORDER BY name
+        """
+        return self.db_manager.execute_query(sql, tuple(params))
 
     def search_symbols(
         self,
@@ -219,26 +203,24 @@ class CodeSymbolStore:
         kind: str | None = None,
         limit: int = 20,
     ) -> list[dict]:
-        where = ["name LIKE ?"]
+        where = ["name LIKE %s"]
         params: list = [f"%{name_pattern}%"]
         if collection:
-            where.append("collection = ?")
+            where.append("collection = %s")
             params.append(collection)
         if kind:
-            where.append("kind = ?")
+            where.append("kind = %s")
             params.append(kind)
         params.append(limit)
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT collection, kind, name, qualified_name, signature, "
-                "parent_class, start_line, docstring "
-                "FROM code_symbols "
-                f"WHERE {' AND '.join(where)} "
-                "ORDER BY collection, kind, name "
-                "LIMIT ?",
-                params,
-            ).fetchall()
-        return [dict(r) for r in rows]
+        sql = f"""
+            SELECT collection, kind, name, qualified_name, signature,
+            parent_class, start_line, docstring
+            FROM code_symbols
+            WHERE {' AND '.join(where)}
+            ORDER BY collection, kind, name
+            LIMIT %s
+        """
+        return self.db_manager.execute_query(sql, tuple(params))
 
     def most_complex(
         self,
@@ -248,19 +230,17 @@ class CodeSymbolStore:
         where = ["kind IN ('function','method')"]
         params: list = []
         if collection:
-            where.append("collection = ?")
+            where.append("collection = %s")
             params.append(collection)
         params.append(limit)
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT collection, kind, name, parent_class, complexity, "
-                "start_line, end_line - start_line + 1 AS loc "
-                "FROM code_symbols "
-                f"WHERE {' AND '.join(where)} "
-                "ORDER BY complexity DESC LIMIT ?",
-                params,
-            ).fetchall()
-        return [dict(r) for r in rows]
+        sql = f"""
+            SELECT collection, kind, name, parent_class, complexity,
+            start_line, end_line - start_line + 1 AS loc
+            FROM code_symbols
+            WHERE {' AND '.join(where)}
+            ORDER BY complexity DESC LIMIT %s
+        """
+        return self.db_manager.execute_query(sql, tuple(params))
 
     def largest_classes(
         self,
@@ -270,36 +250,33 @@ class CodeSymbolStore:
         where = ["kind = 'class'"]
         params: list = []
         if collection:
-            where.append("collection = ?")
+            where.append("collection = %s")
             params.append(collection)
         params.append(limit)
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT collection, name, "
-                "end_line - start_line + 1 AS loc, "
-                "(SELECT COUNT(*) FROM code_symbols m "
-                " WHERE m.parent_class = code_symbols.name "
-                " AND m.collection = code_symbols.collection "
-                " AND m.kind = 'method') AS method_count "
-                "FROM code_symbols "
-                f"WHERE {' AND '.join(where)} "
-                "ORDER BY method_count DESC LIMIT ?",
-                params,
-            ).fetchall()
-        return [dict(r) for r in rows]
+        sql = f"""
+            SELECT collection, name,
+            end_line - start_line + 1 AS loc,
+            (SELECT COUNT(*) FROM code_symbols m
+             WHERE m.parent_class = code_symbols.name
+             AND m.collection = code_symbols.collection
+             AND m.kind = 'method') AS method_count
+            FROM code_symbols
+            WHERE {' AND '.join(where)}
+            ORDER BY method_count DESC LIMIT %s
+        """
+        return self.db_manager.execute_query(sql, tuple(params))
 
     def file_summary(
         self,
         collection: str,
         file_path: str,
     ) -> dict[str, Any]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT kind, COUNT(*) n FROM code_symbols "
-                "WHERE collection=? AND file_path=? GROUP BY kind",
-                (collection, file_path),
-            ).fetchall()
-        return {r["kind"] + "s": r["n"] for r in rows}
+        sql = """
+            SELECT kind, COUNT(*) AS n FROM code_symbols
+            WHERE collection=%s AND file_path=%s GROUP BY kind
+        """
+        rows = self.db_manager.execute_query(sql, (collection, file_path))
+        return {r["kind"] + "s": int(r["n"]) for r in rows}
 
 
 # ── singleton ──────────────────────────────────────────────────────────────

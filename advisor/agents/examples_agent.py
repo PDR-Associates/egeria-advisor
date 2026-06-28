@@ -136,6 +136,38 @@ guid = client.create_governance_definition(body)
 
 The property class name to use per type is documented in the `GovernanceOfficer.create_governance_definition`
 docstring (visible in the retrieved context). Always show the body structure, not just the method call.
+
+## Egeria Unified Finding/Listing API Pattern (CRITICAL)
+
+Egeria uses a UNIFIED finding/listing API: many definition types (like `GovernanceZone`,
+`GovernancePrinciple`, `BusinessImperative`, `RegulationArticle`, `GovernanceObligation`, etc.)
+share a single method (`find_governance_definitions`) defined in the `GovernanceOfficer` class.
+The specific type is requested by passing `metadata_element_type` (for finding/searching) or
+`metadata_element_subtypes` as keyword arguments — there is NO separate per-type list/find method.
+
+**DO NOT generate:**  `list_zones()`, `list_governance_zones()`, `find_zones()`, `get_zones()`,
+`list_principles()`, `find_governance_principles()`, etc.
+**These methods do not exist.**
+
+**DO NOT instantiate** `ClassificationExplorer` or other classes when calling `find_governance_definitions` (they do not have this method).
+**ALWAYS instantiate** `GovernanceOfficer` to use `find_governance_definitions`.
+
+**DO generate** (when the retrieved context confirms it):
+```python
+from pyegeria import GovernanceOfficer
+
+client = GovernanceOfficer(
+    view_server="YOUR_VIEW_SERVER",
+    platform_url="YOUR_PLATFORM_URL",
+    user_id="YOUR_USER_ID",
+    user_pwd="YOUR_PASSWORD",
+)
+# To list/find all governance zones (e.g. "list zones"):
+zones = client.find_governance_definitions(
+    search_string="*",
+    metadata_element_type="GovernanceZone"
+)
+```
 """
 
 
@@ -167,13 +199,21 @@ CRITICAL rules:
 - Do NOT invent method names. If `create_governance_zone()` does not appear in the \
   context, do NOT list it.
 - Egeria uses a UNIFIED definition API: many types share one method, with the type \
-  specified as `typeName` in the request body. For example, GovernanceZone, \
-  GovernancePrinciple, and GovernanceObligation are all created via \
-  `GovernanceOfficer.create_governance_definition(body)` — there is no separate \
-  `create_governance_zone()` method. When you see this pattern, say so clearly and \
-  show the body structure as a code snippet.
+  specified as `typeName` in the request body (for creation via `create_governance_definition(body)`) \
+  or as `metadata_element_type` keyword argument (for listing/finding via `find_governance_definitions`). \
+  For example, GovernanceZone, GovernancePrinciple, and GovernanceObligation are all created via \
+  `create_governance_definition(body)` and listed via `find_governance_definitions(metadata_element_type="...")` \
+  using the `GovernanceOfficer` class — there are no separate `create_governance_zone()`, `list_zones()`, etc. methods. \
+  When you see these patterns, say so clearly and show the body structure or method arguments.
 - Do NOT generate a runnable code example — the user wants a reference listing.
 - If the context does not contain enough information, say so rather than guessing.
+
+CODEBASE ORGANIZATION REFERENCE:
+- **Egeria** (Java repository): The core Java implementation of the Egeria backend metadata platform, servers, OMAS, OMAG, and OMRS services (collection: 'egeria_java').
+- **egeria-python** (Python repository): The repository containing Python-based Egeria client code and tooling. It is organized into:
+  1. `pyegeria` (under `pyegeria/` directory): The Python client SDK API library used to communicate with Egeria backend servers (collection: 'pyegeria').
+  2. `commands` (under `commands/` directory): Command-line tools (CLI) and interactive commands (like `hey_egeria`) written in Python using the `pyegeria` SDK.
+  3. `dr_egeria` (under `md_processing/` directory): The Python implementation of the Dr. Egeria markdown processor which is used to parse, draft, and execute governance metadata template plans.
 """
 
 
@@ -195,6 +235,12 @@ class ExamplesAgent(BaseAdvisorAgent):
             "that show the real constructor arguments and method call patterns.\n"
             "3. Call get_egeria_symbol for the exact class name to confirm its signature.\n"
             "4. Generate a complete Python example that follows the canonical pattern below.\n\n"
+            "CODEBASE ORGANIZATION REFERENCE:\n"
+            "- **Egeria** (Java repository): The core Java implementation of the Egeria backend metadata platform, servers, OMAS, OMAG, and OMRS services (collection: 'egeria_java').\n"
+            "- **egeria-python** (Python repository): The repository containing Python-based Egeria client code and tooling. It is organized into:\n"
+            "  1. `pyegeria` (under `pyegeria/` directory): The Python client SDK API library used to communicate with Egeria backend servers (collection: 'pyegeria').\n"
+            "  2. `commands` (under `commands/` directory): Command-line tools (CLI) and interactive commands (like `hey_egeria`) written in Python using the `pyegeria` SDK.\n"
+            "  3. `dr_egeria` (under `md_processing/` directory): The Python implementation of the Dr. Egeria markdown processor which is used to parse, draft, and execute governance metadata template plans.\n\n"
             + _PATTERN_GUIDE
         )
 
@@ -228,6 +274,23 @@ class ExamplesAgent(BaseAdvisorAgent):
         from advisor.agents.tools import _search_egeria_content_raw, _get_egeria_symbol_raw
         from advisor.llm_client import get_ollama_client
 
+        # Concept-guided symbol seeding to overcome RAG keyword mismatch limitations
+        seeded_classes = []
+        q_lower = query.lower()
+        if "zone" in q_lower:
+            seeded_classes.append("GovernanceOfficer")
+        if "glossar" in q_lower:
+            seeded_classes.append("GlossaryManager")
+        if "asset" in q_lower:
+            seeded_classes.append("AssetMaker")
+            seeded_classes.append("Cataloguer")
+        if "project" in q_lower:
+            seeded_classes.append("ProjectManager")
+        if "feedback" in q_lower:
+            seeded_classes.append("FeedbackManager")
+        if "classification" in q_lower:
+            seeded_classes.append("ClassificationExplorer")
+
         # Pass 1: topic search
         context_topic = _search_egeria_content_raw(query, ["pyegeria"], top_k=6)
         # Pass 2: targeted class/method search to find signatures not in topic search
@@ -245,13 +308,20 @@ class ExamplesAgent(BaseAdvisorAgent):
                 "(e.g. 'governance definition', 'glossary', 'project')."
             )
 
+        # Append seeded class symbols first
+        for cls in seeded_classes:
+            sym = _get_egeria_symbol_raw(cls)
+            if sym and "No symbol found" not in sym:
+                context += f"\n\n--- Seeding symbol lookup: {cls} ---\n{sym}"
+
         # Pass 3: for every class name found in the retrieved chunks, call get_egeria_symbol
         # to get the full method list — this is the ground-truth source.
         class_names = _extract_class_names(context)
-        for cls in class_names[:3]:
-            sym = _get_egeria_symbol_raw(cls)
-            if sym and "No symbol found" not in sym:
-                context += f"\n\n--- Symbol lookup: {cls} ---\n{sym}"
+        for cls in class_names[:5]:  # Look up more classes since SQL queries are fast/cheap
+            if cls not in seeded_classes:
+                sym = _get_egeria_symbol_raw(cls)
+                if sym and "No symbol found" not in sym:
+                    context += f"\n\n--- Symbol lookup: {cls} ---\n{sym}"
         if len(context) > 8000:
             context = context[:8000] + "\n...[truncated]"
 
@@ -285,6 +355,23 @@ class ExamplesAgent(BaseAdvisorAgent):
         from advisor.agents.tools import _search_egeria_content_raw, _get_egeria_symbol_raw
         from advisor.llm_client import get_ollama_client
 
+        # Concept-guided symbol seeding to overcome RAG keyword mismatch limitations
+        seeded_classes = []
+        q_lower = query.lower()
+        if "zone" in q_lower:
+            seeded_classes.append("GovernanceOfficer")
+        if "glossar" in q_lower:
+            seeded_classes.append("GlossaryManager")
+        if "asset" in q_lower:
+            seeded_classes.append("AssetMaker")
+            seeded_classes.append("Cataloguer")
+        if "project" in q_lower:
+            seeded_classes.append("ProjectManager")
+        if "feedback" in q_lower:
+            seeded_classes.append("FeedbackManager")
+        if "classification" in q_lower:
+            seeded_classes.append("ClassificationExplorer")
+
         # Pass 1: topic search — finds general context for the concept
         context_api = _search_egeria_content_raw(query, _EXAMPLE_COLLECTIONS, top_k=6)
         # Pass 2: functional test search — finds real constructor + body patterns
@@ -296,22 +383,41 @@ class ExamplesAgent(BaseAdvisorAgent):
         context_methods = _search_egeria_content_raw(
             f"create definition method body {query}", ["pyegeria"], top_k=4
         )
-        context = context_api
+
+        # Assemble retrieved RAG context
+        rag_context = context_api
         if context_tests and context_tests != "No relevant content found.":
-            context += "\n\n--- Functional test examples ---\n" + context_tests
+            rag_context += "\n\n--- Functional test examples ---\n" + context_tests
         if context_methods and context_methods != "No relevant content found.":
-            context += "\n\n--- Method signatures ---\n" + context_methods
+            rag_context += "\n\n--- Method signatures ---\n" + context_methods
+
+        # Truncate RAG context if too long to keep total context size reasonable
+        if len(rag_context) > 6000:
+            rag_context = rag_context[:6000] + "\n...[truncated RAG context]"
+
+        # Collect symbol definitions (these are high-precision ground truth and go first)
+        symbols_context = ""
+        # Append seeded class symbols first
+        for cls in seeded_classes:
+            sym = _get_egeria_symbol_raw(cls)
+            if sym and "No symbol found" not in sym:
+                symbols_context += f"\n\n--- Seeding symbol lookup: {cls} ---\n{sym}"
 
         # Pass 4: extract class names found so far and look up their symbols —
         # ensures we have the authoritative method list before synthesis.
-        class_names = _extract_class_names(context)
-        for cls in class_names[:2]:
-            sym = _get_egeria_symbol_raw(cls)
-            if sym and "No symbol found" not in sym:
-                context += f"\n\n--- Symbol lookup: {cls} ---\n{sym}"
+        class_names = _extract_class_names(rag_context)
+        for cls in class_names[:5]:  # Look up more classes since SQL queries are fast/cheap
+            if cls not in seeded_classes:
+                sym = _get_egeria_symbol_raw(cls)
+                if sym and "No symbol found" not in sym:
+                    symbols_context += f"\n\n--- Symbol lookup: {cls} ---\n{sym}"
 
-        if len(context) > 10000:
-            context = context[:10000] + "\n...[truncated]"
+        # Combine: symbols first, then retrieved context chunks
+        context = symbols_context + "\n\n=== Retrieved RAG Context ===\n" + rag_context
+
+        # Final safety check: cap total context length
+        if len(context) > 12000:
+            context = context[:12000] + "\n...[truncated]"
 
         system = (
             "You are an expert pyegeria developer. Write a complete, runnable Python code example "
@@ -346,12 +452,6 @@ def _extract_class_names(context: str) -> list[str]:
     """
     Parse class names out of formatted retrieval context.
 
-    Each chunk is formatted as:
-        [collection | file | score=N]
-        Name: X
-        Type: class | method | function
-        Class: Y          ← present on method chunks
-
     Returns class names for classes found, plus the parent class of any method chunks.
     """
     names: list[str] = []
@@ -365,6 +465,19 @@ def _extract_class_names(context: str) -> list[str]:
             m = re.search(r'\bName:\s+(\w+)', chunk)
             if m:
                 names.append(m.group(1))
+                
+    # Also scan for any CamelCase words that might be pyegeria classes (e.g. GlossaryManager)
+    # Exclude common metadata-level words/standards
+    for word in re.findall(r'\b[A-Z][a-zA-Z0-9]{5,}\b', context):
+        if word not in (
+            "ServerClient", "PyegeriaException", "Console", "FormatSet", "Format", 
+            "Column", "ActionParameter", "NewElementRequestBody", "TemplateRequestBody", 
+            "UpdateElementRequestBody", "NewRelationshipRequestBody", "DeleteElementRequestBody", 
+            "DeleteRelationshipRequestBody", "ValidationError", "NotAuthorizedException",
+            "GovernanceZoneProperties", "GovernanceDefinitionProperties"
+        ):
+            names.append(word)
+            
     return list(dict.fromkeys(names))   # deduplicate, preserve order
 
 

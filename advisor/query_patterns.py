@@ -16,7 +16,9 @@ from loguru import logger
 
 class QueryType(Enum):
     """Types of queries the system can handle."""
-    CODE_SEARCH = "code_search"
+    CODE_SEARCH = "code_search" # Deprecated/legacy
+    CODE_HELP = "code_help"
+    CODE_INTEL = "code_intel"
     EXPLANATION = "explanation"
     EXAMPLE = "example"
     COMPARISON = "comparison"
@@ -111,6 +113,19 @@ QUERY_PATTERNS = {
     
     # MEDIUM PRIORITY - Action-oriented patterns
     PatternPriority.MEDIUM: {
+        QueryType.CODE_HELP: [
+            "show me how to", "give me an example of", "how do i",
+            "how to use", "find examples", "example code for",
+            "sample python code", "how do i call", "example of using"
+        ],
+        QueryType.CODE_INTEL: [
+            "what class is", "where is", "defined in",
+            "does class", "inherit from", "class hierarchy",
+            "inheritance", "list methods of", "methods of class",
+            "what is the superclass of", "what is the subclass of",
+            "what method", "method defined in", "what classes",
+            "list classes", "classes in", "classes of", "what are the classes"
+        ],
         QueryType.CODE_SEARCH: [
             "show me how", "give me an example of", "how do i",
             "how to", "find examples", "find", "search",
@@ -296,6 +311,8 @@ def _load_query_patterns_from_config(patterns_config: Dict[str, Any]) -> None:
     
     query_type_map = {
         'code_search': QueryType.CODE_SEARCH,
+        'code_help': QueryType.CODE_HELP,
+        'code_intel': QueryType.CODE_INTEL,
         'explanation': QueryType.EXPLANATION,
         'example': QueryType.EXAMPLE,
         'comparison': QueryType.COMPARISON,
@@ -351,6 +368,11 @@ def _load_special_rules_from_config(rules_config: Dict[str, Any]) -> None:
         if 'if_no_match' in rule_data and isinstance(rule_data['if_no_match'], str):
             rule_data['if_no_match'] = query_type_map.get(rule_data['if_no_match'])
         
+        # Resolve domain category to actual terms list if present
+        if 'check_domain_category' in rule_data:
+            category = rule_data['check_domain_category']
+            rule_data['check_terms'] = DOMAIN_TERMS.get(category, [])
+            
         SPECIAL_RULES[rule_name] = rule_data
 
 

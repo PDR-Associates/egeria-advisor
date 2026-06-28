@@ -17,18 +17,31 @@ def query_processor():
 class TestQueryTypeDetection:
     """Test query type detection functionality."""
     
-    def test_code_search_query(self, query_processor):
-        """Test detection of code search queries."""
+    def test_code_help_query(self, query_processor):
+        """Test detection of code help queries."""
         queries = [
             "Show me how to create a glossary",
-            "Give me an example of using the collection manager",
             "Find examples of asset management",
             "How do I use the glossary manager?"
         ]
         
         for query in queries:
             query_type = query_processor.detect_query_type(query)
-            assert query_type == QueryType.CODE_SEARCH, f"Failed for: {query}"
+            assert query_type == QueryType.CODE_HELP, f"Failed for: {query}"
+            
+    def test_code_intel_query(self, query_processor):
+        """Test detection of codebase structural / intelligence queries."""
+        queries = [
+            "Show me the class hierarchy",
+            "What functions call create_glossary?",
+            "Show inheritance relationships",
+            "Does GlossaryManager inherit from Referenceable?",
+            "What class is method run defined in?"
+        ]
+        
+        for query in queries:
+            query_type = query_processor.detect_query_type(query)
+            assert query_type == QueryType.CODE_INTEL, f"Failed for: {query}"
     
     def test_explanation_query(self, query_processor):
         """Test detection of explanation queries."""
@@ -48,7 +61,8 @@ class TestQueryTypeDetection:
         queries = [
             "Show examples of creating terms",
             "Give me examples of asset queries",
-            "What are some examples of using collections?"
+            "What are some examples of using collections?",
+            "Give me an example of using the collection manager"
         ]
         
         for query in queries:
@@ -110,10 +124,7 @@ class TestQueryTypeDetection:
         """Test detection of relationship queries."""
         queries = [
             "What does GlossaryManager import?",
-            "Show me the class hierarchy",
-            "What functions call create_glossary?",
-            "What are the dependencies of this module?",
-            "Show inheritance relationships"
+            "What are the dependencies of this module?"
         ]
         
         for query in queries:
@@ -226,12 +237,12 @@ class TestQueryValidation:
 class TestQueryProcessing:
     """Test end-to-end query processing."""
     
-    def test_process_code_search_query(self, query_processor):
-        """Test processing a code search query."""
+    def test_process_code_help_query(self, query_processor):
+        """Test processing a code help query."""
         query = "Show me how to create a glossary"
         result = query_processor.process_query(query)
         
-        assert result["query_type"] == QueryType.CODE_SEARCH
+        assert result["query_type"] == QueryType.CODE_HELP
         assert "keywords" in result
         assert len(result["keywords"]) > 0
     
@@ -253,7 +264,7 @@ class TestQueryProcessing:
 
 
 @pytest.mark.parametrize("query,expected_type", [
-    ("How do I create a glossary?", QueryType.CODE_SEARCH),
+    ("How do I create a glossary?", QueryType.CODE_HELP),
     ("What is a collection?", QueryType.EXPLANATION),
     ("Show me examples", QueryType.EXAMPLE),
     ("What's the difference between X and Y?", QueryType.COMPARISON),

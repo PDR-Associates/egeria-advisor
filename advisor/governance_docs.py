@@ -269,8 +269,9 @@ class DocumentManager:
 
     def _save_version(self, doc_id: str, content: str) -> None:
         """Write a timestamped backup of doc_id to versions/."""
+        original_doc_id = re.sub(r'_executed_\d{8}_\d{6}$', '', doc_id)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        ver_path = self._paths["versions"] / f"{doc_id}_v{ts}.md"
+        ver_path = self._paths["versions"] / f"{original_doc_id}_v{ts}.md"
         try:
             ver_path.write_text(content, encoding="utf-8")
             logger.debug(f"DocumentManager: saved version {ver_path.name}")
@@ -279,9 +280,10 @@ class DocumentManager:
 
     def list_versions(self, doc_id: str) -> List[Dict[str, str]]:
         """Return version metadata for a given doc_id, newest first."""
+        original_doc_id = re.sub(r'_executed_\d{8}_\d{6}$', '', doc_id)
         versions_dir = self._paths["versions"]
         entries = []
-        for md in sorted(versions_dir.glob(f"{doc_id}_v*.md"), reverse=True):
+        for md in sorted(versions_dir.glob(f"{original_doc_id}_v*.md"), reverse=True):
             # Extract the timestamp portion from the filename stem
             stem = md.stem  # e.g. "20260614_165841_..._v20260614_170122"
             ts_part = stem.rsplit("_v", 1)[-1] if "_v" in stem else ""
@@ -294,8 +296,9 @@ class DocumentManager:
 
     def load_version(self, doc_id: str, version_file: str) -> Optional[str]:
         """Load content from a specific version file."""
+        original_doc_id = re.sub(r'_executed_\d{8}_\d{6}$', '', doc_id)
         ver_path = self._paths["versions"] / version_file
-        if ver_path.exists() and ver_path.stem.startswith(doc_id):
+        if ver_path.exists() and ver_path.stem.startswith(original_doc_id):
             return ver_path.read_text(encoding="utf-8")
         logger.warning(f"DocumentManager.load_version: {version_file!r} not found or wrong doc_id")
         return None
@@ -311,19 +314,21 @@ class DocumentManager:
         if content is None:
             return False
 
-        inbox_path = self._paths["inbox"] / f"{doc_id}.md"
+        original_doc_id = re.sub(r'_executed_\d{8}_\d{6}$', '', doc_id)
+        inbox_path = self._paths["inbox"] / f"{original_doc_id}.md"
 
         # Save whatever currently exists as a version before overwriting, and
         # remove it from wherever it was living (inbox/outbox/trash) — restoring
         # a version always lands the document back in inbox.
         for folder in ("inbox", "outbox", "trash"):
-            existing = self._paths[folder] / f"{doc_id}.md"
-            if existing.exists():
-                self._save_version(doc_id, existing.read_text(encoding="utf-8"))
-                existing.unlink()
+            for name in (doc_id, original_doc_id):
+                existing = self._paths[folder] / f"{name}.md"
+                if existing.exists():
+                    self._save_version(name, existing.read_text(encoding="utf-8"))
+                    existing.unlink()
 
         inbox_path.write_text(content, encoding="utf-8")
-        logger.info(f"DocumentManager: restored {version_file} to inbox as {doc_id}")
+        logger.info(f"DocumentManager: restored {version_file} to inbox as {original_doc_id}")
         return True
 
     def fork(self, doc_id: str, new_title: str, version_file: Optional[str] = None) -> str:
@@ -385,23 +390,25 @@ class DocumentManager:
         )
         return new_doc_id
 
-    def move_to_outbox(self, doc_id: str, outcome_content: str) -> bool:
+    def move_to_outbox(self, doc_id: str, outcome_content: str) -> Optional[str]:
         """
         Append outcome_content to the plan document and move it to outbox/.
 
-        Returns True on success.
+        Returns the new outbox doc_id on success, or None on failure.
         """
         inbox_path = self._paths["inbox"] / f"{doc_id}.md"
         if not inbox_path.exists():
             logger.warning(f"DocumentManager.move_to_outbox: {doc_id!r} not in inbox")
-            return False
+            return None
         original = inbox_path.read_text(encoding="utf-8")
         final = original.rstrip() + "\n\n---\n\n" + outcome_content.strip() + "\n"
-        outbox_path = self._paths["outbox"] / f"{doc_id}.md"
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        outbox_doc_id = f"{doc_id}_executed_{ts}"
+        outbox_path = self._paths["outbox"] / f"{outbox_doc_id}.md"
         outbox_path.write_text(final, encoding="utf-8")
         inbox_path.unlink()
-        logger.info(f"DocumentManager: moved {doc_id} to outbox")
-        return True
+        logger.info(f"DocumentManager: moved {doc_id} to outbox as {outbox_doc_id}")
+        return outbox_doc_id
 
     def append_rerun_outcome(self, doc_id: str, outcome_content: str) -> bool:
         """
@@ -438,35 +445,35 @@ class DocumentManager:
         logger.info(f"DocumentManager: appended re-run outcome (run {run_number}) to {doc_id}")
         return True
 
-    def move_to_inbox(self, doc_id: str) -> bool:
+    def move_to_inbox(self, doc_id: str) -> Optional[str]:
         """
         Move a plan document from outbox back to inbox, stripping the outcome section.
 
-        Returns True on success. Fails if the inbox already has a file with that name
-        (would overwrite a different plan).
+        Returns the new inbox doc_id on success, or None on failure. Fails if the inbox
+        already has a file with that name (would overwrite a different plan).
         """
         outbox_path = self._paths["outbox"] / f"{doc_id}.md"
         if not outbox_path.exists():
             logger.warning(f"DocumentManager.move_to_inbox: {doc_id!r} not in outbox")
-            return False
-        inbox_path = self._paths["inbox"] / f"{doc_id}.md"
+            return None
+        original_doc_id = re.sub(r'_executed_\d{8}_\d{6}$', '', doc_id)
+        inbox_path = self._paths["inbox"] / f"{original_doc_id}.md"
         if inbox_path.exists():
-            logger.warning(f"DocumentManager.move_to_inbox: {doc_id!r} already exists in inbox")
-            return False
+            logger.warning(f"DocumentManager.move_to_inbox: {original_doc_id!r} already exists in inbox")
+            return None
         content = outbox_path.read_text(encoding="utf-8")
         # Strip the outcome section (everything from the separator before ## Outcome onward)
-        import re
         stripped = re.sub(
             r'\n\n---\n\n## Outcome\b.*',
             '',
             content,
             flags=re.DOTALL,
         )
-        self._save_version(doc_id, content)
+        self._save_version(original_doc_id, content)
         inbox_path.write_text(stripped.rstrip() + "\n", encoding="utf-8")
         outbox_path.unlink()
-        logger.info(f"DocumentManager: moved {doc_id} from outbox back to inbox")
-        return True
+        logger.info(f"DocumentManager: moved {doc_id} from outbox back to inbox as {original_doc_id}")
+        return original_doc_id
 
     # ------------------------------------------------------------------
     # Listing
@@ -507,23 +514,23 @@ class DocumentManager:
 
     def restore_from_trash(self, doc_id: str) -> bool:
         """
-        Restore a document from trash/ back to inbox/. A version snapshot of
-        the trash copy is saved first (for symmetry with other mutations).
-        Fails if inbox already has a document with this doc_id.
+        Restore a document from trash/ back to its correct folder (outbox or inbox).
+        A version snapshot of the trash copy is saved first.
         """
         trash_path = self._paths["trash"] / f"{doc_id}.md"
         if not trash_path.exists():
             logger.warning(f"DocumentManager.restore_from_trash: {doc_id!r} not in trash")
             return False
-        inbox_path = self._paths["inbox"] / f"{doc_id}.md"
-        if inbox_path.exists():
-            logger.warning(f"DocumentManager.restore_from_trash: {doc_id!r} already exists in inbox")
+        dest_folder = "outbox" if "_executed_" in doc_id else "inbox"
+        dest_path = self._paths[dest_folder] / f"{doc_id}.md"
+        if dest_path.exists():
+            logger.warning(f"DocumentManager.restore_from_trash: {doc_id!r} already exists in {dest_folder}")
             return False
         content = trash_path.read_text(encoding="utf-8")
         self._save_version(doc_id, content)
-        inbox_path.write_text(content, encoding="utf-8")
+        dest_path.write_text(content, encoding="utf-8")
         trash_path.unlink()
-        logger.info(f"DocumentManager: restored {doc_id} from trash to inbox")
+        logger.info(f"DocumentManager: restored {doc_id} from trash to {dest_folder}")
         return True
 
     def purge(self, doc_id: str) -> bool:

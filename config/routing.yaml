@@ -186,7 +186,7 @@ query_patterns:
       - "give me a code"
       - "code example for"
       - "code sample for"
-    code_search:
+    code_intel:
       # API / method discovery — must appear before lower-priority patterns
       - "what methods"
       - "which methods"
@@ -206,6 +206,13 @@ query_patterns:
       - "what pyegeria"
       - "what class"
       - "which class"
+      - "what classes"
+      - "which classes"
+      - "list classes"
+      - "what are the classes"
+      - "classes in"
+      - "classes of"
+    code_help:
       # How-to navigation
       - "how do i create"
       - "how do i add"
@@ -345,7 +352,7 @@ query_patterns:
       - "debug"
 
   medium:
-    code_search:
+    code_help:
       - "show me how"
       - "give me an example of"
       - "how do i"
@@ -354,10 +361,25 @@ query_patterns:
       - "find"
       - "search"
       - "locate"
-      - "where is"
       - "get"
       - "retrieve"
       - "fetch"
+    code_intel:
+      - "where is"
+      - "what class is"
+      - "defined in"
+      - "does class"
+      - "inherit from"
+      - "class hierarchy"
+      - "inheritance"
+      - "inheritance relationships"
+      - "inheritance relationship"
+      - "list methods of"
+      - "methods of class"
+      - "what is the superclass of"
+      - "what is the subclass of"
+      - "what method"
+      - "method defined in"
     example:
       - "show me examples"
       - "give me examples"
@@ -369,7 +391,6 @@ query_patterns:
       - "demo"
       - "some examples"
     relationship:
-      - "what functions"
       - "show me the"
       - "what does"
       - "what calls"
@@ -380,12 +401,7 @@ query_patterns:
       - "relationship"
       - "connected"
       - "belong to"
-      - "methods of"
-      - "inherits"
-      - "extends"
       - "depends on"
-      - "class hierarchy"
-      - "inheritance"
     explanation:
       - "how does"
       - "explain"

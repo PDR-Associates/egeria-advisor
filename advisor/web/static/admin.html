@@ -110,8 +110,9 @@
         <label class="text-xs text-slate-500">Filter:</label>
         <select id="fb-filter-vote" onchange="loadFeedbackReview()" class="text-xs bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200">
           <option value="all">All votes</option>
-          <option value="-1">👎 Negative</option>
           <option value="1">👍 Positive</option>
+          <option value="0">😐 Neutral / Partial</option>
+          <option value="-1">👎 Negative</option>
         </select>
         <select id="fb-filter-triage" onchange="loadFeedbackReview()" class="text-xs bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200">
           <option value="all">All statuses</option>
@@ -554,7 +555,8 @@ async function loadFeedbackAnalysis() {
   const total = stats.total || 0;
   const pos   = stats.positive || 0;
   const neg   = stats.negative || 0;
-  const sat   = total ? Math.round(pos / total * 100) : 0;
+  const neu   = stats.neutral || 0;
+  const sat   = total ? Math.round((pos + 0.5 * neu) / total * 100) : 0;
   const satColor = sat >= 60 ? 'text-emerald-400' : sat >= 40 ? 'text-amber-400' : 'text-red-400';
 
   // ── Summary card ────────────────────────────────────────────────────────
@@ -563,7 +565,7 @@ async function loadFeedbackAnalysis() {
       <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Overall Satisfaction</div>
       <div class="flex items-end gap-3 mb-4">
         <span class="text-4xl font-bold ${satColor}">${sat}%</span>
-        <span class="text-xs text-slate-500 pb-1">${pos} 👍 / ${neg} 👎 / ${total} total</span>
+        <span class="text-xs text-slate-500 pb-1">${pos} 👍 / ${neu} 😐 / ${neg} 👎 / ${total} total</span>
       </div>
       <div class="grid grid-cols-3 gap-2 text-center">
         <div class="bg-slate-900 rounded p-2">
@@ -586,7 +588,7 @@ async function loadFeedbackAnalysis() {
   const agentRows = Object.entries(byAgent)
     .sort((a, b) => b[1].total - a[1].total)
     .map(([agent, d]) => {
-      const agentSat = d.total ? Math.round((d.positive || 0) / d.total * 100) : 0;
+      const agentSat = d.total ? Math.round(((d.positive || 0) + 0.5 * (d.neutral || 0)) / d.total * 100) : 0;
       const color = agentSat >= 60 ? 'text-emerald-400' : agentSat >= 40 ? 'text-amber-400' : 'text-red-400';
       return `<tr class="border-t border-slate-700/50">
         <td class="py-1.5 pr-3 text-xs text-slate-300 font-mono">${agent}</td>
@@ -613,7 +615,7 @@ async function loadFeedbackAnalysis() {
   const qtypeRows = Object.entries(byQtype)
     .sort((a, b) => b[1].total - a[1].total)
     .map(([qt, d]) => {
-      const qtSat = d.total ? Math.round((d.positive || 0) / d.total * 100) : 0;
+      const qtSat = d.total ? Math.round(((d.positive || 0) + 0.5 * (d.neutral || 0)) / d.total * 100) : 0;
       const color = qtSat >= 60 ? 'text-emerald-400' : qtSat >= 40 ? 'text-amber-400' : 'text-red-400';
       return `<tr class="border-t border-slate-700/50">
         <td class="py-1.5 pr-3 text-xs text-slate-300">${qt}</td>
@@ -727,7 +729,7 @@ async function loadFeedbackReview() {
 
   const rows = filtered.map(rec => {
     const idx = rec._idx;
-    const voteIcon   = rec.vote === 1 ? '👍' : rec.vote === -1 ? '👎' : '—';
+    const voteIcon   = rec.vote === 1 ? '👍' : rec.vote === -1 ? '👎' : (rec.vote === 0 ? '😐' : '—');
     const triageCls  = _triageCls(rec.triage_status || 'new');
     const triageOpts = _TRIAGE_OPTIONS.map(o =>
       `<option value="${o.value}"${(rec.triage_status || 'new') === o.value ? ' selected' : ''}>${o.label}</option>`

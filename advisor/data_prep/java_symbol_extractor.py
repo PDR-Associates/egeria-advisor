@@ -51,6 +51,7 @@ class JavaSymbol:
     is_async: bool = False
     is_private: bool = False
     complexity: int = 1
+    bases: list[str] = field(default_factory=list)
 
     @property
     def full_name(self) -> str:
@@ -213,15 +214,30 @@ class JavaSymbolExtractor:
             mods = _modifiers(node)
             sig_parts = mods + [kind, name]
 
+            bases = []
+
             # superclass
             superclass = node.child_by_field_name("superclass")
             if superclass:
-                sig_parts.append(f"extends {superclass.text.decode()}")
+                sc_text = superclass.text.decode()
+                # Parse base class name, stripping "extends"
+                m = re.match(r"^\s*extends\s+(.+)$", sc_text, re.IGNORECASE)
+                sc_name = m.group(1).strip() if m else sc_text.replace("extends", "").strip()
+                bases.append(sc_name.split(".")[-1])
+                sig_parts.append(sc_text)
 
             # interfaces
             interfaces = node.child_by_field_name("interfaces")
             if interfaces:
-                sig_parts.append(interfaces.text.decode())
+                int_text = interfaces.text.decode()
+                # Parse interface names, stripping "implements"
+                m = re.match(r"^\s*implements\s+(.+)$", int_text, re.IGNORECASE)
+                names_part = m.group(1).strip() if m else int_text.replace("implements", "").strip()
+                for name_item in names_part.split(","):
+                    name_item = name_item.strip()
+                    if name_item:
+                        bases.append(name_item.split(".")[-1])
+                sig_parts.append(int_text)
 
             return JavaSymbol(
                 type=kind,
@@ -235,6 +251,7 @@ class JavaSymbolExtractor:
                 decorators=_annotations(node),
                 is_private=_is_private_node(node),
                 complexity=1,
+                bases=bases,
             )
         except Exception as exc:
             logger.debug(f"JavaSymbolExtractor: type extraction failed in {file_path}: {exc}")

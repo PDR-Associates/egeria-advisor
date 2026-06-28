@@ -89,6 +89,8 @@ class QueryClassifier:
         QueryType.CODE: [
             r'\bcode\b',
             r'\bimplementation\b',
+            r'\bimplement\b',
+            r'\bimplemented\b',
             r'\bfunction\b',
             r'\bclass\b',
             r'\bmethod\b',
@@ -121,7 +123,7 @@ class QueryClassifier:
         ],
         QueryType.TROUBLESHOOTING: [
             r'\berror\b',
-            r'\bdoesn\'?t\s+work\b',
+            r'\bdoesn\'?t(?:\s+\w+){0,3}\s+work\b',
             r'\bnot\s+working\b',
             r'\bproblem\b',
             r'\bissue\b',
@@ -278,8 +280,8 @@ class QueryClassifier:
             QueryType.COMPARISON,
             QueryType.TYPE,
             QueryType.EXAMPLE,
-            QueryType.TUTORIAL,
             QueryType.CODE,
+            QueryType.TUTORIAL,
             QueryType.CONCEPT,
         ]
         

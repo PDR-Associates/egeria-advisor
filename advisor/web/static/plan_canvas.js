@@ -101,10 +101,11 @@ const PlanCanvas = (() => {
       adapter:      _planAdapter,
       itemAdapter:  _planItemAdapter,
       onRender(data) {
-        // Show Validate + Execute buttons when plan document has been generated
+        // Show Validate + Execute buttons and hide Generate Plan when plan document has been generated
         const docId = data?.meta?.doc_id;
         const titleEl = document.getElementById('pcanvas-title');
         if (titleEl) titleEl.dataset.docId = docId || '';
+        document.getElementById('pcanvas-generate-btn')?.classList.toggle('hidden', !!docId);
         document.getElementById('pcanvas-validate-btn')?.classList.toggle('hidden', !docId);
         document.getElementById('pcanvas-execute-btn')?.classList.toggle('hidden', !docId);
       },

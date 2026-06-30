@@ -101,10 +101,11 @@ const PlanCanvas = (() => {
       adapter:      _planAdapter,
       itemAdapter:  _planItemAdapter,
       onRender(data) {
-        // Show Validate + Execute buttons when plan document has been generated
+        // Show Validate + Execute buttons and hide Generate Plan when plan document has been generated
         const docId = data?.meta?.doc_id;
         const titleEl = document.getElementById('pcanvas-title');
         if (titleEl) titleEl.dataset.docId = docId || '';
+        document.getElementById('pcanvas-generate-btn')?.classList.toggle('hidden', !!docId);
         document.getElementById('pcanvas-validate-btn')?.classList.toggle('hidden', !docId);
         document.getElementById('pcanvas-execute-btn')?.classList.toggle('hidden', !docId);
       },
@@ -114,11 +115,19 @@ const PlanCanvas = (() => {
 
   async function open(draftId) {
     _draftId = draftId;
+    if (typeof setContext === 'function') {
+      setContext({ task: 'plan_elicitor', draft_id: draftId, phase: 'confirm_action' });
+    }
     await _ensureCanvas().open(draftId);
+    if (typeof ReportSpecCanvas !== 'undefined' && ReportSpecCanvas.close) ReportSpecCanvas.close();
   }
 
   function close() {
+    const closedId = _draftId;
     _draftId = null;
+    if (typeof setContext === 'function' && typeof _ctx !== 'undefined' && _ctx?.draft_id === closedId) {
+      setContext(null);
+    }
     if (_canvas) _canvas.close();
   }
 

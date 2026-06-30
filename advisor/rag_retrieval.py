@@ -61,7 +61,10 @@ class RAGRetriever:
         query: str,
         top_k: Optional[int] = None,
         min_score: Optional[float] = None,
-        filters: Optional[Dict[str, Any]] = None
+        filters: Optional[Dict[str, Any]] = None,
+        intent: Optional[str] = None,
+        boosted_collections: Optional[List[str]] = None,
+        feedback_adjustments: Optional[Dict[str, float]] = None
     ) -> List[Any]:  # Returns List[SearchResult]
         """
         Retrieve relevant code snippets for a query.
@@ -71,6 +74,9 @@ class RAGRetriever:
             top_k: Number of results (overrides default)
             min_score: Minimum score (overrides default)
             filters: Optional metadata filters
+            intent: Optional query intent
+            boosted_collections: Collections to boost
+            feedback_adjustments: Feedback loop adjustments
 
         Returns:
             List of retrieved SearchResult objects
@@ -101,7 +107,10 @@ class RAGRetriever:
                 query=query,
                 top_k=top_k,
                 min_score=min_score,
-                filters=filters
+                filters=filters,
+                intent=intent,
+                boosted_collections=boosted_collections,
+                feedback_adjustments=feedback_adjustments
             )
             
             results = multi_result.results
@@ -239,6 +248,62 @@ class RAGRetriever:
 
         return context
 
+    def _fetch_relational_metadata(self, name: str, file_path: str, element_type: str) -> str:
+        """Fetch parent class, inheritance tree, and sibling methods from Postgres symbol store."""
+        try:
+            from advisor.db_consolidated import get_db_manager
+            db_manager = get_db_manager()
+            
+            relational_info = []
+            
+            # 1. If it's a method/function, find its parent class, sibling methods, and parent class inheritance
+            if element_type in ("method", "function") or "method" in element_type:
+                sql = "SELECT parent_class FROM code_symbols WHERE name = %s AND (kind = 'method' OR kind = 'function') LIMIT 1"
+                rows = db_manager.execute_query(sql, (name,))
+                if rows and rows[0].get("parent_class"):
+                    parent_class = rows[0]["parent_class"]
+                    relational_info.append(f"**Parent Class:** `{parent_class}`")
+                    
+                    # Find sibling methods
+                    sql_siblings = "SELECT name, signature FROM code_symbols WHERE parent_class = %s AND kind = 'method' AND name != %s LIMIT 5"
+                    sib_rows = db_manager.execute_query(sql_siblings, (parent_class, name))
+                    if sib_rows:
+                        sib_names = [f"`{r['name']}{r['signature']}`" for r in sib_rows]
+                        relational_info.append(f"**Sibling Methods:** {', '.join(sib_names)}")
+                        
+                    # Find parent class inheritance
+                    sql_parents = "SELECT target_name FROM code_relationships WHERE source_name = %s AND relationship_type = 'inherits_from'"
+                    parent_rows = db_manager.execute_query(sql_parents, (parent_class,))
+                    if parent_rows:
+                        parents = [f"`{r['target_name']}`" for r in parent_rows]
+                        relational_info.append(f"**Parent Class Inherits From:** {', '.join(parents)}")
+            
+            # 2. If it's a class, find its parent classes, child classes, and methods
+            elif element_type == "class" or "class" in element_type:
+                sql_parents = "SELECT target_name FROM code_relationships WHERE source_name = %s AND relationship_type = 'inherits_from'"
+                parent_rows = db_manager.execute_query(sql_parents, (name,))
+                if parent_rows:
+                    parents = [f"`{r['target_name']}`" for r in parent_rows]
+                    relational_info.append(f"**Inherits From:** {', '.join(parents)}")
+                    
+                sql_children = "SELECT source_name FROM code_relationships WHERE target_name = %s AND relationship_type = 'inherits_from'"
+                child_rows = db_manager.execute_query(sql_children, (name,))
+                if child_rows:
+                    children = [f"`{r['source_name']}`" for r in child_rows]
+                    relational_info.append(f"**Subclasses:** {', '.join(children)}")
+                
+                sql_methods = "SELECT name, signature FROM code_symbols WHERE parent_class = %s AND kind = 'method' LIMIT 5"
+                method_rows = db_manager.execute_query(sql_methods, (name,))
+                if method_rows:
+                    methods = [f"`{r['name']}{r['signature']}`" for r in method_rows]
+                    relational_info.append(f"**Defined Methods:** {', '.join(methods)}")
+            
+            if relational_info:
+                return "\n".join(relational_info)
+        except Exception as e:
+            logger.debug(f"Failed to fetch relational metadata: {e}")
+        return ""
+
     def _format_detailed(
         self,
         index: int,
@@ -257,6 +322,11 @@ class RAGRetriever:
             parts.append(f"**Type:** {element_type}")
             parts.append(f"**Name:** {name}")
             parts.append(f"**Relevance:** {score:.3f}")
+            
+            # Fetch relational metadata
+            rel_metadata = self._fetch_relational_metadata(name, file_path, element_type)
+            if rel_metadata:
+                parts.append(rel_metadata)
 
         parts.append("**Code:**")
         parts.append(f"```python\n{code}\n```")
@@ -287,7 +357,10 @@ class RAGRetriever:
         filters: Optional[Dict[str, Any]] = None,
         format_style: str = "detailed",
         include_metadata: bool = True,
-        prioritize_docs: bool = False
+        prioritize_docs: bool = False,
+        intent: Optional[str] = None,
+        boosted_collections: Optional[List[str]] = None,
+        feedback_adjustments: Optional[Dict[str, float]] = None
     ) -> Tuple[str, List[Dict[str, Any]]]:
         """
         Retrieve and build context in one step.
@@ -300,6 +373,9 @@ class RAGRetriever:
             format_style: Context format style
             include_metadata: Include metadata in context
             prioritize_docs: Prioritize documentation collections over code
+            intent: Optional query intent
+            boosted_collections: Collections to boost
+            feedback_adjustments: Feedback loop adjustments
 
         Returns:
             Tuple of (formatted_context, sources_as_dicts)
@@ -314,7 +390,10 @@ class RAGRetriever:
             query=query,
             top_k=top_k,
             min_score=min_score,
-            filters=filters
+            filters=filters,
+            intent=intent,
+            boosted_collections=boosted_collections,
+            feedback_adjustments=feedback_adjustments
         )
 
         context = self.build_context(

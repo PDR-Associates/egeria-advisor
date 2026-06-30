@@ -772,9 +772,10 @@ async function pedRecoverForEditing() {
   try {
     const r = await fetch(`/api/plans/${encodeURIComponent(_ped.doc_id)}/recover`, { method: 'POST', headers: Auth.getHeaders() });
     if (!r.ok) { const e = await r.json(); throw new Error(e.detail || r.statusText); }
+    const res = await r.json();
     // Reload editor with the now-inbox version
     const draft_id = _ped.draft_id;
-    await openPlanEditor(_ped.doc_id, draft_id);
+    await openPlanEditor(res.doc_id, draft_id);
     if (typeof loadPlans === 'function') loadPlans();
     _showToast('Plan recovered — you can now edit, validate, and execute.');
   } catch (e) {

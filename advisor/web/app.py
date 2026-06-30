@@ -86,12 +86,13 @@ class QueryRequest(BaseModel):
     perspective: Optional[str] = None      # user role: "developer" | "data_engineer" | "data_steward" | "governance_officer"
     page_size: Optional[int] = None        # max graph nodes per report query (None → advisor.yaml default)
     draft_id: Optional[str] = None         # active planning session draft ID
+    context: Optional[Dict[str, Any]] = None  # authoritative conversation context {task, draft_id, phase, ...}
 
 
 class FeedbackRequest(BaseModel):
     query: str
     query_type: str
-    vote: int                           # 1 = positive, -1 = negative
+    vote: int                           # 1 = positive, 0 = neutral/partially correct, -1 = negative
     perspective: Optional[str] = None
     routing_agent: Optional[str] = None
     response_text: Optional[str] = None   # actual response shown to user
@@ -113,9 +114,14 @@ _INTENT_META: Dict[str, Dict[str, str]] = {
     "quantitative": {"label": "Reference",   "color": "#14b8a6"},
     "clarification":{"label": "Clarify",     "color": "#f59e0b"},
     "plan":              {"label": "Plan",        "color": "#8b5cf6"},
+    "act_report_result": {"label": "Act",         "color": "#a855f7"},
+    "create":            {"label": "Create",      "color": "#8b5cf6"},
+    "create_disambiguation": {"label": "Create",  "color": "#8b5cf6"},
     "plan_clarification":{"label": "Planning",    "color": "#a78bfa"},
     "plan_executed":     {"label": "Executed",    "color": "#22c55e"},
     "general":      {"label": "Explain",     "color": "#3b82f6"},
+    "code_intel":   {"label": "Inspect", "color": "#ec4899"},
+    "code_help":    {"label": "Show me",     "color": "#10b981"},
 }
 
 
@@ -350,6 +356,7 @@ async def query_endpoint(request: Request, req: QueryRequest) -> Dict[str, Any]:
         # _run_async() inside the pipeline uses asyncio.run() directly —
         # cleaner than the nested-thread approach used when called on-loop.
         loop = asyncio.get_event_loop()
+        user_id = current_user.get("sub") if current_user else None
         result = await loop.run_in_executor(
             None,
             partial(
@@ -361,7 +368,10 @@ async def query_endpoint(request: Request, req: QueryRequest) -> Dict[str, Any]:
                 perspective=req.perspective or None,
                 page_size=req.page_size or None,
                 draft_id=req.draft_id or None,
+                context=req.context or None,
                 egeria_authenticated=egeria_authenticated,
+                session_id=req.session_id or None,
+                user_id=user_id,
             ),
         )
     except Exception as exc:
@@ -413,6 +423,7 @@ async def query_stream_endpoint(request: Request, req: QueryRequest) -> Streamin
         # event loop stays unblocked while the worker thread produces tokens.
         q: asyncio.Queue[Optional[str]] = asyncio.Queue(maxsize=256)
 
+        user_id = current_user.get("sub") if current_user else None
         def producer() -> None:
             try:
                 for chunk in rag.query_stream(
@@ -422,7 +433,10 @@ async def query_stream_endpoint(request: Request, req: QueryRequest) -> Streamin
                     perspective=req.perspective or None,
                     page_size=req.page_size or None,
                     draft_id=req.draft_id or None,
+                    context=req.context or None,
                     egeria_authenticated=egeria_authenticated,
+                    session_id=req.session_id or None,
+                    user_id=user_id,
                 ):
                     loop.call_soon_threadsafe(q.put_nowait, chunk)
             except Exception as exc:
@@ -664,11 +678,11 @@ async def recover_plan(doc_id: str) -> Dict[str, Any]:
     """Move an outbox plan back to inbox for editing (does NOT re-execute)."""
     from advisor.governance_docs import get_doc_manager
     dm = get_doc_manager()
-    moved = dm.move_to_inbox(doc_id)
-    if not moved:
+    inbox_doc_id = dm.move_to_inbox(doc_id)
+    if not inbox_doc_id:
         from fastapi import HTTPException
         raise HTTPException(status_code=409, detail=f"Could not recover {doc_id!r} — it may not be in the outbox, or inbox already has a copy.")
-    return {"status": "ok", "doc_id": doc_id, "folder": "inbox"}
+    return {"status": "ok", "doc_id": inbox_doc_id, "folder": "inbox"}
 
 
 @app.get("/api/plans/{doc_id}/versions")
@@ -784,6 +798,55 @@ async def patch_draft_commands(draft_id: str, body: Dict[str, Any]) -> Dict[str,
     if "answers" in body:
         spec["answers"] = body["answers"]
     dm.save(spec)
+
+    # Sync edits to the generated markdown plan document if it exists
+    doc_id = spec.get("doc_id")
+    if doc_id:
+        try:
+            from advisor.governance_docs import get_doc_manager
+            from advisor.agents.plan_elicitor import get_plan_elicitor
+            from advisor.agents.governance_plan_agent import GovernancePlanAgent
+
+            doc_manager = get_doc_manager()
+            current_content = doc_manager.load(doc_id)
+            if current_content:
+                # Update answers from commands_identified pre_filled to ensure they match canvas edits
+                for cmd in spec["commands_identified"]:
+                    answers_key = cmd.get("_answers_key") or cmd["action"]
+                    if "pre_filled" in cmd:
+                        spec.setdefault("answers", {})[answers_key] = dict(cmd["pre_filled"])
+                dm.save(spec)
+
+                elicitor = get_plan_elicitor()
+                commands_with_params = elicitor._merge_answers_into_commands(spec)
+
+                # Keep the narrative header (everything before "## Command Sequence")
+                idx = current_content.find("## Command Sequence")
+                if idx != -1:
+                    narrative = current_content[:idx].strip()
+                else:
+                    narrative = current_content.strip()
+
+                # Extract outcome section if already present
+                outcome = ""
+                out_idx = current_content.find("## Outcome")
+                if out_idx != -1:
+                    outcome = current_content[out_idx:].strip()
+
+                agent = GovernancePlanAgent()
+                cmd_blocks = []
+                for i, cmd in enumerate(commands_with_params):
+                    cmd_blocks.append(agent._compose_command_block(cmd, i + 1))
+
+                new_content = narrative + "\n\n## Command Sequence\n\n" + "\n".join(cmd_blocks)
+                if outcome:
+                    new_content += "\n\n" + outcome
+
+                doc_manager.update(doc_id, new_content)
+                logger.info(f"Regenerated and updated plan document {doc_id} to match canvas edits")
+        except Exception as exc:
+            logger.error(f"Failed to update plan document {doc_id} on patch: {exc}", exc_info=True)
+
     return {"status": "ok"}
 
 
@@ -793,6 +856,501 @@ async def delete_draft(draft_id: str) -> Dict[str, str]:
     from advisor.governance_draft import get_draft_manager
     deleted = get_draft_manager().delete(draft_id)
     return {"status": "ok" if deleted else "not_found"}
+
+
+# ── Report Spec Document / Draft endpoints ──────────────────────────────────────
+
+@app.get("/api/reports/docs")
+async def list_report_docs() -> Dict[str, Any]:
+    """Return inbox, outbox, and trash report spec document lists, annotated with active draft IDs."""
+    from advisor.report_spec_docs import get_report_spec_doc_manager
+    from advisor.report_draft import get_report_draft_manager
+    dm = get_report_spec_doc_manager()
+    inbox = dm.list_inbox()
+    outbox = dm.list_outbox()
+    trash = dm.list_trash()
+
+    # Build doc_id -> draft_id map for active report drafts
+    doc_to_draft: Dict[str, str] = {}
+    for d in get_report_draft_manager().list_drafts():
+        if d.get("doc_id") and d.get("phase") in ("generate", "refine"):
+            doc_to_draft[d["doc_id"]] = d["draft_id"]
+
+    for entry in inbox:
+        entry["draft_id"] = doc_to_draft.get(entry.get("doc_id"))
+
+    return {"inbox": inbox, "outbox": outbox, "trash": trash}
+
+
+@app.get("/api/reports/docs/{doc_id}")
+async def get_report_doc(doc_id: str) -> Dict[str, Any]:
+    """Return the content of a report spec document by doc_id (inbox, outbox, or trash)."""
+    from fastapi import HTTPException
+    from advisor.report_spec_docs import get_report_spec_doc_manager
+    dm = get_report_spec_doc_manager()
+    content = dm.load(doc_id, include_trash=True)
+    if content is None:
+        raise HTTPException(status_code=404, detail=f"Report spec {doc_id!r} not found")
+    folder = dm.folder_of(doc_id) or "outbox"
+    return {"doc_id": doc_id, "content": content, "folder": folder}
+
+
+@app.put("/api/reports/docs/{doc_id}")
+async def update_report_doc(doc_id: str, body: Dict[str, str]) -> Dict[str, Any]:
+    """Update report spec document content (called by canvas or manual save)."""
+    from fastapi import HTTPException
+    from advisor.report_spec_docs import get_report_spec_doc_manager
+    dm = get_report_spec_doc_manager()
+    content = body.get("content", "")
+    ok = dm.update(doc_id, content)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Report spec {doc_id!r} not found in inbox")
+    return {"status": "ok"}
+
+
+@app.post("/api/reports/docs/{doc_id}/execute")
+async def execute_report_doc(
+    doc_id: str,
+    body: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Execute a report spec document and append run outcome."""
+    from advisor.agents.report_spec_agent import get_report_spec_agent
+    agent = get_report_spec_agent()
+    body_data = body or {}
+    fmt = body_data.get("output_format", "REPORT")
+    params = body_data.get("params")
+    dry_run = body_data.get("dry_run", False)
+    return agent.execute(
+        doc_id,
+        dry_run=dry_run,
+        output_format=fmt,
+        custom_params=params,
+    )
+
+
+@app.post("/api/reports/specs/{doc_id}/archive")
+async def archive_report_result(doc_id: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Save an execution result snapshot to the outbox without re-running the report."""
+    from advisor.report_spec_docs import get_report_spec_doc_manager
+    doc_manager = get_report_spec_doc_manager()
+    body_data = body or {}
+    content = body_data.get("content", "")
+    from datetime import datetime
+    ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    outcome_md = f"## Outcome\n\n**Status:** Completed\n**Saved At:** {ts_str}\n\n{content}\n"
+    outbox_id = doc_manager.move_to_outbox(doc_id, outcome_md)
+    if not outbox_id:
+        return {"ok": False, "error": f"Could not save {doc_id} to outbox"}
+    return {"ok": True, "outbox_id": outbox_id}
+
+
+@app.post("/api/reports/docs/{doc_id}/retry")
+async def retry_report_doc(doc_id: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Move an executed report back to inbox and re-execute it."""
+    from advisor.agents.report_spec_agent import get_report_spec_agent
+    agent = get_report_spec_agent()
+    body_data = body or {}
+    fmt = body_data.get("output_format", "REPORT")
+    return agent.retry(doc_id, output_format=fmt)
+
+
+@app.post("/api/reports/docs/{doc_id}/recover")
+async def recover_report_doc(doc_id: str) -> Dict[str, Any]:
+    """Move an executed report back to inbox (stripping outcomes) without re-running."""
+    from advisor.agents.report_spec_agent import get_report_spec_agent
+    agent = get_report_spec_agent()
+    return agent.recover(doc_id)
+
+
+@app.get("/api/reports/docs/{doc_id}/versions")
+async def get_report_doc_versions(doc_id: str) -> List[Dict[str, str]]:
+    """Return version history for a report spec document."""
+    from advisor.report_spec_docs import get_report_spec_doc_manager
+    return get_report_spec_doc_manager().list_versions(doc_id)
+
+
+@app.post("/api/reports/docs/{doc_id}/versions/{version_file:path}/restore")
+async def restore_report_doc_version(doc_id: str, version_file: str) -> Dict[str, str]:
+    """Restore a version of a report spec document."""
+    from fastapi import HTTPException
+    from advisor.report_spec_docs import get_report_spec_doc_manager
+    ok = get_report_spec_doc_manager().restore_version(doc_id, version_file)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Failed to restore version")
+    return {"status": "ok"}
+
+
+@app.delete("/api/reports/docs/{doc_id}")
+async def delete_report_doc(doc_id: str) -> Dict[str, str]:
+    """Soft delete a report spec document."""
+    from advisor.report_spec_docs import get_report_spec_doc_manager
+    deleted = get_report_spec_doc_manager().delete(doc_id)
+    return {"status": "ok" if deleted else "not_found"}
+
+
+@app.post("/api/reports/docs/{doc_id}/restore-trash")
+async def restore_report_doc_trash(doc_id: str) -> Dict[str, str]:
+    """Restore a report spec document from trash."""
+    from advisor.report_spec_docs import get_report_spec_doc_manager
+    restored = get_report_spec_doc_manager().restore_from_trash(doc_id)
+    return {"status": "ok" if restored else "not_found"}
+
+
+@app.delete("/api/reports/docs/{doc_id}/purge")
+async def purge_report_doc(doc_id: str) -> Dict[str, str]:
+    """Permanently delete a report spec document from trash."""
+    from advisor.report_spec_docs import get_report_spec_doc_manager
+    purged = get_report_spec_doc_manager().purge(doc_id)
+    return {"status": "ok" if purged else "not_found"}
+
+
+@app.get("/api/reports/drafts")
+async def list_report_drafts() -> List[Dict[str, Any]]:
+    """List all active report drafts."""
+    from advisor.report_draft import get_report_draft_manager
+    return get_report_draft_manager().list_drafts()
+
+
+@app.get("/api/reports/drafts/{draft_id}")
+async def get_report_draft(draft_id: str) -> Dict[str, Any]:
+    """Get report spec draft details by draft_id."""
+    from fastapi import HTTPException
+    from advisor.report_draft import get_report_draft_manager
+    spec = get_report_draft_manager().load(draft_id)
+    if spec is None:
+        raise HTTPException(status_code=404, detail=f"Report draft {draft_id!r} not found")
+    return spec
+
+
+_SCHEMA_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+async def discover_draft_schema_internal(draft_id: str) -> List[Dict[str, str]]:
+    """Internal helper to dynamically retrieve the schema for a draft report specification."""
+    from advisor.report_draft import get_report_draft_manager
+    from advisor.report_spec_parser import register_report_spec, parse_report_spec_markdown
+    from advisor.agents.report_spec_elicitor import get_report_spec_elicitor
+    from advisor.report_pipeline import get_report_pipeline
+    from pyegeria.egeria_tech_client import EgeriaTech
+    import time
+
+    dm = get_report_draft_manager()
+    draft = dm.load(draft_id)
+    if not draft:
+        logger.warning(f"Draft {draft_id} not found for schema discovery")
+        return []
+
+    # Check cache first
+    import copy
+    current_config = copy.deepcopy({
+        "action_function": draft.get("action_function"),
+        "target_type": draft.get("target_type"),
+        "answers": draft.get("answers")
+    })
+    cached = _SCHEMA_CACHE.get(draft_id)
+    if cached:
+        time_elapsed = time.time() - cached["timestamp"]
+        if time_elapsed < 3600 and cached["draft_config"] == current_config:
+            logger.info(f"Returning cached schema for draft {draft_id}")
+            return cached["schema_data"]
+
+    try:
+        elicitor = get_report_spec_elicitor()
+        md_content = elicitor._generate_report_spec_md(draft)
+        spec = parse_report_spec_markdown(md_content)
+    except Exception as exc:
+        logger.warning(f"Failed to parse draft spec in schema discovery: {exc}")
+        return []
+
+    pipeline = get_report_pipeline()
+    try:
+        conn = pipeline._read_pyegeria_connection()
+    except Exception as exc:
+        logger.error(f"Failed to read Egeria connection info: {exc}")
+        return []
+
+    if not all((conn.get("view_server"), conn.get("platform_url"),
+                conn.get("user_id"), conn.get("user_pwd"))):
+        logger.warning("Egeria connection is not fully configured; skipping schema discovery")
+        return []
+
+    temp_spec_id = f"temp_schema_{draft_id}"
+    register_report_spec(temp_spec_id, spec)
+
+    try:
+        client = EgeriaTech(
+            view_server=conn["view_server"],
+            platform_url=conn["platform_url"],
+            user_id=conn["user_id"],
+            user_pwd=conn["user_pwd"]
+        )
+        client.create_egeria_bearer_token()
+        
+        # Speculative Discovery: query Egeria using client at depth 5
+        schema_data = client.get_report_spec_schema(
+            report_spec_name=temp_spec_id,
+            search_string="*",
+            graph_query_depth=5,
+            exclude_system_properties=True
+        )
+        # Store in cache
+        _SCHEMA_CACHE[draft_id] = {
+            "timestamp": time.time(),
+            "draft_config": current_config,
+            "schema_data": schema_data
+        }
+        return schema_data
+    except Exception as e:
+        logger.warning(f"Live schema discovery failed on Egeria server: {e}")
+        return []
+
+
+@app.get("/api/reports/drafts/{draft_id}/schema")
+async def get_report_draft_schema(draft_id: str) -> List[Dict[str, str]]:
+    """Return the dynamically discovered schema attributes for a report draft."""
+    return await discover_draft_schema_internal(draft_id)
+
+
+@app.delete("/api/reports/drafts/{draft_id}")
+async def delete_report_draft(draft_id: str) -> Dict[str, str]:
+    """Discard an active report spec draft."""
+    from advisor.report_draft import get_report_draft_manager
+    deleted = get_report_draft_manager().delete(draft_id)
+    return {"status": "ok" if deleted else "not_found"}
+
+
+@app.post("/api/reports/drafts/builder")
+async def create_report_builder_draft(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Create a blank report spec draft for builder canvas entry point."""
+    from advisor.report_draft import get_report_draft_manager
+    title = (body.get("title") or "Untitled Report").strip()
+    dm = get_report_draft_manager()
+    spec = dm.create(
+        title=title,
+        original_query=f"[builder] {title}",
+        action_function="GlossaryManager.find_glossaries",
+        target_type="Glossary",
+        columns=[
+            {"name": "Display Name", "key": "displayName", "format": False, "detail_spec": None, "formats": "ALL"},
+            {"name": "GUID", "key": "guid", "format": True, "detail_spec": None, "formats": "ALL"}
+        ],
+        answers={
+            "Heading": title,
+            "Description": "Report built with Report Builder"
+        }
+    )
+    spec["phase"] = "confirm_action"
+    spec["phase_label"] = "Building report"
+    spec["builder_mode"] = True
+    dm.save(spec)
+    return spec
+
+
+@app.post("/api/reports/specs/edit-by-name")
+async def edit_spec_by_name(body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Given a report_name (registered spec name), find the matching inbox doc and return
+    an editable draft.  Returns {found, draft_id, doc_id} — found=False means the spec
+    is built-in (not in the catalog inbox) and the client should offer "Save as spec" instead.
+    """
+    from advisor.report_spec_docs import get_report_spec_doc_manager
+    from advisor.report_draft import get_report_draft_manager
+    from advisor.report_spec_parser import parse_report_spec_markdown
+
+    report_name = (body.get("report_name") or "").strip()
+    if not report_name:
+        return {"found": False}
+
+    dm_doc = get_report_spec_doc_manager()
+    dm_draft = get_report_draft_manager()
+
+    if report_name.startswith("draft_report_"):
+        draft = dm_draft.load(report_name)
+        if draft:
+            return {"found": True, "draft_id": report_name, "doc_id": draft.get("doc_id")}
+
+    # Search inbox for a spec whose doc_id or title matches report_name
+    inbox = dm_doc.list_inbox()
+    match = None
+    name_lower = report_name.lower().replace("-", " ").replace("_", " ")
+    for entry in inbox:
+        doc_id = entry.get("doc_id", "")
+        title  = (entry.get("title") or "").lower().replace("-", " ").replace("_", " ")
+        if doc_id.lower() == name_lower or title == name_lower:
+            match = entry
+            break
+
+    if not match:
+        # Fuzzy: check if report_name appears as a substring of doc_id or title
+        for entry in inbox:
+            doc_id = entry.get("doc_id", "")
+            title  = (entry.get("title") or "").lower()
+            if name_lower in doc_id.lower() or name_lower in title:
+                match = entry
+                break
+
+    if not match:
+        return {"found": False}
+
+    doc_id = match["doc_id"]
+
+    # Check if a draft already exists for this doc_id
+    for draft in dm_draft.list_drafts():
+        if draft.get("doc_id") == doc_id:
+            return {"found": True, "draft_id": draft["draft_id"], "doc_id": doc_id}
+
+    # Create a draft from the inbox spec content
+    raw = dm_doc.load(doc_id)
+    if not raw:
+        return {"found": False}
+
+    try:
+        parsed = parse_report_spec_markdown(raw)
+    except Exception:
+        return {"found": False}
+
+    title = parsed.get("heading") or doc_id
+    spec = dm_draft.create(
+        title=title,
+        original_query=f"[edit] {doc_id}",
+        action_function=parsed.get("action", {}).get("function", ""),
+        target_type=parsed.get("target_type", ""),
+        columns=parsed.get("columns_raw", []),
+    )
+    spec["doc_id"] = doc_id
+    spec["phase"] = "refine"
+    spec["phase_label"] = "Editing spec"
+    dm_draft.save(spec)
+    return {"found": True, "draft_id": spec["draft_id"], "doc_id": doc_id}
+
+
+@app.post("/api/reports/specs/{doc_id}/edit")
+async def edit_spec_by_id(doc_id: str) -> Dict[str, Any]:
+    """Open an editable draft directly from a catalog doc_id (no name lookup needed)."""
+    from advisor.report_spec_docs import get_report_spec_doc_manager
+    from advisor.report_draft import get_report_draft_manager
+    from advisor.report_spec_parser import parse_report_spec_markdown
+
+    dm_doc   = get_report_spec_doc_manager()
+    dm_draft = get_report_draft_manager()
+
+    if doc_id.startswith("draft_report_"):
+        draft = dm_draft.load(doc_id)
+        if draft:
+            return {"found": True, "draft_id": doc_id, "doc_id": draft.get("doc_id")}
+
+    # Return existing draft if one already tracks this doc_id
+    for draft in dm_draft.list_drafts():
+        if draft.get("doc_id") == doc_id:
+            return {"found": True, "draft_id": draft["draft_id"], "doc_id": doc_id}
+
+    raw = dm_doc.load(doc_id)
+    if not raw:
+        return {"found": False, "error": f"Spec {doc_id!r} not found in catalog"}
+
+    try:
+        parsed = parse_report_spec_markdown(raw)
+    except Exception as exc:
+        return {"found": False, "error": str(exc)}
+
+    columns = []
+    for fmt in (parsed.formats or []):
+        for col in (fmt.attributes or []):
+            columns.append({
+                "name": col.name,
+                "key": col.key or "",
+                "format": col.format if col.format is not None else False,
+                "detail_spec": col.detail_spec,
+                "formats": "ALL",
+            })
+
+    perspectives = []
+    questions = []
+    if parsed.question_spec:
+        for qs in parsed.question_spec:
+            perspectives.extend(getattr(qs, "perspectives", []) or [])
+            questions.extend(getattr(qs, "questions", []) or [])
+
+    spec = dm_draft.create(
+        title=parsed.heading or doc_id,
+        original_query=f"[edit] {doc_id}",
+        action_function=(parsed.action.function if parsed.action else ""),
+        target_type=parsed.target_type or "",
+        columns=columns,
+        perspectives=perspectives,
+        questions=questions,
+    )
+    spec["doc_id"]  = doc_id
+    spec["answers"] = {"Heading": parsed.heading, "Description": parsed.description}
+    if parsed.action and parsed.action.spec_params:
+        sp = parsed.action.spec_params
+        spec["content_filters"]   = {k: v for k, v in sp.items()
+                                      if k in ("search_string", "metadata_element_type",
+                                               "metadata_element_subtypes", "starts_with",
+                                               "ends_with", "ignore_case",
+                                               "limit_results_by_status", "governance_zone_filter",
+                                               "anchor_type_name", "anchor_domain")}
+        spec["shape_defaults"]    = {k: v for k, v in sp.items()
+                                      if k in ("sequencing_property", "sequencing_order",
+                                               "graph_query_depth", "max_mermaid_node_count",
+                                               "skip_relationships", "include_only_relationships")}
+        spec["performance_hints"] = {k: v for k, v in sp.items()
+                                      if k in ("page_size", "start_from",
+                                               "relationship_page_size",
+                                               "as_of_time", "effective_time")}
+    spec["phase"]       = "refine"
+    spec["phase_label"] = "Editing spec"
+    dm_draft.save(spec)
+    return {"found": True, "draft_id": spec["draft_id"], "doc_id": doc_id}
+
+
+@app.patch("/api/reports/drafts/{draft_id}/columns")
+async def patch_report_draft_columns(draft_id: str, body: Dict[str, Any]) -> Dict[str, str]:
+    """Update columns and metadata in a report draft (called by Report Canvas edits)."""
+    from fastapi import HTTPException
+    from advisor.report_draft import get_report_draft_manager
+    dm = get_report_draft_manager()
+    spec = dm.load(draft_id)
+    if spec is None:
+        raise HTTPException(status_code=404, detail=f"Draft {draft_id!r} not found")
+    
+    if "columns" in body:
+        spec["columns"] = body["columns"]
+    if "answers" in body:
+        spec["answers"].update(body["answers"])
+    if "action_function" in body:
+        spec["action_function"] = body["action_function"]
+    if "target_type" in body:
+        spec["target_type"] = body["target_type"]
+    if "heading" in body:
+        spec.setdefault("answers", {})["Heading"] = body["heading"]
+    if "perspectives" in body:
+        spec["perspectives"] = body["perspectives"]
+    if "questions" in body:
+        spec["questions"] = body["questions"]
+    if "content_filters" in body:
+        spec["content_filters"] = body["content_filters"]
+    if "shape_defaults" in body:
+        spec["shape_defaults"] = body["shape_defaults"]
+    if "performance_hints" in body:
+        spec["performance_hints"] = body["performance_hints"]
+    dm.save(spec)
+
+    # Sync changes back to the generated markdown RSD file if it exists
+    doc_id = spec.get("doc_id")
+    if doc_id:
+        try:
+            from advisor.report_spec_docs import get_report_spec_doc_manager
+            from advisor.agents.report_spec_elicitor import get_report_spec_elicitor
+            doc_manager = get_report_spec_doc_manager()
+            elicitor = get_report_spec_elicitor()
+            new_content = elicitor._generate_report_spec_md(spec)
+            doc_manager.update(doc_id, new_content)
+            logger.info(f"Updated report spec document {doc_id} to match canvas edits")
+        except Exception as exc:
+            logger.error(f"Failed to update report document {doc_id} on patch: {exc}", exc_info=True)
+
+    return {"status": "ok"}
 
 
 @app.get("/api/actions")
@@ -865,6 +1423,54 @@ async def get_session(session_id: str) -> Dict[str, Any]:
     if not entries:
         raise HTTPException(status_code=404, detail=f"Session {session_id!r} not found")
     return {"session_id": session_id, "entries": entries}
+
+
+@app.get("/api/templates/Column/fields")
+async def get_column_fields(draft_id: Optional[str] = None) -> Dict[str, Any]:
+    """Return the fields configuration for a Report Column card in the canvas."""
+    valid_keys = []
+    if draft_id:
+        try:
+            schema_data = await discover_draft_schema_internal(draft_id)
+            valid_keys = [item["attribute_path"] for item in schema_data if "attribute_path" in item]
+        except Exception as e:
+            logger.warning(f"Failed to auto-populate Column Key valid_values: {e}")
+
+    return {
+        "fields": [
+            {
+                "name": "Name",
+                "required": True,
+                "description": "Column display name (e.g. Display Name)",
+                "valid_values": []
+            },
+            {
+                "name": "Key",
+                "required": True,
+                "description": "Egeria attribute property key (e.g. display_name)",
+                "valid_values": valid_keys
+            },
+            {
+                "name": "Apply formatting",
+                "required": False,
+                "description": "How to style this column's value (leave blank for plain text)",
+                "valid_values": ["", "bulleted-list", "code", "date", "True"]
+            },
+            {
+                "name": "Detail Spec",
+                "required": False,
+                "description": "Associated detail spec name for nested/drill-down reporting",
+                "valid_values": []
+            },
+            {
+                "name": "Output types",
+                "required": False,
+                "description": "Which output modes include this column",
+                "valid_values": ["ALL", "REPORT", "LIST", "TABLE", "MERMAID", "DICT", "FORM", "JSON"],
+                "multi_select": True
+            }
+        ]
+    }
 
 
 @app.get("/api/templates/{command_name}/fields")
@@ -964,11 +1570,16 @@ async def get_governance_zones() -> Dict[str, Any]:
 
 @app.post("/api/feedback")
 async def record_feedback(req: FeedbackRequest) -> Dict[str, str]:
-    """Record 👍/👎 feedback."""
+    """Record 👍/😐/👎 feedback."""
     try:
         from advisor.feedback_collector import get_feedback_collector
         fc = get_feedback_collector()
-        rating = "positive" if req.vote > 0 else "negative"
+        if req.vote > 0:
+            rating = "positive"
+        elif req.vote == 0:
+            rating = "neutral"
+        else:
+            rating = "negative"
         fc.record_feedback(
             query=req.query,
             query_type=req.query_type,

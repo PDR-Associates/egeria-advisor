@@ -105,7 +105,10 @@ class RAGSystem:
         perspective: Optional[str] = None,
         page_size: Optional[int] = None,
         draft_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
         egeria_authenticated: bool = True,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Process a user query and generate a response.
@@ -117,6 +120,8 @@ class RAGSystem:
             dry_run: If True, compose Dr.Egeria commands but do not execute them
             egeria_authenticated: False blocks MCP-dependent paths (report, command execution,
                 plan execution) and returns a friendly degradation message instead.
+            session_id: Optional session ID for tracking
+            user_id: Optional user ID for tracking
 
         Returns:
             Dictionary with response and metadata
@@ -130,7 +135,10 @@ class RAGSystem:
             perspective=perspective,
             page_size=page_size,
             draft_id=draft_id,
+            context=context,
             egeria_authenticated=egeria_authenticated,
+            session_id=session_id,
+            user_id=user_id,
         )
         
         # Always record metrics in local database (for dashboard)
@@ -296,6 +304,47 @@ class RAGSystem:
             "routing_agent": "command_keyword_index",
         }
 
+    # Structural code queries that should go to the symbol store, not RAG.
+    _STRUCTURAL_QUERY_RE = re.compile(
+        r'(?:'
+        r'(?:list|show|what|which|give\s+me|find|how\s+many)\s+'
+        r'(?:are\s+the\s+|are\s+in\s+|is\s+in\s+)?'
+        r'(?:all\s+)?'
+        r'(?:classes?|methods?\s+(?:in|on|of|for)|functions?|symbols?)'
+        r')'
+        r'|(?:what\s+methods?\s+does\s+\w+\s+have)'
+        r'|(?:methods?\s+(?:on|of|for|available\s+(?:on|in))\s+[A-Z]\w+)'
+        r'|(?:(?:most\s+)?complex\s+(?:method|function))'
+        r'|(?:largest\s+class)'
+        r'|(?:biggest\s+class)'
+        r'|(?:class\s+with\s+most\s+method)',
+        re.IGNORECASE,
+    )
+
+    def _is_structural_query(self, query: str) -> bool:
+        return bool(self._STRUCTURAL_QUERY_RE.search(query))
+
+    def _handle_structural_query(self, query: str, path_filter: str | None = None) -> Optional[Dict[str, Any]]:
+        """Answer a code structure question directly from the symbol store."""
+        try:
+            from advisor.analytics import get_analytics_manager
+            response = get_analytics_manager().answer_quantitative_query(query, path_filter=path_filter)
+            return {
+                "query": query,
+                "response": response,
+                "query_type": "quantitative",
+                "routing_agent": "symbol_store",
+                "sources": [],
+                "num_sources": 0,
+                "retrieval_time": 0.0,
+                "generation_time": 0.0,
+                "avg_relevance_score": 0.0,
+                "context_length": len(response),
+            }
+        except Exception as exc:
+            logger.warning(f"Structural query handler failed: {exc}")
+            return None
+
     # Keywords that signal the user wants Python code, not live Egeria data.
     _CODE_EXAMPLE_SIGNALS = (
         "python", "code example", "code sample", "write python",
@@ -410,14 +459,218 @@ class RAGSystem:
         perspective: Optional[str] = None,
         page_size: Optional[int] = None,
         draft_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
         egeria_authenticated: bool = True,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Internal query processing."""
 
         # ------------------------------------------------------------------ #
+        # Context-based routing — authoritative, no pattern matching needed. #
+        # When the frontend sends a context.task the message unambiguously    #
+        # belongs to that task's handler regardless of intent button state.  #
+        # ------------------------------------------------------------------ #
+        _ctx_task     = (context or {}).get("task")
+        _ctx_draft_id = (context or {}).get("draft_id")
+
+        if _ctx_task == "report_spec_elicitor" and _ctx_draft_id:
+            from advisor.agents.report_spec_elicitor import get_report_spec_elicitor
+            from advisor.agents.report_spec_agent import get_report_spec_agent
+            _rse = get_report_spec_elicitor()
+            _q = user_query.strip().lower()
+            if re.match(r'^(go\s+)?back\b', _q):         return _rse.back(_ctx_draft_id)
+            if re.match(r'^(save\s+(&|and)\s+exit|save\s+exit)\b', _q): return _rse.save_and_exit(_ctx_draft_id)
+            if re.match(r'^(cancel|start\s+over|abandon)\b', _q):  return _rse.cancel(_ctx_draft_id)
+            if re.match(r'^(discard)\b', _q):             return _rse.discard(_ctx_draft_id)
+            if re.match(r'^(restart|redo\s+(q&a|questions))\b', _q): return _rse.restart_qa(_ctx_draft_id)
+            if re.search(r'\b(execute|run|go ahead|proceed)\b', _q):
+                # Fetch page_size/format override from query payload if available
+                custom_params = {}
+                if page_size is not None:
+                    custom_params["page_size"] = page_size
+                _fmt_m = re.search(r"\bfmt:'([^']+)'", user_query, re.IGNORECASE)
+                _output_fmt = _fmt_m.group(1).upper() if _fmt_m else "TABLE"
+                
+                from advisor.report_draft import get_report_draft_manager as _rdm
+                spec = _rdm().load(_ctx_draft_id)
+                doc_id = spec.get("doc_id") if spec else None
+                exec_id = doc_id if doc_id else _ctx_draft_id
+                
+                logger.info(f"Elicitor draft execute command detected — executing spec/draft {exec_id}")
+                try:
+                    result = get_report_spec_agent().execute(
+                        exec_id,
+                        perspective=perspective,
+                        output_format=_output_fmt,
+                        custom_params=custom_params if custom_params else None
+                    )
+                    # Preserve context so the canvas state is maintained
+                    result["next_context"] = context
+                    return result
+                except Exception as exc:
+                    logger.warning(f"Draft execute failed: {exc}")
+            return _rse.process(_ctx_draft_id, user_query)
+
+        elif _ctx_task == "plan_elicitor" and _ctx_draft_id:
+            from advisor.agents.governance_plan_agent import get_governance_plan_agent
+            _gpa = get_governance_plan_agent()
+            _q = user_query.strip().lower()
+            if re.match(r'^(go\s+)?back\b', _q):         return _gpa.back(_ctx_draft_id)
+            if re.match(r'^(save\s+(&|and)\s+exit|save\s+exit)\b', _q): return _gpa.save_and_exit(_ctx_draft_id)
+            if re.match(r'^(cancel|start\s+over|abandon)\b', _q):  return _gpa.cancel(_ctx_draft_id)
+            if re.match(r'^(discard)\b', _q):             return _gpa.discard(_ctx_draft_id)
+            if re.match(r'^(restart|redo\s+(q&a|questions))\b', _q): return _gpa.restart_qa(_ctx_draft_id)
+            _exec_m = re.search(r'\b(execute|run\s+the\s+plan|go\s+ahead|do\s+it|proceed)\b', _q)
+            if _exec_m:
+                from advisor.governance_docs import get_document_manager
+                _dm = get_document_manager()
+                _spec_d = _dm.load(_ctx_draft_id) if hasattr(_dm, 'load') else None
+                if not _spec_d:
+                    from advisor.governance_draft import get_draft_manager
+                    _spec_d = get_draft_manager().load(_ctx_draft_id)
+                if _spec_d and _spec_d.get("doc_id"):
+                    try:
+                        result = get_governance_plan_agent().execute(_spec_d["doc_id"], perspective=perspective)
+                        result.setdefault("routing_agent", "governance_plan_agent")
+                        result["next_context"] = None
+                        return result
+                    except Exception as exc:
+                        logger.error("GovernancePlanAgent.execute failed (ctx): {}", str(exc), exc_info=True)
+            return _gpa.continue_draft(_ctx_draft_id, user_query)
+
+        elif _ctx_task == "act_confirm":
+            if not egeria_authenticated:
+                return _egeria_required_response(user_query)
+            _spec_id = (context or {}).get("spec_id", "")
+            _filt    = (context or {}).get("filter", "*") or "*"
+            _fmt     = (context or {}).get("fmt", "TABLE") or "TABLE"
+            _etype   = ""
+            # If the user clicked "Run Report" button, the query is a direct
+            # "run report <name> filter:'...' fmt:'...'" command — parse it to get
+            # the latest filter/fmt (user may have changed them via format buttons).
+            _RUN_DIRECT = re.compile(
+                r'^run\s+report\s+(.+?)(?:\s+filter:\'([^\']*)\')?(?:\s+element_type:\'([^\']*)\')?(?:\s+fmt:\'([^\']*)\')?$',
+                re.IGNORECASE,
+            )
+            _m_direct = _RUN_DIRECT.match(user_query.strip())
+            if _m_direct:
+                _spec_id = _m_direct.group(1).strip()
+                _filt    = (_m_direct.group(2) or "").strip() or "*"
+                _etype   = (_m_direct.group(3) or "").strip()
+                _fmt     = (_m_direct.group(4) or "").strip() or "TABLE"
+            _YES = re.compile(r'\b(yes|go|ok|confirm|do\s+it|proceed)\b', re.IGNORECASE)
+            _NO  = re.compile(r'\b(no|cancel|stop|never\s+mind|skip)\b', re.IGNORECASE)
+            if _m_direct or _YES.search(user_query):
+                try:
+                    from advisor.report_pipeline import get_report_pipeline
+                    _rp = get_report_pipeline()
+                    _extra = {"metadata_element_type": _etype} if _etype else None
+                    result = _rp._execute_report(user_query, _spec_id, search_string=_filt,
+                                                  page_size=page_size, extra_params=_extra,
+                                                  output_type=_fmt)
+                    if result:
+                        result["query_type"]  = "act_report_result"
+                        result["matched_spec_id"] = _spec_id
+                        # expose base_doc_id so the "⬇ Save result" button appears
+                        if _spec_id and not result.get("base_doc_id"):
+                            result["base_doc_id"] = _spec_id
+                        result["next_context"] = None
+                        return result
+                except Exception as exc:
+                    logger.warning(f"act_confirm execute failed: {exc}")
+            elif _NO.search(user_query):
+                return {
+                    "query": user_query, "response": "Cancelled.",
+                    "query_type": "general", "next_context": None,
+                    "sources": [], "num_sources": 0,
+                    "retrieval_time": 0.0, "generation_time": 0.0,
+                    "avg_relevance_score": 0.0, "context_length": 0,
+                }
+
+        elif _ctx_task == "report_disambiguation":
+            if not egeria_authenticated:
+                return _egeria_required_response(user_query)
+            _candidates = (context or {}).get("candidates", [])
+            _m = re.match(r'^\s*(\d+)\s*$', user_query.strip())
+            chosen = None
+            if _m:
+                _idx = int(_m.group(1)) - 1
+                if 0 <= _idx < len(_candidates):
+                    chosen = _candidates[_idx]
+            if not chosen:
+                for _c in _candidates:
+                    if _c.lower() in user_query.lower():
+                        chosen = _c
+                        break
+            if chosen:
+                try:
+                    from advisor.report_pipeline import get_report_pipeline
+                    result = get_report_pipeline()._execute_report(user_query, chosen,
+                                                                     search_string="*", page_size=page_size)
+                    if result:
+                        result["query_type"]  = "act_report_result"
+                        result["matched_spec_id"] = chosen
+                        result["next_context"] = None
+                        return result
+                except Exception as exc:
+                    logger.warning(f"report_disambiguation execute failed: {exc}")
+
+        # ------------------------------------------------------------------ #
+        # Report Spec Draft navigation (legacy fallback — draft_id without   #
+        # context.task, kept for backward compatibility)                      #
+        # ------------------------------------------------------------------ #
+        if draft_id and draft_id.startswith("draft_report_"):
+            from advisor.agents.report_spec_elicitor import get_report_spec_elicitor
+            from advisor.agents.report_spec_agent import get_report_spec_agent
+            elicitor = get_report_spec_elicitor()
+            agent = get_report_spec_agent()
+            q = user_query.strip().lower()
+
+            if re.match(r'^(go\s+)?back\b', q):
+                return elicitor.back(draft_id)
+            if re.match(r'^(save\s+(&|and)\s+exit|save\s+exit)\b', q):
+                return elicitor.save_and_exit(draft_id)
+            if re.match(r'^(cancel|start\s+over|abandon)\b', q):
+                return elicitor.cancel(draft_id)
+            if re.match(r'^(restart|redo\s+q&a|redo\s+questions)\b', q):
+                return elicitor.restart_qa(draft_id)
+            if re.match(r'^discard\b', q):
+                return elicitor.discard(draft_id)
+
+            _exec_pattern = re.compile(
+                r'^(?:execute|run|run\s+(?:the\s+)?report|go\s+ahead|proceed(?:\s+with\s+execution)?'
+                r'|run\s+it|execute\s+(?:the\s+)?report|execute\s+it)\b',
+                re.IGNORECASE,
+            )
+            if _exec_pattern.match(q):
+                from advisor.report_draft import get_report_draft_manager as _rdm
+                spec = _rdm().load(draft_id)
+                doc_id = spec.get("doc_id") if spec else None
+                
+                # Fetch page_size/format override from query payload if available
+                custom_params = {}
+                if page_size is not None:
+                    custom_params["page_size"] = page_size
+                _fmt_m = re.search(r"\bfmt:'([^']+)'", user_query, re.IGNORECASE)
+                _output_fmt = _fmt_m.group(1).upper() if _fmt_m else "TABLE"
+                
+                # Fall back to draft_id to allow previewing adhoc report spec drafts
+                exec_id = doc_id if doc_id else draft_id
+                logger.info(f"Draft execute command detected — executing spec/draft {exec_id}")
+                return agent.execute(
+                    exec_id,
+                    perspective=perspective,
+                    output_format=_output_fmt,
+                    custom_params=custom_params if custom_params else None
+                )
+
+            return elicitor.process(draft_id, user_query)
+
+        # ------------------------------------------------------------------ #
         # Draft navigation: route to PlanElicitor when a draft is active       #
         # ------------------------------------------------------------------ #
-        if draft_id:
+        if draft_id and (not query_type_override or query_type_override == 'plan'):
             from advisor.agents.governance_plan_agent import get_governance_plan_agent
             agent = get_governance_plan_agent()
             q = user_query.strip().lower()
@@ -498,10 +751,16 @@ class RAGSystem:
         )
         if _resume_m:
             _did = _resume_m.group(1)
-            from advisor.agents.governance_plan_agent import get_governance_plan_agent
-            result = get_governance_plan_agent().resume(_did)
-            result.setdefault("routing_agent", "governance_plan_agent")
-            return result
+            if _did.startswith("draft_report_"):
+                from advisor.agents.report_spec_elicitor import get_report_spec_elicitor
+                result = get_report_spec_elicitor().resume(_did)
+                result.setdefault("routing_agent", "report_spec_agent")
+                return result
+            else:
+                from advisor.agents.governance_plan_agent import get_governance_plan_agent
+                result = get_governance_plan_agent().resume(_did)
+                result.setdefault("routing_agent", "governance_plan_agent")
+                return result
 
         # Template selection: "use template <name>" or "start from template <name>"
         _use_tmpl_m = re.search(
@@ -543,203 +802,277 @@ class RAGSystem:
         # to DrEgeriaTemplateAgent, not ExamplesAgent, regardless of intent.
         # This fires before the intent override so 'code_search' (Show Me)
         # cannot hijack Dr.Egeria-specific template requests.
-        if query_type_override and query_type_override != 'command':
-            _qlow = user_query.lower()
-            if any(sig in _qlow for sig in self._DRE_TEMPLATE_SIGNALS):
-                logger.info(
-                    f"Dr.Egeria template guard: redirecting '{query_type_override}' → 'command'"
-                )
-                query_type_override = 'command'
-
         # Process query to understand intent
         query_analysis = self.query_processor.process(user_query)
         logger.info(f"Query type: {query_analysis['query_type']}")
 
-        # Explicit user intent overrides automatic classification —
-        # EXCEPT when the pattern classifier already identified a multi-step
-        # plan request.  A plan description like "set up X with Y and Z" must
-        # route to the plan generator even if the user had "Show me" selected
-        # from a previous query.
-        if query_type_override:
-            if query_analysis['query_type'] == 'plan' and \
-                    query_type_override not in ('plan', 'command'):
-                logger.info(
-                    f"Pattern classifier identified 'plan'; "
-                    f"ignoring intent override '{query_type_override}'"
-                )
-            else:
-                logger.info(f"Intent override from UI: '{query_type_override}'")
-                query_analysis = dict(query_analysis)
-                query_analysis['query_type'] = query_type_override
-        # When pattern matching returns 'general', use the LLM classifier to
-        # narrow the intent before committing to RAG retrieval.
-        elif query_analysis['query_type'] == 'general':
-            from advisor.llm_intent_classifier import get_intent_classifier
-            refined = get_intent_classifier().classify(user_query)
-            if refined != 'general':
-                logger.info(f"LLM intent classifier refined 'general' → '{refined}'")
-                query_analysis = dict(query_analysis)
-                query_analysis['query_type'] = refined
+        # 1. Resolve perspective, intent, and route via PerspectiveRoutingEngine
+        from advisor.perspective_routing import get_perspective_routing_engine
+        routing_engine = get_perspective_routing_engine()
+        
+        # Determine intent (check override first)
+        intent = query_type_override
+        if not intent:
+            intent_obj = query_analysis["query_type"]
+            intent = intent_obj.value if hasattr(intent_obj, "value") else str(intent_obj)
+            # LLM refinement fallback
+            if intent == "general":
+                from advisor.llm_intent_classifier import get_intent_classifier
+                refined = get_intent_classifier().classify(user_query)
+                if refined != "general":
+                    logger.info(f"LLM intent classifier refined 'general' -> '{refined}'")
+                    intent = refined
+                    query_analysis = dict(query_analysis)
+                    query_analysis["query_type"] = intent
 
-        # Role-aware routing: apply perspective signals before pipeline dispatch.
-        #
-        # Developer / Data Engineer + example/code keywords → force ExamplesAgent.
-        # This overrides both the pattern classifier and the LLM intent classifier,
-        # which frequently mistake "create X in Python" for a WRITE_COMMAND.
-        #
-        # Data Steward / Governance Officer + ambiguous "show me / example / sample"
-        # → return a clarification asking whether they want Python code or Dr.Egeria.
-        if not query_type_override:
-            query_lower = user_query.lower()
-            code_signals = any(sig in query_lower for sig in self._CODE_EXAMPLE_SIGNALS)
-            example_signals = any(kw in query_lower for kw in (
-                "example", "sample", "show me", "how do i", "how to",
-                "what methods", "which methods", "available methods", "list methods",
-                "what api", "api for", "methods for", "what functions",
-                "what can i do with", "what class", "which class",
-            ))
-            # Dr.Egeria anti-signal: never divert to ExamplesAgent when the user is
-            # explicitly asking for a Dr.Egeria template/command.
-            dre_signals = any(sig in query_lower for sig in (
-                "dr egeria", "dr. egeria", "dr_egeria", "dre",
-            ))
-            tech_roles = {"developer", "data_engineer"}
-            # Roles (and the empty "Anyone" role) that should see Python-vs-DrE
-            # disambiguation rather than silently routing to Python examples.
-            ambiguous_roles = {"data_steward", "governance_officer", "", None}
+        # Get routing action
+        routing_action = routing_engine.route(
+            query=user_query,
+            intent=intent,
+            perspective=perspective,
+            session_id=session_id,
+            user_id=user_id
+        )
 
-            # Respect the pattern classifier if it already identified a command:
-            # "give me a dr. egeria example" is a command, not a Python example.
-            pattern_is_command = query_analysis.get("query_type") == "command"
+        logger.info(f"PerspectiveRoutingEngine: action={routing_action['action']}, details={routing_action}")
 
-            if perspective in tech_roles and (code_signals or example_signals) \
-                    and not dre_signals and not pattern_is_command:
-                logger.info(
-                    f"Role '{perspective}' + code/example signal → routing to ExamplesAgent"
-                )
-                try:
-                    from advisor.agents.examples_agent import get_examples_agent
-                    result = get_examples_agent().handle(user_query)
-                    result.setdefault("routing_agent", "examples_agent")
-                    return result
-                except Exception as exc:
-                    logger.warning(f"ExamplesAgent failed ({exc}), continuing normal routing")
+        # Add audit/context values to result if returning directly
+        active_perspective = routing_action.get("active_perspective")
+        applied_policy_rule = routing_action.get("applied_policy_rule")
+        perspective_history = routing_action.get("perspective_history")
 
-            elif perspective in ambiguous_roles and example_signals \
-                    and not code_signals and not dre_signals and not pattern_is_command:
-                # Ambiguous: the query could be answered with a Python pyegeria example
-                # OR a Dr.Egeria markdown template.  Return a button-based clarification
-                # so the user can pick which path they want without re-typing.
-                logger.info(
-                    f"Role '{perspective}' + ambiguous example signal → returning intent clarification"
-                )
-                return {
-                    "query": user_query,
-                    "response": "How would you like me to answer?",
-                    "query_type": "clarification",
-                    "clarification_type": "intent_choice",
-                    "candidates": [
-                        "🐍 Python / pyegeria example",
-                        "📋 Dr.Egeria markdown template",
-                    ],
-                    "candidate_intents": ["code_search", "command"],
-                    "routing_agent": "clarification",
-                    "sources": [],
-                    "num_sources": 0,
-                    "retrieval_time": 0.0,
-                    "generation_time": 0.0,
-                    "avg_relevance_score": 0.0,
-                    "context_length": 0,
-                }
+        if routing_action["action"] == "clarify":
+            return {
+                "query": user_query,
+                "response": "How would you like me to answer?",
+                "query_type": "clarification",
+                "clarification_type": routing_action.get("clarification_type", "intent_choice"),
+                "candidates": routing_action["candidates"],
+                "candidate_intents": routing_action["candidate_intents"],
+                "routing_agent": "clarification",
+                "active_perspective": active_perspective,
+                "applied_policy_rule": applied_policy_rule,
+                "perspective_history": perspective_history,
+                "sources": [],
+                "num_sources": 0,
+                "retrieval_time": 0.0,
+                "generation_time": 0.0,
+                "avg_relevance_score": 0.0,
+                "context_length": 0,
+                "session_id": session_id,
+                "user_id": user_id,
+            }
 
-        # Handle quantitative queries directly with analytics
-        if query_analysis['query_type'] == 'quantitative':
+        # Handle direct agent dispatches:
+        agent_name = routing_action.get("agent")
+        
+        # Quantitative query shortcut
+        if intent == 'quantitative':
             logger.info("Handling quantitative query with analytics module")
             path_filter = query_analysis.get('path_filter')
-            if path_filter:
-                logger.info(f"Applying path filter: {path_filter}")
             response = self.analytics.answer_quantitative_query(user_query, path_filter)
             return {
                 "query": user_query,
                 "response": response,
                 "query_type": "quantitative",
                 "routing_agent": "analytics",
+                "active_perspective": active_perspective,
+                "applied_policy_rule": applied_policy_rule,
+                "perspective_history": perspective_history,
                 "path_filter": path_filter,
                 "sources": [],
                 "num_sources": 0,
                 "retrieval_time": 0.0,
                 "generation_time": 0.0,
                 "avg_relevance_score": 0.0,
-                "context_length": 0
-            }
-        
-        # Handle relationship queries directly with relationship graph
-        if query_analysis['query_type'] == 'relationship':
-            logger.info("Handling relationship query with relationship graph")
-            response = self.relationships.answer_relationship_query(user_query)
-            return {
-                "query": user_query,
-                "response": response,
-                "query_type": "relationship",
-                "routing_agent": "relationship",
-                "sources": [],
-                "num_sources": 0,
-                "retrieval_time": 0.0,
-                "generation_time": 0.0,
-                "avg_relevance_score": 0.0,
-                "context_length": 0
+                "context_length": 0,
+                "session_id": session_id,
+                "user_id": user_id,
             }
 
-        # Handle plan execution: "execute the plan {doc_id}" or "execute plan {doc_id}".
-        _exec_match = re.search(
-            r'\bexecute(?:\s+the)?\s+plan\s+(\w+)',
-            user_query,
-            re.IGNORECASE,
-        )
+        # Relationship query shortcut
+        if intent == 'relationship':
+            # "show/list X as a table/list/mermaid" is a report-display query, not a
+            # graph traversal — reclassify so it reaches the Act read-verb pipeline.
+            if (re.search(r'^(?:show|list|get|display)\b', user_query, re.IGNORECASE)
+                    and re.search(r'\bas\s+(?:a\s+)?(?:table|list|mermaid|json)\b', user_query, re.IGNORECASE)):
+                intent = 'command'
+            else:
+                logger.info("Handling relationship query with relationship graph")
+                response = self.relationships.answer_relationship_query(user_query)
+                return {
+                    "query": user_query,
+                    "response": response,
+                    "query_type": "relationship",
+                    "routing_agent": "relationship",
+                    "active_perspective": active_perspective,
+                    "applied_policy_rule": applied_policy_rule,
+                    "perspective_history": perspective_history,
+                    "sources": [],
+                    "num_sources": 0,
+                    "retrieval_time": 0.0,
+                    "generation_time": 0.0,
+                    "avg_relevance_score": 0.0,
+                    "context_length": 0,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                }
+
+        # Plan execution match
+        _exec_match = re.search(r'\bexecute(?:\s+the)?\s+plan\s+(\w+)', user_query, re.IGNORECASE)
         if _exec_match:
             if not egeria_authenticated:
                 return _egeria_required_response(user_query)
             _doc_id = _exec_match.group(1)
             _dry_run = "dry" in user_query.lower()
-            logger.info(
-                f"Handling plan execution: doc_id={_doc_id!r}, dry_run={_dry_run}"
-            )
             try:
                 from advisor.agents.governance_plan_agent import get_governance_plan_agent
-                result = get_governance_plan_agent().execute(
-                    _doc_id, perspective=perspective, dry_run=_dry_run
-                )
+                result = get_governance_plan_agent().execute(_doc_id, perspective=perspective, dry_run=_dry_run)
                 result.setdefault("routing_agent", "governance_plan_agent")
+                result.update({
+                    "active_perspective": active_perspective,
+                    "applied_policy_rule": applied_policy_rule,
+                    "perspective_history": perspective_history,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                })
                 return result
             except Exception as exc:
                 logger.error(f"GovernancePlanAgent.execute failed: {exc}", exc_info=True)
-                return _error_result(
-                    user_query,
-                    f"Plan execution failed: {exc}\n\nCheck the server logs for details.",
-                )
 
-        # Handle plan queries: generate a full Governance Plan Document.
-        if query_analysis['query_type'] == 'plan':
+        # Create intent — routes to PlanElicitor or ReportSpecElicitor based on query content
+        if intent == 'create':
+            from advisor.agents.create_router import route_create
+            destination = route_create(user_query)
+            _ctx = {
+                "active_perspective": active_perspective,
+                "applied_policy_rule": applied_policy_rule,
+                "perspective_history": perspective_history,
+                "session_id": session_id,
+                "user_id": user_id,
+            }
+            if destination == 'plan':
+                logger.info("Create intent → PlanElicitor")
+                from advisor.agents.plan_elicitor import get_plan_elicitor
+                result = get_plan_elicitor().start(user_query, perspective=perspective)
+                result.setdefault("routing_agent", "plan_elicitor")
+                result.update(_ctx)
+                return result
+            elif destination == 'report_spec':
+                logger.info("Create intent → ReportSpecElicitor")
+                from advisor.agents.report_spec_elicitor import get_report_spec_elicitor
+                result = get_report_spec_elicitor().start(user_query, perspective=perspective)
+                result.setdefault("routing_agent", "report_spec_agent")
+                result.update(_ctx)
+                return result
+            else:
+                # Ambiguous — ask the user
+                logger.info("Create intent → disambiguation")
+                result = {
+                    "query": user_query,
+                    "response": (
+                        "I can help you create something — which would you like to build?\n\n"
+                        "- **Governance Plan** — a multi-step plan for a governance task "
+                        "(creating zones, glossaries, policies, assigning stewards, etc.)\n"
+                        "- **Report Spec** — a reusable report definition that fetches and "
+                        "displays Egeria metadata (glossaries, assets, projects, etc.)"
+                    ),
+                    "query_type": "create_disambiguation",
+                    "routing_agent": "create_router",
+                    "navigation": ["create_plan", "create_report_spec"],
+                    "draft_id": None,
+                    "sources": [], "num_sources": 0,
+                    "retrieval_time": 0.0, "generation_time": 0.0,
+                    "avg_relevance_score": 0.0, "context_length": 0,
+                }
+                result.update(_ctx)
+                return result
+
+        if agent_name == "governance_plan_agent" or intent == 'plan':
             logger.info("Handling plan query via GovernancePlanAgent")
             try:
                 from advisor.agents.governance_plan_agent import get_governance_plan_agent
                 result = get_governance_plan_agent().handle(user_query, perspective=perspective)
                 result.setdefault("routing_agent", "governance_plan_agent")
+                result.update({
+                    "active_perspective": active_perspective,
+                    "applied_policy_rule": applied_policy_rule,
+                    "perspective_history": perspective_history,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                })
                 return result
             except Exception as exc:
                 logger.warning(f"GovernancePlanAgent failed ({exc}), falling back to RAG")
 
-        # Handle report queries via MCP pyegeria server.
-        # When the user explicitly overrides intent to a non-report type, skip the
-        # semantic pre-check so the override is honoured unconditionally.
-        if query_type_override and query_type_override != 'report':
-            is_report = False
-        else:
-            is_report = (
-                query_analysis['query_type'] == 'report'
-                or self._is_report_query(user_query)
-            )
-        if is_report:
+        # Report Spec execution or build match
+        _exec_report_match = re.search(r'\bexecute\s+(?:the\s+)?report\s+spec\s+(\w+)', user_query, re.IGNORECASE)
+        if _exec_report_match:
+            if not egeria_authenticated:
+                return _egeria_required_response(user_query)
+            _doc_id = _exec_report_match.group(1)
+            _dry_run = "dry" in user_query.lower()
+            _fmt_m = re.search(r"\bfmt:'([^']+)'", user_query, re.IGNORECASE)
+            _output_fmt = _fmt_m.group(1).upper() if _fmt_m else "TABLE"
+            try:
+                custom_params = {}
+                if page_size is not None:
+                    custom_params["page_size"] = page_size
+                from advisor.agents.report_spec_agent import get_report_spec_agent
+                result = get_report_spec_agent().execute(
+                    _doc_id, perspective=perspective, dry_run=_dry_run, output_format=_output_fmt,
+                    custom_params=custom_params if custom_params else None
+                )
+                result.setdefault("routing_agent", "report_spec_agent")
+                result.update({
+                    "active_perspective": active_perspective,
+                    "applied_policy_rule": applied_policy_rule,
+                    "perspective_history": perspective_history,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                })
+                return result
+            except Exception as exc:
+                logger.error("ReportSpecAgent.execute failed: {}", str(exc), exc_info=True)
+
+        _build_report_spec_pattern = re.compile(
+            r'\b(?:(?:create|build|define|make|new|design)\s+(?:a\s+)?report\s+spec'
+            r'|(?:define|design)\s+(?:a\s+)?report)\b',
+            re.IGNORECASE
+        )
+        # Also catch natural-language "show/list X with their Y and Z" requests.
+        # These ask for specific columns beyond what any pre-built report offers, so
+        # they should go to the Report Spec Builder rather than the MCP report pipeline.
+        _custom_columns_pattern = re.compile(
+            r'\b(?:show|list|get|find|display|give me|fetch)\b'
+            r'.{0,60}'
+            r'\b(?:with (?:their|the|its)|including|containing)\b'
+            r'.{0,60}'
+            r'\b(?:and|,)\b',
+            re.IGNORECASE | re.DOTALL
+        )
+        _wants_elicitor = (
+            _build_report_spec_pattern.search(user_query)
+            or (intent == "report" and "spec" in user_query.lower()
+                and any(w in user_query.lower() for w in ("create", "build", "define")))
+            or (intent == "report" and _custom_columns_pattern.search(user_query))
+        )
+        if _wants_elicitor:
+            logger.info("Routing to ReportSpecElicitor to build a new report spec")
+            from advisor.agents.report_spec_elicitor import get_report_spec_elicitor
+            result = get_report_spec_elicitor().start(user_query, perspective=perspective)
+            result.setdefault("routing_agent", "report_spec_agent")
+            result.update({
+                "active_perspective": active_perspective,
+                "applied_policy_rule": applied_policy_rule,
+                "perspective_history": perspective_history,
+                "session_id": session_id,
+                "user_id": user_id,
+            })
+            return result
+
+        # Report Pipeline
+        if agent_name == "report_pipeline" or intent == "report":
             if not egeria_authenticated:
                 return _egeria_required_response(user_query)
             logger.info("Handling report query via MCP report pipeline")
@@ -747,19 +1080,203 @@ class RAGSystem:
                 from advisor.report_pipeline import get_report_pipeline
                 result = get_report_pipeline().process(user_query, perspective=perspective, page_size=page_size)
                 result.setdefault("routing_agent", "report_pipeline")
+                result.update({
+                    "active_perspective": active_perspective,
+                    "applied_policy_rule": applied_policy_rule,
+                    "perspective_history": perspective_history,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                })
                 return result
             except Exception as e:
                 logger.warning(f"Report pipeline failed ({e}), falling back to RAG")
-                # Fall through to RAG below
 
-        # Handle command/action queries.
-        # If the query asks for a sample/template, return the Dr.Egeria markdown template.
-        # Otherwise execute the command via DrEgeriaActionAgent.
-        if query_analysis['query_type'] == 'command':
-            _template_signals = (
-                "template", "sample", "example", "show me", "give me",
-                "how to", "how do i", "demonstrate", "illustrate",
-            )
+        # Act — "run report <name>" explicit dispatch (from confirm-step buttons).
+        # Must be checked BEFORE the read-verb guard so it never falls to DrEgeriaActionAgent.
+        _RUN_NOW_RE = re.compile(
+            r'^run\s+report\s+(.+?)(?:\s+filter:\'([^\']*)\')?(?:\s+element_type:\'([^\']*)\')?(?:\s+fmt:\'([^\']*)\')?$',
+            re.IGNORECASE,
+        )
+        if intent == "command" and _RUN_NOW_RE.match(user_query.strip()):
+            if not egeria_authenticated:
+                return _egeria_required_response(user_query)
+            from advisor.report_pipeline import get_report_pipeline
+            pipeline = get_report_pipeline()
+            m = _RUN_NOW_RE.match(user_query.strip())
+            rname        = m.group(1).strip()
+            filt         = (m.group(2) or "").strip() or "*"
+            element_type = (m.group(3) or "").strip()
+            fmt_override = (m.group(4) or "").strip() or None
+            extra_params = {}
+            if element_type:
+                extra_params["metadata_element_type"] = element_type
+            try:
+                result = pipeline._execute_report(
+                    user_query, rname,
+                    search_string=filt, page_size=page_size,
+                    extra_params=extra_params or None,
+                    output_type=fmt_override or "TABLE",
+                )
+                if result:
+                    result["query_type"] = "act_report_result"
+                    result["matched_spec_id"] = rname
+                    result.setdefault("routing_agent", "act_pipeline")
+                    result.update({
+                        "active_perspective": active_perspective,
+                        "applied_policy_rule": applied_policy_rule,
+                        "perspective_history": perspective_history,
+                        "session_id": session_id,
+                        "user_id": user_id,
+                    })
+                    return result
+            except Exception as e:
+                logger.warning(f"Act direct run failed: {e}")
+
+        # Act — read-verb queries show a confirm step before running.
+        # Write verbs (create/update/assign/…) fall through to DrEgeriaActionAgent below.
+        _ACT_READ_RE = re.compile(
+            r'^(?:show|list|get|find|display|view|fetch|print|give\s+me|report\s+on|pull)\b',
+            re.IGNORECASE,
+        )
+        if intent == "command" and _ACT_READ_RE.match(user_query.strip()):
+            if not egeria_authenticated:
+                return _egeria_required_response(user_query)
+
+            logger.info("Act + read verb — finding best report match (confirm step)")
+            try:
+                from advisor.report_pipeline import get_report_pipeline
+                pipeline = get_report_pipeline()
+
+                # Extract the candidate entity-type token from the NL query.
+                # "show all dataHubs" → element_type=dataHub, search_string=*
+                # "show glossaries named Inventory" → element_type='', search_string=Inventory
+                # Heuristic: the token immediately after the verb/quantifier and before
+                # "with/including/named" is the type; tokens after are search filters.
+                # Extract output format from natural language, e.g. "as a table", "as mermaid"
+                def _extract_format(query: str) -> str:
+                    _FMT_RE = re.compile(
+                        r'\bas\s+(?:a\s+)?'
+                        r'(table|list|mermaid(?:\s+(?:graph|diagram|chart))?|json|report|form|md|markdown)\b',
+                        re.IGNORECASE,
+                    )
+                    m = _FMT_RE.search(query)
+                    if not m:
+                        return "TABLE"   # default for ad-hoc reports
+                    raw = m.group(1).lower().split()[0]  # take first word (e.g. "mermaid" from "mermaid graph")
+                    return {"markdown": "REPORT", "md": "REPORT"}.get(raw, raw.upper())
+
+                def _extract_type_and_filter(query: str, report_name: str):
+                    _VERB = {"show", "list", "get", "find", "display", "view", "fetch",
+                             "me", "all", "the", "a", "an", "my", "our", "their", "its",
+                             "active", "draft", "approved", "deprecated", "proposed"}
+                    _SEPARATOR = {"with", "named", "called", "where", "that", "which",
+                                  "including", "containing", "for", "of", "in", "by"}
+                    _STOP = _VERB | _SEPARATOR | {"and", "or", "from", "to"}
+                    if report_name:
+                        _STOP.update(w.lower() for w in re.split(r'[\s\-_]', report_name))
+
+                    tokens = re.findall(r"[A-Za-z0-9]+", query)
+                    # The first non-stop token before any separator is the entity type
+                    element_type, search_string = "", "*"
+                    past_verb = False
+                    past_separator = False
+                    for tok in tokens:
+                        tl = tok.lower()
+                        if tl in _VERB:
+                            past_verb = True
+                            continue
+                        if tl in _SEPARATOR:
+                            past_separator = True
+                            continue
+                        if past_verb and not past_separator and not element_type:
+                            element_type = tok  # first content word = entity type
+                        elif past_separator and len(tok) > 2 and tl not in _STOP:
+                            search_string = tok  # word after separator = search filter
+                            break
+                    return element_type, search_string
+
+                # find_specs → rank → pick best without executing
+                specs = pipeline.find_specs(user_query, perspective=perspective)
+                if specs:
+                    ranked = pipeline._rank_specs(specs)
+                    best = ranked[0]
+                    report_name = (
+                        best.get("report_spec") or best.get("name") or
+                        best.get("spec_name") or best.get("report_name") or ""
+                    )
+                else:
+                    report_name = ""
+
+                element_type, search_string = _extract_type_and_filter(user_query, report_name)
+                output_fmt = _extract_format(user_query)
+
+                if report_name:
+                    parts = [f"I'll run **{report_name}**"]
+                    if element_type:
+                        parts.append(f"element type: `{element_type}`")
+                    if search_string != "*":
+                        parts.append(f"filter: `{search_string}`")
+                    parts.append(f"format: `{output_fmt}`")
+                    response_text = (
+                        " — ".join(parts) + "\n\n"
+                        "Adjust the fields below before running, or use **Modify spec** "
+                        "to edit the report's columns and parameters."
+                    )
+                else:
+                    response_text = (
+                        "I couldn't find a matching report spec for that query.\n\n"
+                        "Try **Create** to build a new report spec, or rephrase to match a catalog report name."
+                    )
+
+                result = {
+                    "query": user_query,
+                    "response": response_text,
+                    "query_type": "act_confirm",
+                    "matched_spec_id": report_name or None,
+                    "extracted_filter": search_string if search_string != "*" else "",
+                    "extracted_element_type": element_type,
+                    "extracted_format": output_fmt,
+                    "routing_agent": "act_pipeline",
+                    "next_context": {
+                        "task": "act_confirm",
+                        "spec_id": report_name or "",
+                        "filter": search_string if search_string != "*" else "*",
+                        "fmt": output_fmt,
+                    } if report_name else None,
+                    "sources": [], "num_sources": 0,
+                    "retrieval_time": 0.0, "generation_time": 0.0,
+                    "avg_relevance_score": 0.0, "context_length": 0,
+                    "active_perspective": active_perspective,
+                    "applied_policy_rule": applied_policy_rule,
+                    "perspective_history": perspective_history,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                }
+                return result
+            except Exception as e:
+                logger.warning(f"Act ReportPipeline failed ({e})")
+                return {
+                    "query": user_query,
+                    "response": (
+                        "I couldn't find a matching report spec for that query.\n\n"
+                        "Try **Create** to build a new report spec, or rephrase to match a catalog report name."
+                    ),
+                    "query_type": "act_confirm",
+                    "matched_spec_id": None,
+                    "next_context": None,
+                    "sources": [], "num_sources": 0,
+                    "retrieval_time": 0.0, "generation_time": 0.0,
+                    "avg_relevance_score": 0.0, "context_length": 0,
+                    "active_perspective": active_perspective,
+                    "applied_policy_rule": applied_policy_rule,
+                    "perspective_history": perspective_history,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                }
+
+        # Dr.Egeria Action / Template
+        if agent_name == "dr_egeria_agent" or agent_name == "dre_template_agent" or intent == "command":
+            _template_signals = ("template", "sample", "example", "show me", "give me", "how to", "how do i", "demonstrate", "illustrate")
             wants_template = any(sig in user_query.lower() for sig in _template_signals)
             if wants_template:
                 logger.info("Handling Dr.Egeria template request via DrEgeriaTemplateAgent")
@@ -767,9 +1284,16 @@ class RAGSystem:
                     from advisor.agents.dre_template_agent import get_dre_template_agent
                     result = get_dre_template_agent().handle(user_query, perspective=perspective)
                     result.setdefault("routing_agent", "dre_template_agent")
+                    result.update({
+                        "active_perspective": active_perspective,
+                        "applied_policy_rule": applied_policy_rule,
+                        "perspective_history": perspective_history,
+                        "session_id": session_id,
+                        "user_id": user_id,
+                    })
                     return result
                 except Exception as e:
-                    logger.warning(f"DrEgeriaTemplateAgent failed ({e}), falling back to DrEgeriaActionAgent")
+                    logger.warning(f"DrEgeriaTemplateAgent failed ({e}), falling back")
             if not egeria_authenticated:
                 return _egeria_required_response(user_query)
             logger.info("Handling command query via DrEgeriaActionAgent")
@@ -777,51 +1301,132 @@ class RAGSystem:
                 from advisor.agents.dr_egeria_agent import get_dr_egeria_agent
                 result = get_dr_egeria_agent().handle(user_query, dry_run=dry_run)
                 result.setdefault("routing_agent", "dr_egeria_agent")
+                result.update({
+                    "active_perspective": active_perspective,
+                    "applied_policy_rule": applied_policy_rule,
+                    "perspective_history": perspective_history,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                })
                 return result
             except Exception as e:
                 logger.warning(f"DrEgeriaActionAgent failed ({e}), falling back to RAG")
 
         # Before falling through to RAG, offer alternatives when there is a medium-confidence
         # report match — prevents silent wrong-route responses.
-        # Skip when the user has explicitly specified a non-report intent.
         if not query_type_override or query_type_override == 'report':
             alt = self._report_alternatives(user_query)
             if alt is not None:
+                alt.update({
+                    "active_perspective": active_perspective,
+                    "applied_policy_rule": applied_policy_rule,
+                    "perspective_history": perspective_history,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                })
                 return alt
 
-        # Route code/example queries to ExamplesAgent (BeeAI + fallback).
-        if query_analysis['query_type'] in ('code_search', 'example'):
-            logger.info(f"Routing {query_analysis['query_type']} query to ExamplesAgent")
+        # Examples Agent / Code Help
+        if agent_name == "examples_agent" or intent in ("code_help", "code_search", "example"):
+            logger.info(f"Routing query to ExamplesAgent")
             try:
                 from advisor.agents.examples_agent import get_examples_agent
-                result = get_examples_agent().handle(user_query)
+                result = get_examples_agent().handle(user_query, perspective=perspective)
                 result.setdefault("routing_agent", "examples_agent")
+                result.update({
+                    "active_perspective": active_perspective,
+                    "applied_policy_rule": applied_policy_rule,
+                    "perspective_history": perspective_history,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                })
                 return result
             except Exception as exc:
                 logger.warning(f"ExamplesAgent failed ({exc}), falling back to RAG")
 
-        # ── Command-discovery shortcut ──────────────────────────────────────
-        # "are there dr.egeria commands/templates for X" → answer from keyword index.
-        # Fires on explanation, command, and code_search so the user doesn't have to
-        # pick the right intent selector for a discovery question.
-        if query_analysis['query_type'] in ('explanation', 'command', 'code_search', 'general') \
-                and self._is_command_discovery(user_query):
-            result = self._handle_command_discovery(user_query)
-            if result:
+        # Code Intel Agent
+        if agent_name == "code_intel_agent" or intent == "code_intel":
+            logger.info(f"Routing query to CodeIntelAgent")
+            try:
+                from advisor.agents.code_intel_agent import get_code_intel_agent
+                result = get_code_intel_agent().handle(user_query)
+                result.setdefault("routing_agent", "code_intel_agent")
+                result.update({
+                    "active_perspective": active_perspective,
+                    "applied_policy_rule": applied_policy_rule,
+                    "perspective_history": perspective_history,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                })
                 return result
+            except Exception as exc:
+                logger.warning(f"CodeIntelAgent failed ({exc}), falling back to RAG")
 
-        # Route explanation/conceptual/debugging queries to DocAgent (BeeAI + fallback).
-        if query_analysis['query_type'] in ('explanation', 'best_practice', 'comparison', 'debugging', 'general'):
-            logger.info(f"Routing {query_analysis['query_type']} query to DocAgent")
+        # Doc Agent / Explanation
+        if agent_name == "doc_agent" or intent in ("explanation", "best_practice", "comparison", "debugging"):
+            logger.info(f"Routing query to DocAgent")
             try:
                 from advisor.agents.doc_agent import get_doc_agent
-                result = get_doc_agent().handle(user_query, mode=query_analysis['query_type'])
+                result = get_doc_agent().handle(user_query, mode=intent)
                 result.setdefault("routing_agent", "doc_agent")
+                result.update({
+                    "active_perspective": active_perspective,
+                    "applied_policy_rule": applied_policy_rule,
+                    "perspective_history": perspective_history,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                })
                 return result
             except Exception as exc:
                 logger.warning(f"DocAgent failed ({exc}), falling back to RAG")
 
-        return self._run_rag_fallback(user_query, query_analysis, include_context, perspective)
+        # ── Structural code-symbol shortcut ────────────────────────────────
+        if intent in ('quantitative', 'code_help', 'code_search', 'general', 'explanation') \
+                and not query_type_override \
+                and self._is_structural_query(user_query):
+            result = self._handle_structural_query(user_query, path_filter=query_analysis.get('path_filter'))
+            if result:
+                result.update({
+                    "active_perspective": active_perspective,
+                    "applied_policy_rule": applied_policy_rule,
+                    "perspective_history": perspective_history,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                })
+                return result
+
+        # ── Command-discovery shortcut ──────────────────────────────────────
+        if intent in ('explanation', 'command', 'code_help', 'code_search', 'general') \
+                and self._is_command_discovery(user_query):
+            result = self._handle_command_discovery(user_query)
+            if result:
+                result.update({
+                    "active_perspective": active_perspective,
+                    "applied_policy_rule": applied_policy_rule,
+                    "perspective_history": perspective_history,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                })
+                return result
+
+        # Fallback to RAG
+        feedback_adjustments = routing_engine.get_feedback_adjustments()
+        result = self._run_rag_fallback(
+            user_query=user_query,
+            query_analysis=query_analysis,
+            include_context=include_context,
+            perspective=perspective,
+            boosted_collections=routing_action.get("boosts"),
+            feedback_adjustments=feedback_adjustments
+        )
+        result.update({
+            "active_perspective": active_perspective,
+            "applied_policy_rule": applied_policy_rule,
+            "perspective_history": perspective_history,
+            "session_id": session_id,
+            "user_id": user_id,
+        })
+        return result
 
     # ---------------------------------------------------------------------- #
     # RAG fallback — retrieve context, build prompt, generate response        #
@@ -833,6 +1438,8 @@ class RAGSystem:
         query_analysis: Dict[str, Any],
         include_context: bool,
         perspective: Optional[str],
+        boosted_collections: Optional[List[str]] = None,
+        feedback_adjustments: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
         """Retrieve context, build prompt, and generate a response (blocking)."""
         search_strategy = query_analysis["search_strategy"]
@@ -848,6 +1455,9 @@ class RAGSystem:
                 min_score=search_strategy["min_score"],
                 format_style=search_strategy["format_style"],
                 prioritize_docs=prioritize_docs,
+                intent=query_analysis["query_type"],
+                boosted_collections=boosted_collections,
+                feedback_adjustments=feedback_adjustments,
             )
         else:
             context, sources = "", []
@@ -934,7 +1544,10 @@ class RAGSystem:
         perspective: Optional[str] = None,
         page_size: Optional[int] = None,
         draft_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
         egeria_authenticated: bool = True,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> Iterator[str]:
         """
         Run the full pipeline and yield SSE-formatted strings.
@@ -967,11 +1580,14 @@ class RAGSystem:
                     perspective=perspective,
                     page_size=page_size,
                     draft_id=draft_id,
+                    context=context,
                     egeria_authenticated=egeria_authenticated,
+                    session_id=session_id,
+                    user_id=user_id,
                 )
                 result_holder.append(result)
             except Exception as exc:
-                logger.error(f"query_stream worker error: {exc}", exc_info=True)
+                logger.error("query_stream worker error: {}", str(exc), exc_info=True)
                 error_holder.append(exc)
             finally:
                 _stream_local.on_token = None
@@ -1059,7 +1675,14 @@ class RAGSystem:
                 search_time_ms=result.get("retrieval_time", 0) * 1000,
                 llm_time_ms=result.get("generation_time", 0) * 1000,
                 avg_relevance_score=result.get("avg_relevance_score", 0.0),
-                sources_json=json.dumps(sources_data) if sources_data else None
+                sources_json=json.dumps(sources_data) if sources_data else None,
+                active_perspective=result.get("active_perspective"),
+                resolved_intent=result.get("query_type"),
+                routing_agent=result.get("routing_agent"),
+                applied_policy_rule=result.get("applied_policy_rule"),
+                perspective_history=result.get("perspective_history"),
+                session_id=result.get("session_id"),
+                user_id=result.get("user_id"),
             )
             
             self.metrics_collector.record_query(metric)

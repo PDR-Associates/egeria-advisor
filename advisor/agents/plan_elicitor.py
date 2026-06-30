@@ -329,6 +329,7 @@ class PlanElicitor:
             "phase": "done",
             "can_go_back": False,
             "navigation": [],
+            "next_context": None,
             "sources": [], "num_sources": 0,
             "retrieval_time": 0.0, "generation_time": 0.0,
             "avg_relevance_score": 0.0, "context_length": 0,
@@ -352,6 +353,7 @@ class PlanElicitor:
             "phase": "saved",
             "can_go_back": False,
             "navigation": [],
+            "next_context": None,
             "sources": [], "num_sources": 0,
             "retrieval_time": 0.0, "generation_time": 0.0,
             "avg_relevance_score": 0.0, "context_length": 0,
@@ -1356,7 +1358,7 @@ class PlanElicitor:
             params      = dict(spec["answers"].get(answers_key) or spec["answers"].get(action) or {})
             # Merge pre_filled params (e.g. Parent ID set during decomposition)
             for k, v in (cmd.get("pre_filled") or {}).items():
-                params.setdefault(k, v)
+                params[k] = v
             if cmd.get("display_name") and "Display Name" not in params:
                 params["Display Name"] = cmd["display_name"]
             template  = agent._load_template(action)
@@ -1411,15 +1413,21 @@ def _clarification_result(
     nav: Optional[List[str]] = None,
     extra: Optional[Dict] = None,
 ) -> Dict[str, Any]:
+    _phase = phase_override or spec.get("phase", "elicit_required")
     result: Dict[str, Any] = {
         "query":            spec.get("original_query", ""),
         "response":         response_md,
         "query_type":       "plan_clarification",
         "routing_agent":    "governance_plan_agent",
         "draft_id":         spec["draft_id"],
-        "phase":            phase_override or spec.get("phase", "elicit_required"),
+        "phase":            _phase,
         "can_go_back":      can_go_back,
         "navigation":       nav or _NAV_FIRST,
+        "next_context": {
+            "task":     "plan_elicitor",
+            "draft_id": spec["draft_id"],
+            "phase":    _phase,
+        },
         "sources":          [],
         "num_sources":      0,
         "retrieval_time":   0.0,

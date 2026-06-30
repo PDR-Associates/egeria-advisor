@@ -86,10 +86,45 @@ def get_egeria_symbol(name: str) -> str:
 
 def _get_egeria_symbol_raw(name: str) -> str:
     """Direct call to symbol lookup without the BeeAI tool wrapper."""
+    from advisor.code_symbol_store import get_symbol_store
+    store = get_symbol_store()
+    
+    # Try exact match in PostgreSQL first (filter to pyegeria Python SDK symbols)
+    symbols = store.search_symbols(name_pattern=name, collection="pyegeria", limit=5)
+    
+    # Filter for exact name match if possible
+    exact_matches = [s for s in symbols if s["name"].lower() == name.lower()]
+    targets = exact_matches if exact_matches else symbols
+    
+    if targets:
+        parts = []
+        for s in targets:
+            desc = f"Name: {s['name']}\nType: {s['kind']}"
+            if s['parent_class']:
+                desc += f"\nParent Class: {s['parent_class']}"
+            if s['signature']:
+                desc += f"\nSignature: {s['signature']}"
+            if s['docstring']:
+                desc += f"\nDocumentation: {s['docstring']}"
+            
+            # If it's a class, also fetch its methods from DB
+            if s['kind'] == 'class':
+                methods = store.methods_for_class(s['name'])
+                if methods:
+                    desc += "\n\nExposed Methods:"
+                    for m in methods:
+                        m_sig = m['signature'] or "()"
+                        desc += f"\n  - {m['name']}{m_sig}"
+                        if m['docstring']:
+                            desc += f"  # {m['docstring'].strip()}"
+                            
+            parts.append(f"[{s['collection']} | {s['qualified_name']} ({s['kind']})]\n{desc}")
+        return "\n\n---\n\n".join(parts)
+
     from advisor.multi_collection_store import get_multi_collection_store
-    store = get_multi_collection_store()
+    vec_store = get_multi_collection_store()
     # Search pyegeria collection with name as query, filtered to high precision
-    result = store.search_specific_collections(
+    result = vec_store.search_specific_collections(
         query=name,
         collection_names=["pyegeria"],
         top_k=5,

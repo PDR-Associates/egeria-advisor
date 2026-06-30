@@ -539,7 +539,7 @@ class OutcomeReporter:
                     # Extract GUID from message when the field is empty
                     # (happens when QN was auto-derived by Dr.Egeria, not present in plan)
                     if not guid and msg:
-                        m = _GUID_IN_MSG_RE.search(msg)
+                        m = self._GUID_IN_MSG_RE.search(msg)
                         if m:
                             guid = m.group(1)
                     rows.append(f"| {r['command']} | {status_cell} | {guid} | {qn} | {note} |")

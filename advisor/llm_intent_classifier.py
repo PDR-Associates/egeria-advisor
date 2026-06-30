@@ -18,12 +18,20 @@ _CLASSIFY_PROMPT = """\
 Classify this Egeria assistant query into ONE of these categories:
 
 LIVE_DATA     - user wants CURRENT DATA from Egeria right now (list glossaries, show assets, run a report, what collections exist)
-CODE_HELP     - user wants Python/pyegeria CODE EXAMPLES or API usage help — includes any query that mentions "python", "example", "sample", "code", "how do I", "how to", or "write a" even when the topic involves creating something (e.g. "write a python example to create a glossary", "give me a code sample for creating a governance definition")
+CODE_HELP     - user wants Python/pyegeria CODE EXAMPLES or API usage help — includes queries that ask for runnable code examples, snippets, or code-writing help (e.g. "write a python example to create a glossary", "give me a code sample for creating a governance definition"). Do NOT choose this for structural codebase metadata or listing implementation classes/methods.
+CODE_INTEL    - user wants codebase structure, implementation classes, relationships, class inheritance, method container lookups, class/method/module listings, or stats (e.g. "what classes are in egeria-python", "what class is method X in", "does class A inherit from class B", "list methods of Y", "how many lines of code are there").
 CONCEPT       - user wants an explanation or definition (what is a glossary, how does lineage work, explain X)
 WRITE_COMMAND - user wants to CREATE/UPDATE/DELETE Egeria metadata RIGHT NOW using a Dr.Egeria command — only when there is NO mention of python, code, example, or sample (e.g. "create a glossary called Finance" with no code qualifier)
 AMBIGUOUS     - genuinely unclear
 
-IMPORTANT: When the query mentions "python", "example", "sample", "code", "write a", or "how to/do I", always choose CODE_HELP even if the topic is about creating or updating something. Only choose WRITE_COMMAND for direct imperative commands with no code/example qualifier.
+ORGANIZATIONAL GUIDELINES:
+- **Egeria** (Java repository): The core Java implementation of the Egeria backend (collection: 'egeria_java').
+- **egeria-python** (Python repository): Python client code and tools (collection: 'pyegeria'). It contains:
+  1. `pyegeria` (under `pyegeria/`): Client SDK API library.
+  2. `commands` (under `commands/`): CLI tools (like `hey_egeria`).
+  3. `dr_egeria` (under `md_processing/`): Markdown template processor.
+
+IMPORTANT: When the query asks for runnable examples or how to write code, choose CODE_HELP. When the query asks about codebase structure, implementation details, class/method/module listings, class hierarchy, or stats (even if it mentions python, pyegeria, or java), always choose CODE_INTEL. Only choose WRITE_COMMAND for direct imperative commands with no code/example qualifier.
 
 Query: "{query}"
 
@@ -32,7 +40,8 @@ Reply with ONLY the category name."""
 # Map classifier output → query_type string used by rag_system
 _CATEGORY_TO_QUERY_TYPE = {
     "LIVE_DATA": "report",
-    "CODE_HELP": "code_search",
+    "CODE_HELP": "code_help",
+    "CODE_INTEL": "code_intel",
     "CONCEPT": "explanation",
     "WRITE_COMMAND": "command",
     "AMBIGUOUS": "general",

@@ -506,15 +506,29 @@ class CodeIngester:
             Tuple of (files_processed, chunks_created, entity_ids)
         """
         try:
-            # Check if this is a Python file - if so, extract code structure
             if file_path.suffix == '.py':
                 return self._ingest_python_file(file_path)
+            elif file_path.suffix == '.java':
+                result = self._ingest_text_file(file_path)
+                # Also extract symbols into SQLite (text chunks still go to pgvector)
+                self._extract_java_symbols(file_path)
+                return result
             else:
                 return self._ingest_text_file(file_path)
-            
+
         except Exception as e:
             logger.error(f"Error ingesting {file_path}: {e}")
             return 0, 0, []
+
+    def _extract_java_symbols(self, file_path: Path) -> None:
+        try:
+            from advisor.data_prep.java_symbol_extractor import extract_java_symbols
+            from advisor.code_symbol_store import get_symbol_store
+            symbols = extract_java_symbols(file_path)
+            if symbols:
+                get_symbol_store().upsert_symbols(self.collection_name, symbols)
+        except Exception as exc:
+            logger.warning(f"Java symbol extraction failed for {file_path}: {exc}")
     
     def _ingest_python_file(self, file_path: Path) -> Tuple[int, int, List[str]]:
         """
@@ -604,7 +618,7 @@ class CodeIngester:
             }
             metadata.append(meta)
         
-        # Insert into Milvus
+        # Insert into vector store
         if texts:
             self.vector_store.insert_data(
                 self.collection_name,
@@ -612,7 +626,14 @@ class CodeIngester:
                 ids=ids,
                 metadata=metadata
             )
-        
+
+        # Write to SQLite symbol table for fast structural queries
+        try:
+            from advisor.code_symbol_store import get_symbol_store
+            get_symbol_store().upsert_symbols(self.collection_name, elements)
+        except Exception as exc:
+            logger.warning(f"CodeSymbolStore upsert failed for {file_path}: {exc}")
+
         return 1, len(elements), ids
     
     def _ingest_text_file(self, file_path: Path) -> Tuple[int, int, List[str]]:
@@ -740,7 +761,15 @@ class CodeIngester:
             logger.warning("Continuing with accessible files only")
         
         logger.info(f"Found {len(files)} files matching {file_pattern}")
-        
+
+        # Clear stale symbols for this collection before re-ingesting
+        if file_pattern.endswith((".py", ".java")):
+            try:
+                from advisor.code_symbol_store import get_symbol_store
+                get_symbol_store().clear_collection(self.collection_name)
+            except Exception as exc:
+                logger.warning(f"CodeSymbolStore clear failed: {exc}")
+
         # Process files individually to use Python parsing
         for idx, file_path in enumerate(files, 1):
             try:

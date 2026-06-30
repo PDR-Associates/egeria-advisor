@@ -52,6 +52,7 @@ class ArtifactCanvas {
   async open(id) {
     if (!id) return;
     this._id = id;
+    this._fieldsCache = {}; // Clear cache on opening new draft
     const { panelId, handleId } = this._opts;
     const panel  = document.getElementById(panelId);
     const handle = document.getElementById(handleId);
@@ -85,22 +86,24 @@ class ArtifactCanvas {
   }
 
   async addItem() {
-    // Use the command picker modal if available (Plan Editor mode),
-    // otherwise fall back to a simple prompt for non-browser environments.
-    if (typeof openCmdPicker === 'function') {
-      openCmdPicker(async (commandName) => {
-        const newItem = this._opts.itemAdapter.makeNew(commandName);
-        this._items.push(newItem);
-        await this._sync();
-        this._render();
-      });
-    } else {
-      const typeName = prompt('Command name (e.g. "Create Project", "Create Glossary Term"):');
-      if (!typeName?.trim()) return;
-      const newItem = this._opts.itemAdapter.makeNew(typeName.trim());
+    const doAdd = async (name, keyOverride) => {
+      if (!name?.trim()) return;
+      const newItem = this._opts.itemAdapter.makeNew(name.trim(), keyOverride);
       this._items.push(newItem);
       await this._sync();
       this._render();
+    };
+    // Custom handler supplied by the canvas (e.g. ReportSpecCanvas passes a column picker)
+    if (typeof this._opts.addItemFn === 'function') {
+      this._opts.addItemFn(doAdd);
+      return;
+    }
+    // Default: Dr. Egeria command picker modal for Plan canvas
+    if (typeof openCmdPicker === 'function') {
+      openCmdPicker(doAdd);
+    } else {
+      const typeName = prompt('Command name (e.g. "Create Project", "Create Glossary Term"):');
+      doAdd(typeName);
     }
   }
 
@@ -160,7 +163,7 @@ class ArtifactCanvas {
     const statusTitle = dn ? 'Name set' : 'Display Name missing';
 
     const card = document.createElement('div');
-    card.className = 'pcanvas-card bg-slate-900 rounded-lg border border-slate-700/60 overflow-hidden select-none';
+    card.className = 'pcanvas-card bg-slate-900 rounded-lg border border-slate-700/60 overflow-hidden select-none shrink-0';
     card.dataset.acIdx = idx;
     card.draggable = true;
 
@@ -222,7 +225,7 @@ class ArtifactCanvas {
           rows="2" placeholder="Rationale, instructions, or notes…"
           data-ac-idx="${idx}">${_acEsc(narrative)}</textarea>
       </div>
-      <div class="fields-section hidden px-2.5 pb-2.5 flex flex-col gap-1.5 overflow-y-auto" style="max-height:32rem"></div>
+      <div class="fields-section hidden px-2.5 pb-2.5 flex flex-col gap-1.5 overflow-y-auto" style="max-height:15rem"></div>
     `;
 
     // ── Drag-and-drop ──────────────────────────────────────────────────────
@@ -301,11 +304,17 @@ class ArtifactCanvas {
     const fieldUrl = this._opts.adapter.fieldUrl(type, this._mode);
     section.innerHTML = '<p class="text-xs text-slate-600 p-1">Loading fields…</p>';
 
-    let fields = [];
-    try {
-      const r = await fetch(fieldUrl, { headers: (typeof Auth !== 'undefined' ? Auth.getHeaders() : {}) });
-      if (r.ok) fields = (await r.json()).fields || [];
-    } catch { /* skip */ }
+    this._fieldsCache = this._fieldsCache || {};
+    let fields = this._fieldsCache[fieldUrl];
+    if (!fields) {
+      try {
+        const r = await fetch(fieldUrl, { headers: (typeof Auth !== 'undefined' ? Auth.getHeaders() : {}) });
+        if (r.ok) {
+          fields = (await r.json()).fields || [];
+          this._fieldsCache[fieldUrl] = fields;
+        }
+      } catch { /* skip */ }
+    }
 
     const existingValues = this._opts.itemAdapter.getFieldValues(item);
     section.innerHTML = '';
@@ -315,34 +324,86 @@ class ArtifactCanvas {
     }
 
     fields.forEach(f => {
-      const val        = existingValues[f.name] || '';
+      const rawVal     = existingValues[f.name];
+      const val        = Array.isArray(rawVal) ? rawVal.join(',') : String(rawVal || '');
       const hasOptions = Array.isArray(f.valid_values) && f.valid_values.length > 0;
-      const listId     = hasOptions ? `dl-${Math.random().toString(36).slice(2)}` : '';
+      const isMulti    = !!f.multi_select && hasOptions;
 
       const row = document.createElement('div');
       row.className = 'flex flex-col gap-0.5';
-      row.innerHTML = `
-        <label class="text-xs text-slate-500 flex items-center gap-1">
-          ${_acEsc(f.name)}
-          ${f.required ? '<span class="text-amber-400">*</span>' : ''}
-          ${hasOptions ? `<span class="text-slate-600 text-[10px]">(${f.valid_values.length} options)</span>` : ''}
-        </label>
-        <input type="text" value="${_acEsc(val)}"
-          ${hasOptions ? `list="${listId}"` : ''}
-          class="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200
-                 focus:outline-none focus:border-violet-500/60 transition-colors"
-          placeholder="${_acEsc(f.description || '')}" />
-        ${hasOptions ? `<datalist id="${listId}">${f.valid_values.map(v => `<option value="${_acEsc(v)}"></option>`).join('')}</datalist>` : ''}
-      `;
-      let t;
-      row.querySelector('input').addEventListener('input', e => {
-        clearTimeout(t);
-        t = setTimeout(async () => {
-          this._opts.itemAdapter.setFieldValue(this._items[idx], f.name, e.target.value);
+
+      if (isMulti) {
+        // Render as a row of checkboxes; value is comma-separated string
+        const selected = new Set(val.split(',').map(s => s.trim()).filter(Boolean));
+        // If "ALL" is selected (or nothing), treat all as checked
+        const allSelected = selected.has('ALL') || selected.size === 0;
+
+        const lbl = document.createElement('label');
+        lbl.className = 'text-xs text-slate-500 flex items-center gap-1';
+        lbl.textContent = f.name + (f.required ? ' *' : '');
+        row.appendChild(lbl);
+
+        const checkRow = document.createElement('div');
+        checkRow.className = 'flex flex-wrap gap-x-3 gap-y-0.5';
+
+        const syncChecks = async () => {
+          const checked = Array.from(checkRow.querySelectorAll('input[type=checkbox]'))
+            .filter(c => c.checked).map(c => c.value);
+          const newVal = checked.length === 0 || checked.includes('ALL') ? 'ALL' : checked.join(',');
+          this._opts.itemAdapter.setFieldValue(this._items[idx], f.name, newVal);
           await this._sync();
           this._updateCardSummary(card, this._items[idx]);
-        }, 600);
-      });
+        };
+
+        f.valid_values.forEach(opt => {
+          const cbLbl = document.createElement('label');
+          cbLbl.className = 'flex items-center gap-1 text-xs text-slate-300 cursor-pointer';
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.value = opt;
+          cb.className = 'accent-violet-500';
+          cb.checked = opt === 'ALL' ? allSelected : (selected.has(opt) && !allSelected);
+          cb.addEventListener('change', () => {
+            // If ALL is toggled on, uncheck others; if other is toggled, uncheck ALL
+            if (opt === 'ALL' && cb.checked) {
+              checkRow.querySelectorAll('input[type=checkbox]').forEach(c => {
+                c.checked = c.value === 'ALL';
+              });
+            } else if (opt !== 'ALL' && cb.checked) {
+              const allCb = checkRow.querySelector('input[value="ALL"]');
+              if (allCb) allCb.checked = false;
+            }
+            syncChecks();
+          });
+          cbLbl.appendChild(cb);
+          cbLbl.appendChild(document.createTextNode(opt));
+          checkRow.appendChild(cbLbl);
+        });
+        row.appendChild(checkRow);
+      } else {
+        const listId = hasOptions ? `dl-${Math.random().toString(36).slice(2)}` : '';
+        row.innerHTML = `
+          <label class="text-xs text-slate-500 flex items-center gap-1">
+            ${_acEsc(f.name)}
+            ${f.required ? '<span class="text-amber-400">*</span>' : ''}
+          </label>
+          <input type="text" value="${_acEsc(val)}"
+            ${hasOptions ? `list="${listId}"` : ''}
+            class="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200
+                   focus:outline-none focus:border-violet-500/60 transition-colors"
+            placeholder="${_acEsc(f.description || '')}" />
+          ${hasOptions ? `<datalist id="${listId}">${f.valid_values.map(v => `<option value="${_acEsc(v)}"></option>`).join('')}</datalist>` : ''}
+        `;
+        let t;
+        row.querySelector('input').addEventListener('input', e => {
+          clearTimeout(t);
+          t = setTimeout(async () => {
+            this._opts.itemAdapter.setFieldValue(this._items[idx], f.name, e.target.value);
+            await this._sync();
+            this._updateCardSummary(card, this._items[idx]);
+          }, 600);
+        });
+      }
       section.appendChild(row);
     });
   }

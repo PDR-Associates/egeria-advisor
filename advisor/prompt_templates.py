@@ -12,6 +12,17 @@ from advisor.query_patterns import QueryType
 from advisor.collection_config import ContentType, Language
 
 
+_CODEBASE_ORG_GUIDE = """
+
+CODEBASE ORGANIZATION REFERENCE:
+- **Egeria** (Java repository): The core Java implementation of the Egeria backend metadata platform, servers, OMAS, OMAG, and OMRS services (collection: 'egeria_java').
+- **egeria-python** (Python repository): The repository containing Python-based Egeria client code and tooling. It is organized into:
+  1. `pyegeria` (under `pyegeria/` directory): The Python client SDK API library used to communicate with Egeria backend servers (collection: 'pyegeria').
+  2. `commands` (under `commands/` directory): Command-line tools (CLI) and interactive commands (like `hey_egeria`) written in Python using the `pyegeria` SDK.
+  3. `dr_egeria` (under `md_processing/` directory): The Python implementation of the Dr. Egeria markdown processor which is used to parse, draft, and execute governance metadata template plans.
+"""
+
+
 class PromptTemplateManager:
     """Manages prompt templates for different query scenarios."""
     
@@ -23,7 +34,7 @@ class PromptTemplateManager:
     
     def _build_system_prompts(self) -> Dict[str, str]:
         """Build system prompts for different collection types."""
-        return {
+        prompts = {
             "documentation": """You are an expert Egeria documentation assistant.
 
 CRITICAL ANTI-HALLUCINATION RULES:
@@ -117,6 +128,10 @@ RESPONSE STYLE:
 - Cite sources: "From hey_egeria [command]"
 - Mention prerequisites and environment setup"""
         }
+        # Append codebase organization reference to all system prompts
+        for k in prompts:
+            prompts[k] = prompts[k] + _CODEBASE_ORG_GUIDE
+        return prompts
     
     def _build_query_type_instructions(self) -> Dict[QueryType, str]:
         """Build specific instructions for each query type."""
@@ -138,6 +153,19 @@ CODE SEARCH QUERY - Provide practical implementation:
 - Demonstrate best practices
 - Show error handling
 - Provide usage examples with expected output""",
+
+            QueryType.CODE_HELP: """
+CODE HELP QUERY - Provide practical pyegeria SDK implementation examples:
+- Show complete, runnable python code immediately following the canonical pattern
+- Include bearer token authentication and close_session() in finally block
+- Include all imports and try/except PyegeriaException block
+- Add inline comments explaining the SDK functions used""",
+
+            QueryType.CODE_INTEL: """
+CODE INTEL QUERY - Provide structural codebase information:
+- Focus on class relationships, hierarchies, inheritance trees, and method containment
+- Provide file paths and line number definitions where appropriate
+- Outline structural stats (LOC, counts) if quantitative stats are requested""",
 
             QueryType.EXAMPLE: """
 EXAMPLE QUERY - Demonstrate practical usage:

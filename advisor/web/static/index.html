@@ -99,16 +99,25 @@
     }
     .resize-handle-v:hover::after, .resize-handle-v.dragging::after { opacity: 1; }
 
-    /* Plan Canvas panel */
-    #plan-canvas-panel { min-width: 260px; }
-    .pcanvas-card { transition: opacity .15s, box-shadow .15s; }
+    /* Plan & Report Canvas panels height constraints */
+    #plan-canvas-panel, #report-canvas-panel {
+      min-width: 260px;
+      height: calc(100vh - 49px) !important;
+      max-height: calc(100vh - 49px) !important;
+      min-height: 0 !important;
+    }
+    .pcanvas-card {
+      transition: opacity .15s, box-shadow .15s;
+      flex-shrink: 0 !important;
+    }
     .pcanvas-card.dragging-over { box-shadow: 0 -2px 0 #7c3aed; }
     .pcanvas-card.drag-ghost { opacity: .4; }
 
     /* Scrollbars */
-    ::-webkit-scrollbar { width:5px; }
+    ::-webkit-scrollbar { width:8px; height:8px; }
     ::-webkit-scrollbar-track { background:#0f172a; }
-    ::-webkit-scrollbar-thumb { background:#334155; border-radius:3px; }
+    ::-webkit-scrollbar-thumb { background:#475569; border-radius:4px; }
+    ::-webkit-scrollbar-thumb:hover { background:#64748b; }
 
     /* Report group toggle */
     details > summary { cursor:pointer; list-style:none; }
@@ -185,7 +194,17 @@
           <span id="report-count" class="text-xs text-slate-600"></span>
         </div>
       </div>
-      <div id="report-catalog" class="px-2 pb-2 flex flex-col gap-0.5 text-sm"></div>
+      <div id="report-catalog" class="px-2 pb-2 flex flex-col gap-0.5 text-sm border-b border-slate-700/60 pb-3" style="max-height:40%; overflow-y:auto;"></div>
+
+      <!-- Custom Report Specs Section -->
+      <div class="px-3 pt-3 pb-1 shrink-0 flex items-center justify-between border-t border-slate-700/60">
+        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Custom Specs</span>
+        <div class="flex items-center gap-2">
+          <button onclick="openReportBuilderModal()" class="text-xs text-violet-400 hover:text-violet-200 transition-colors font-medium" title="New Report Spec (Builder)">+ Builder</button>
+          <button onclick="loadReportDocs();" class="text-xs text-slate-600 hover:text-slate-400 transition-colors" title="Refresh report specs">↺</button>
+        </div>
+      </div>
+      <div id="report-doc-list" class="px-2 pb-2 flex flex-col gap-0.5 text-xs overflow-y-auto flex-1"></div>
     </div>
 
     <!-- Plans panel -->
@@ -240,15 +259,25 @@
         <button class="persp-btn active" data-perspective="" onclick="setPerspective(this)" title="No role filter — general answer">Anyone</button>
       </div>
       <!-- Intent override -->
-      <div class="flex gap-1 mb-1.5 flex-wrap">
+      <div class="flex gap-1 mb-1.5 flex-wrap items-center">
         <span class="text-xs text-slate-500 self-center mr-1">Intent:</span>
         <button class="intent-btn active" data-intent="" onclick="setIntent(this)" title="Let the system decide">Auto</button>
         <button class="intent-btn" data-intent="explanation" onclick="setIntent(this)" title="Explain a concept">Explain</button>
-        <button class="intent-btn" data-intent="code_search" onclick="setIntent(this)" title="Show pyegeria API usage / How do I…">Show&nbsp;me</button>
-        <button class="intent-btn" data-intent="report" onclick="setIntent(this)" title="Run a live Egeria report">Report</button>
-        <button class="intent-btn" data-intent="command" onclick="setIntent(this)" title="Execute a Dr.Egeria command">Act</button>
-        <button class="intent-btn" data-intent="plan" onclick="setIntent(this)" title="Generate a multi-step governance plan document">Plan</button>
+        <button class="intent-btn" data-intent="code_help" onclick="setIntent(this)" title="Show pyegeria API usage / How do I…">Show&nbsp;me</button>
+        <button class="intent-btn" data-intent="code_intel" onclick="setIntent(this)" title="Inspect codebase implementation, classes, methods, or inheritance">Inspect</button>
+        <button class="intent-btn" data-intent="report" onclick="setIntent(this)" title="Execute an existing report from the catalog">Run&nbsp;Report</button>
+        <button class="intent-btn" data-intent="command" onclick="setIntent(this)" title="Execute a Dr.Egeria command or run an ad-hoc query">Act</button>
+        <button class="intent-btn" data-intent="create" onclick="setIntent(this)" title="Create a new governance plan or report spec">Create</button>
         <button class="intent-btn" data-intent="debugging" onclick="setIntent(this)" title="Diagnose a problem">Troubleshoot</button>
+        <!-- Active task indicator + New Task button (hidden when no task is active) -->
+        <span class="hidden ml-2 flex items-center gap-1.5 text-xs" id="new-task-btn">
+          <span class="text-slate-500">▸</span>
+          <span id="new-task-label" class="text-amber-400 font-medium"></span>
+          <button onclick="clearContext()"
+            class="px-1.5 py-0.5 rounded border border-rose-800/60 bg-rose-950/30 text-rose-400
+                   hover:bg-rose-900/50 hover:text-rose-200 transition-colors text-xs"
+            title="End this task and start fresh">✕ New Task</button>
+        </span>
       </div>
 
       <div class="flex gap-2">
@@ -277,7 +306,7 @@
 
   <!-- ── Plan Canvas panel (hidden until draft active) ─────────────────── -->
   <section id="plan-canvas-panel"
-    class="hidden flex-col bg-slate-800 border-l border-slate-700 overflow-hidden">
+    class="hidden h-full flex-col bg-slate-800 border-l border-slate-700 overflow-hidden">
 
     <!-- Canvas toolbar -->
     <div class="flex items-center gap-2 px-3 py-2 bg-slate-900 border-b border-slate-700 shrink-0">
@@ -319,6 +348,93 @@
     </div>
   </section>
 
+  <!-- ── Report Canvas resize handle (hidden until draft active) ───────────────── -->
+  <div id="resize-chat-report-canvas" class="resize-handle-v hidden"></div>
+
+  <!-- ── Report Spec Canvas panel (hidden until draft active) ─────────────────── -->
+  <section id="report-canvas-panel"
+    class="hidden h-full flex-col bg-slate-800 border-l border-slate-700 overflow-hidden">
+
+    <!-- Canvas toolbar -->
+    <div class="flex items-center gap-2 px-3 py-2 bg-slate-900 border-b border-slate-700 shrink-0 flex-wrap">
+      <span class="text-violet-400 font-bold text-xs shrink-0">Report Canvas</span>
+      <span id="rcanvas-title" class="text-slate-200 text-xs font-semibold flex-1 truncate"></span>
+      <button id="rcanvas-mode-btn"
+        class="hidden px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs font-semibold transition-colors"
+        onclick="ReportSpecCanvas.toggleMode()">Basic</button>
+      <button id="rcanvas-generate-btn"
+        class="px-2 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition-colors"
+        title="Generate Report Spec Document"
+        onclick="triggerReportGeneration()">Generate Spec</button>
+      <select id="rcanvas-format-select"
+        class="hidden bg-slate-700 border border-slate-600 rounded px-1.5 py-1 text-xs text-slate-200
+               focus:outline-none focus:border-emerald-500 transition-colors"
+        title="Output format">
+        <option value="TABLE">TABLE</option>
+        <option value="REPORT">REPORT</option>
+        <option value="LIST">LIST</option>
+        <option value="FORM">FORM</option>
+        <option value="MERMAID">MERMAID</option>
+        <option value="JSON">JSON</option>
+      </select>
+      <select id="rcanvas-limit-select"
+        class="hidden bg-slate-700 border border-slate-600 rounded px-1.5 py-1 text-xs text-slate-200
+               focus:outline-none focus:border-emerald-500 transition-colors"
+        title="Preview limit (page size)">
+        <option value="5">Preview: 5 rows</option>
+        <option value="10">Preview: 10 rows</option>
+        <option value="25">Preview: 25 rows</option>
+        <option value="100">Full: 100 rows</option>
+      </select>
+      <button id="rcanvas-execute-btn"
+        class="hidden px-2 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold transition-colors"
+        title="Preview this report spec and view results"
+        onclick="triggerReportExecution()">▶ Preview Report</button>
+      <button id="rcanvas-browse-btn"
+        class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors mr-1"
+        title="Browse and select Egeria attributes visually"
+        onclick="ReportSpecCanvas.openSchemaExplorer()">Add Attribute</button>
+      <button onclick="ReportSpecCanvas.close()"
+        class="text-slate-500 hover:text-slate-200 text-sm transition-colors ml-1" title="Close canvas">✕</button>
+    </div>
+
+    <!-- Column cards -->
+    <!-- Parameter sections (Content Filters / Shape Defaults / Performance Hints) -->
+    <div id="rcanvas-params" class="shrink-0 overflow-y-auto max-h-56 border-b border-slate-700"></div>
+
+    <!-- Column cards -->
+    <div id="rcanvas-cards" class="flex-1 min-h-0 overflow-y-auto px-3 py-2 flex flex-col gap-2"></div>
+
+    <!-- Add column footer -->
+    <div class="px-3 py-2 border-t border-slate-700 shrink-0 flex gap-2">
+      <button onclick="ReportSpecCanvas.addColumn()"
+        class="flex-1 text-xs text-slate-500 hover:text-violet-300 border border-dashed border-slate-700
+               hover:border-violet-500/50 rounded py-1.5 transition-colors"
+        title="Manually type a custom column name and key path">
+        + Add Custom Column
+      </button>
+    </div>
+  </section>
+
+</div>
+
+<!-- ── Add Column modal ─────────────────────────────────────────────────────── -->
+<div id="add-column-modal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50" onclick="if(event.target===this)closeAddColumnModal()">
+  <div class="bg-slate-800 border border-slate-600 rounded-xl p-5 w-80 shadow-2xl">
+    <h3 class="text-sm font-semibold text-slate-200 mb-3">Add Column</h3>
+    <label class="text-xs text-slate-400 block mb-1">Display name</label>
+    <input id="add-column-name" type="text" placeholder="e.g. Description"
+      class="w-full bg-slate-700 text-slate-100 rounded px-3 py-1.5 text-sm border border-slate-600
+             focus:outline-none focus:border-violet-500 mb-2">
+    <label class="text-xs text-slate-400 block mb-1">Attribute key <span class="text-slate-600">(auto-filled from name)</span></label>
+    <input id="add-column-key" type="text" placeholder="e.g. description"
+      class="w-full bg-slate-700 text-slate-100 rounded px-3 py-1.5 text-sm border border-slate-600
+             focus:outline-none focus:border-violet-500 mb-4">
+    <div class="flex gap-2 justify-end">
+      <button onclick="closeAddColumnModal()" class="px-3 py-1.5 rounded text-xs bg-slate-700 hover:bg-slate-600 text-slate-300">Cancel</button>
+      <button onclick="confirmAddColumn()" class="px-3 py-1.5 rounded text-xs bg-violet-700 hover:bg-violet-600 text-white font-semibold">Add</button>
+    </div>
+  </div>
 </div>
 
 <!-- ── Title prompt modal — shared by Builder (new plan) and Fork (copy plan) ── -->
@@ -333,6 +449,22 @@
     <div class="flex gap-2 justify-end">
       <button onclick="closeBuilderModal()" class="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>
       <button id="builder-title-modal-submit" onclick="submitTitleModal()" class="px-4 py-1.5 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition-colors">Create Plan</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Report Title prompt modal ── -->
+<div id="report-builder-modal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50" onclick="if(event.target===this)closeReportBuilderModal()">
+  <div class="bg-slate-800 border border-slate-600 rounded-xl p-5 w-96 shadow-2xl">
+    <h3 class="text-sm font-semibold text-slate-200 mb-3">New Report Spec (Builder)</h3>
+    <p class="text-xs text-slate-400 mb-3">Give your report spec a title/heading, then customize columns directly in the canvas.</p>
+    <input id="report-builder-title-input" type="text" placeholder="e.g. My Custom Report"
+      class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-slate-200
+             focus:outline-none focus:border-violet-500 mb-4"
+      onkeydown="if(event.key==='Enter')submitReportBuilderModal()" />
+    <div class="flex gap-2 justify-end">
+      <button onclick="closeReportBuilderModal()" class="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>
+      <button onclick="submitReportBuilderModal()" class="px-4 py-1.5 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition-colors">Create Report</button>
     </div>
   </div>
 </div>
@@ -438,7 +570,7 @@
 <script>
 // ── State ──────────────────────────────────────────────────────────────────────
 let pendingClarification = null;  // { candidates: [string] } when disambiguation shown
-let selectedIntent = '';          // '', 'explanation', 'code_search', 'report', 'command', 'debugging'
+let selectedIntent = '';          // '', 'explanation', 'code_help', 'report', 'command', 'debugging'
 let selectedPerspective = '';     // '', 'developer', 'data_engineer', 'data_steward', 'governance_officer'
 let pendingReportName = null;     // report name awaiting search-string confirmation
 let reportFormats = {};           // {spec_name: [supported format tokens]} from /api/reports
@@ -446,28 +578,89 @@ let reportFormatLabels = {};      // {format token: human label} from /api/repor
 let recentQueries = JSON.parse(sessionStorage.getItem('ea_recent') || '[]');
 let _activeDraftId = sessionStorage.getItem('ea_active_draft') || null;
 
+// ── Conversation context — authoritative task/phase state ─────────────────────
+// Replaces the fragmented _activeDraftId + selectedIntent routing signals.
+// task values: "report_spec_elicitor" | "plan_elicitor" | "act_confirm" |
+//              "report_disambiguation" | null
+let _ctx = JSON.parse(sessionStorage.getItem('ea_ctx') || 'null') || {};
+
+function setContext(ctx) {
+  _ctx = (ctx && typeof ctx === 'object' && Object.keys(ctx).length) ? ctx : {};
+  if (Object.keys(_ctx).length)
+    sessionStorage.setItem('ea_ctx', JSON.stringify(_ctx));
+  else
+    sessionStorage.removeItem('ea_ctx');
+
+  // Sync _activeDraftId from context so canvas logic continues to work
+  const did = _ctx.draft_id || null;
+  if (did !== _activeDraftId) {
+    _activeDraftId = did;
+    if (did) sessionStorage.setItem('ea_active_draft', did);
+    else sessionStorage.removeItem('ea_active_draft');
+  }
+
+  // Entering a task context deactivates the intent button so it doesn't
+  // interfere with routing on subsequent messages.
+  if (_ctx.task) {
+    selectedIntent = '';
+    document.querySelectorAll('.intent-btn').forEach(b => b.classList.remove('active'));
+    document.querySelector('.intent-btn[data-intent=""]')?.classList.add('active');
+  }
+
+  // Show/hide the "New Task" indicator
+  const ntBtn = document.getElementById('new-task-btn');
+  const ntLabel = document.getElementById('new-task-label');
+  if (ntBtn) ntBtn.classList.toggle('hidden', !_ctx.task);
+  if (ntLabel) {
+    const labels = {
+      'report_spec_elicitor': 'report spec Q&A',
+      'plan_elicitor':        'plan Q&A',
+      'act_confirm':          'confirm report',
+      'report_disambiguation':'choose report',
+    };
+    ntLabel.textContent = labels[_ctx.task] || _ctx.task || '';
+  }
+}
+
+function clearContext() {
+  setContext(null);
+  _activeDraftId = null;
+  sessionStorage.removeItem('ea_active_draft');
+  ReportSpecCanvas?.close();
+  PlanCanvas?.close();
+}
+
 // ── Init ───────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   initLeftSidebarResize();
   setSidebarTab(localStorage.getItem('ea_sidebar_tab') || 'reports');
   initCanvasResize();
+  initReportCanvasResize();
   initCanvasButtons();
+  // Restore context UI state from sessionStorage (e.g. after page refresh mid-task)
+  if (_ctx && _ctx.task) setContext(_ctx);
 
   const inp = document.getElementById('query-input');
   inp.addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendQuery(); }
   });
 
-  // Auth.init fires onReady once the user is authenticated (or immediately if
-  // anonymous_rag_mode allows skipping login — the backend controls that).
+  // Auth.init fires onReady once the user is authenticated
   Auth.init(() => {
     loadStatus();
     loadReports();
+    loadReportDocs();
     loadPlans();
     loadDrafts();
     loadPerspectives();
     renderRecent();
-    if (_activeDraftId) PlanCanvas.open(_activeDraftId);
+    if (_activeDraftId) {
+      if (_activeDraftId.startsWith('draft_report_')) {
+        ReportSpecCanvas.open(_activeDraftId);
+      } else {
+        PlanCanvas.open(_activeDraftId);
+      }
+    }
     appendMessage('assistant',
       'Welcome to **Egeria Advisor**.\n\n' +
       'Ask me about Egeria concepts, how to use pyegeria or Dr.Egeria, run a report to see live metadata, or ask me to create/update something.'
@@ -701,8 +894,9 @@ async function loadPlans() {
             const err = await r.json().catch(() => ({}));
             throw new Error(err.detail || `Server error ${r.status}`);
           }
+          const res = await r.json();
           await loadPlans();
-          openPlanEditor(plan.doc_id, null);
+          openPlanEditor(res.doc_id, null);
         } catch (err) {
           alert(`Could not move plan to inbox: ${err.message}`);
           retryBtn.disabled = false; retryBtn.textContent = '✏';
@@ -986,9 +1180,7 @@ function sendQuery() {
 
   clearClarification();
   appendMessage('you', raw);
-  // When inside a planning Q&A session, force plan intent so the draft router fires
-  const extra = _activeDraftId ? { intent_override: 'plan' } : {};
-  submitQuery(raw, extra);
+  submitQuery(raw);
 }
 
 async function submitQuery(query, extra = {}) {
@@ -996,11 +1188,21 @@ async function submitQuery(query, extra = {}) {
   document.getElementById('intent-badge').textContent = '';
   pushRecent(query);
 
+  // When an active task context exists, send it as the authoritative routing
+  // signal. The backend uses context.task to route before any pattern matching.
+  // If there's no task context, fall back to legacy draft_id routing (but only
+  // when no explicit intent button is selected).
+  const hasCtx = _ctx && _ctx.task;
+  const draftId = hasCtx ? (_ctx.draft_id || null)
+                : (selectedIntent ? null : (_activeDraftId || null));
+  const ctxPayload = hasCtx ? _ctx : null;
+
   const body = {
     query,
     intent_override: selectedIntent || null,
     perspective: selectedPerspective || null,
-    draft_id: _activeDraftId || null,
+    draft_id: draftId,
+    context: ctxPayload,
     ...extra,
   };
 
@@ -1043,9 +1245,10 @@ async function submitQuery(query, extra = {}) {
         try { evt = JSON.parse(raw); } catch { continue; }
 
         if (evt.type === 'start') {
-          setThinking(false); // stop spinner once server acknowledged
+          // Keep thinking indicator active while server is classifying, retrieving, and thinking
         } else if (evt.type === 'token') {
           if (!streamWrap) {
+            setThinking(false); // stop spinner once first token starts streaming
             // Create the message bubble on first token
             streamWrap = document.createElement('div');
             streamWrap.className = 'msg-assistant pl-3 pr-2 py-2 rounded-r-lg bg-slate-800/60';
@@ -1065,6 +1268,7 @@ async function submitQuery(query, extra = {}) {
           msgs.scrollTop = msgs.scrollHeight;
         } else if (evt.type === 'done' || evt.type === 'complete') {
           gotResult = true;
+          setThinking(false); // stop spinner if we didn't receive any tokens
           const result = evt.result;
           // Re-render the streamed content as markdown
           if (streamBody && result.response) {
@@ -1081,6 +1285,7 @@ async function submitQuery(query, extra = {}) {
           const wrap = streamWrap || appendMessage('assistant', result.response || '', {});
           _applyQueryResult(query, result, wrap);
         } else if (evt.type === 'error') {
+          setThinking(false);
           appendMessage('assistant', `**Error:** ${evt.message || 'Unknown error'}`);
           gotResult = true;
         }
@@ -1122,10 +1327,12 @@ async function submitQuery(query, extra = {}) {
   const candidates = result.candidates || [];
 
   if (isClarify && result.clarification_type === 'intent_choice') {
+    if ('next_context' in result) setContext(result.next_context);
     renderIntentClarification(result.response, candidates, result.candidate_intents || [], query);
     return;
   }
   if (isClarify && candidates.length) {
+    if ('next_context' in result) setContext(result.next_context);
     renderClarification(result.response, candidates);
     pendingClarification = { candidates };
     document.getElementById('clarify-hint').classList.remove('hidden');
@@ -1149,27 +1356,54 @@ function _applyQueryResult(query, result, wrap) {
   const isPlanQA = qtype === 'plan_clarification';
   const candidates = result.candidates || [];
 
-  // Track active draft ID
-  if (isPlanQA) {
-    if (result.draft_id) {
-      _activeDraftId = result.draft_id;
-    } else {
-      _activeDraftId = null;
-      loadDrafts();
+  const isReportQA = qtype === 'report_spec_clarification';
+  const isCreateDisambig = qtype === 'create_disambiguation';
+
+  // ── Update conversation context from next_context ──────────────────────
+  // next_context is the authoritative signal from the backend. If present,
+  // always use it (even if null, which clears the context).
+  if ('next_context' in result) {
+    setContext(result.next_context);
+  } else {
+    // Legacy: derive context from draft_id in response for old paths that
+    // don't yet emit next_context.
+    if (isPlanQA) {
+      if (result.draft_id) {
+        _activeDraftId = result.draft_id;
+        if (!_ctx.task) setContext({ task: 'plan_elicitor', draft_id: result.draft_id, phase: result.phase || '' });
+      } else {
+        setContext(null);
+        loadDrafts();
+      }
+    } else if (isReportQA) {
+      if (result.draft_id) {
+        _activeDraftId = result.draft_id;
+        if (!_ctx.task) setContext({ task: 'report_spec_elicitor', draft_id: result.draft_id, phase: result.phase || '' });
+      } else {
+        setContext(null);
+        loadReportDocs();
+      }
+    } else if (qtype === 'plan' || qtype === 'plan_executed' || qtype === 'report_executed') {
+      setContext(null);
     }
-  } else if (qtype === 'plan') {
-    _activeDraftId = null;
-  } else if (qtype === 'plan_executed') {
-    _activeDraftId = null;
   }
+
+  // Sync canvas to _activeDraftId (setContext keeps it in sync; this handles
+  // the canvas open/close that must happen after context is updated).
   if (_activeDraftId) {
     sessionStorage.setItem('ea_active_draft', _activeDraftId);
-    PlanCanvas.open(_activeDraftId);
-    setSidebarTab('plans');
+    if (_activeDraftId.startsWith('draft_report_')) {
+      ReportSpecCanvas.open(_activeDraftId);
+      setSidebarTab('reports');
+    } else {
+      PlanCanvas.open(_activeDraftId);
+      setSidebarTab('plans');
+    }
   } else {
     sessionStorage.removeItem('ea_active_draft');
-    // Don't close canvas on plan_executed — user may want to see what was executed
+    // Don't close canvas on plan_executed/report_executed — user may want to see what was executed
     if (qtype !== 'plan_executed') PlanCanvas.close();
+    if (qtype !== 'report_executed') ReportSpecCanvas.close();
   }
 
   // Badge
@@ -1192,9 +1426,12 @@ function _applyQueryResult(query, result, wrap) {
     return;
   }
 
-  // Refresh plan sidebar after any plan lifecycle event
+  // Refresh sidebar after lifecycle events
   if (qtype === 'plan' || qtype === 'plan_executed' || qtype === 'plan_validated') loadPlans();
   if (isPlanQA) { loadDrafts(); if (_activeDraftId) PlanCanvas.refresh(_activeDraftId); }
+
+  if (qtype === 'report_executed' || qtype === 'report_recovered' || qtype === 'report_spec_clarification') loadReportDocs();
+  if (isReportQA) { if (_activeDraftId) ReportSpecCanvas.refresh(_activeDraftId); }
 
   // Dr.Egeria template → offer to start a plan
   if (result.clarification_type === 'plan_offer') {
@@ -1223,16 +1460,43 @@ function _applyQueryResult(query, result, wrap) {
     wrap.appendChild(planBanner);
   }
 
-  // Plan Q&A navigation buttons
-  if (isPlanQA && result.navigation && result.navigation.length) {
+  // Report Spec Document banner — shown when the agent saved a new report spec to inbox/
+  if (qtype === 'report_spec_clarification' && result.doc_id && result.phase === 'refine') {
+    const reportBanner = document.createElement('div');
+    reportBanner.className = 'mt-2 px-3 py-2 rounded bg-violet-950/60 border border-violet-700/50 text-xs flex items-center gap-3';
+
+    const reportInfo = document.createElement('span');
+    reportInfo.className = 'text-slate-300 flex-1';
+    reportInfo.innerHTML =
+      `<span class="text-violet-400 font-semibold">Report Spec saved</span> — ` +
+      `<code class="text-violet-300">${result.doc_id}.md</code> is in your inbox. ` +
+      `You can edit the columns in the Canvas sidebar or execute it.`;
+    reportBanner.appendChild(reportInfo);
+
+    const canvasBtn = document.createElement('button');
+    canvasBtn.className = 'px-3 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold shrink-0 transition-colors';
+    canvasBtn.textContent = 'Open Canvas';
+    canvasBtn.onclick = () => openReportSpecCanvas(result.draft_id);
+    reportBanner.appendChild(canvasBtn);
+
+    wrap.appendChild(reportBanner);
+  }
+
+  // Plan/Report Q&A navigation buttons
+  if ((isPlanQA || isReportQA || isCreateDisambig) && result.navigation && result.navigation.length) {
     const nav = document.createElement('div');
     nav.className = 'mt-2 flex gap-2 flex-wrap';
     const navDefs = {
-      back:            { label: '← Back',             cls: 'bg-slate-700 hover:bg-slate-600 text-slate-200' },
-      save_exit:       { label: '💾 Save & Exit',      cls: 'bg-indigo-800 hover:bg-indigo-700 text-white' },
-      cancel:          { label: '✕ Cancel',            cls: 'bg-red-900/60 hover:bg-red-800 text-red-300' },
-      generate_now:    { label: '⚡ Generate Now',      cls: 'bg-violet-800 hover:bg-violet-700 text-white' },
-      completely_wrong:{ label: '✗ Completely Wrong',  cls: 'bg-amber-900/70 hover:bg-amber-800 text-amber-200' },
+      back:               { label: '← Back',              cls: 'bg-slate-700 hover:bg-slate-600 text-slate-200' },
+      save_exit:          { label: '💾 Save & Exit',       cls: 'bg-indigo-800 hover:bg-indigo-700 text-white' },
+      cancel:             { label: '✕ Cancel',             cls: 'bg-red-900/60 hover:bg-red-800 text-red-300' },
+      generate_now:       { label: '⚡ Generate Now',         cls: 'bg-violet-800 hover:bg-violet-700 text-white' },
+      completely_wrong:   { label: '✗ Completely Wrong',     cls: 'bg-amber-900/70 hover:bg-amber-800 text-amber-200' },
+      continue_columns:   { label: '→ Continue to columns',  cls: 'bg-violet-800 hover:bg-violet-700 text-white' },
+      try_again:          { label: '↺ Try again',            cls: 'bg-amber-900/70 hover:bg-amber-800 text-amber-200' },
+      run_spec:           { label: '▶ Run Report',           cls: 'bg-emerald-700 hover:bg-emerald-600 text-white' },
+      create_plan:        { label: '📋 Governance Plan',     cls: 'bg-violet-800 hover:bg-violet-700 text-white' },
+      create_report_spec: { label: '📊 Report Spec',         cls: 'bg-orange-800 hover:bg-orange-700 text-white' },
     };
     result.navigation.forEach(key => {
       const def = navDefs[key];
@@ -1241,21 +1505,275 @@ function _applyQueryResult(query, result, wrap) {
       btn.className = `px-3 py-1.5 rounded text-xs font-semibold transition-colors ${def.cls}`;
       btn.textContent = def.label;
       btn.onclick = () => {
+        if (key === 'run_spec') {
+          triggerReportExecution(result.doc_id || result.draft_id);
+          return;
+        }
         const commands = {
           back: 'back', save_exit: 'save and exit', cancel: 'cancel',
           generate_now: 'generate now', completely_wrong: 'completely wrong',
+          continue_columns: 'continue to column definitions', try_again: 'try again',
+          create_plan: 'create a governance plan', create_report_spec: 'create a report spec',
+        };
+        const intents = {
+          create_plan: 'create', create_report_spec: 'create',
         };
         const cmd = commands[key] || key;
         appendMessage('you', def.label);
-        submitQuery(cmd, { intent_override: 'plan' });
+        const override = intents[key] || (isReportQA ? 'report' : isCreateDisambig ? 'create' : 'plan');
+        submitQuery(cmd, { intent_override: override });
       };
       nav.appendChild(btn);
     });
     wrap.appendChild(nav);
   }
 
+  // Act confirm step — shows matched report + filter input before running
+  if (qtype === 'act_confirm' && result.matched_spec_id) {
+    const specId    = result.matched_spec_id;
+    const initFilt  = result.extracted_filter || '';
+    const initEType = result.extracted_element_type || '';
+    let   selFmt    = result.extracted_format || 'TABLE';
+
+    const confirmRow = document.createElement('div');
+    confirmRow.className = 'mt-2 flex flex-col gap-2';
+
+    // Element type + search filter fields
+    const fieldGrid = document.createElement('div');
+    fieldGrid.className = 'grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 items-center text-xs';
+
+    const mkLabel = (t) => { const l = document.createElement('span'); l.className = 'text-slate-500 whitespace-nowrap'; l.textContent = t; return l; };
+    const mkInput = (val, placeholder) => {
+      const i = document.createElement('input');
+      i.type = 'text'; i.value = val; i.placeholder = placeholder;
+      i.className = 'bg-slate-700 border border-slate-600 rounded px-2 py-1 text-xs text-slate-200 ' +
+                    'placeholder-slate-500 focus:outline-none focus:border-violet-500';
+      return i;
+    };
+
+    const etypeInput  = mkInput(initEType, 'e.g. dataHub  (blank = all subtypes)');
+    const filterInput = mkInput(initFilt,  'e.g. Inventory  (blank = all names)');
+
+    fieldGrid.appendChild(mkLabel('Element type'));  fieldGrid.appendChild(etypeInput);
+    fieldGrid.appendChild(mkLabel('Name filter'));   fieldGrid.appendChild(filterInput);
+    confirmRow.appendChild(fieldGrid);
+
+    // Format selector buttons
+    const fmtRow = document.createElement('div');
+    fmtRow.className = 'flex gap-1 items-center flex-wrap';
+    const fmtLabel = document.createElement('span');
+    fmtLabel.className = 'text-xs text-slate-500 mr-1';
+    fmtLabel.textContent = 'Format:';
+    fmtRow.appendChild(fmtLabel);
+    const _FORMATS = ['TABLE', 'LIST', 'MERMAID', 'REPORT', 'JSON'];
+    const fmtBtns = {};
+    _FORMATS.forEach(fmt => {
+      const fb = document.createElement('button');
+      const isActive = fmt === selFmt;
+      fb.className = 'px-2 py-0.5 rounded text-xs transition-colors border ' +
+        (isActive
+          ? 'bg-cyan-700 border-cyan-600 text-white font-semibold'
+          : 'bg-slate-800 border-slate-600 text-slate-400 hover:text-slate-200 hover:border-slate-500');
+      fb.textContent = fmt;
+      fb.onclick = () => {
+        selFmt = fmt;
+        Object.entries(fmtBtns).forEach(([f, b]) => {
+          const active = f === fmt;
+          b.className = 'px-2 py-0.5 rounded text-xs transition-colors border ' +
+            (active
+              ? 'bg-cyan-700 border-cyan-600 text-white font-semibold'
+              : 'bg-slate-800 border-slate-600 text-slate-400 hover:text-slate-200 hover:border-slate-500');
+        });
+      };
+      fmtBtns[fmt] = fb;
+      fmtRow.appendChild(fb);
+    });
+    confirmRow.appendChild(fmtRow);
+
+    // Button row
+    const btnRow = document.createElement('div');
+    btnRow.className = 'flex gap-2 flex-wrap';
+
+    const runBtn = document.createElement('button');
+    runBtn.className = 'px-3 py-1.5 rounded text-xs font-semibold bg-emerald-700 hover:bg-emerald-600 text-white transition-colors';
+    runBtn.textContent = '▶ Run Report';
+    runBtn.onclick = () => {
+      const filt  = filterInput.value.trim();
+      const etype = etypeInput.value.trim();
+      let cmd = `run report ${specId} filter:'${filt}' fmt:'${selFmt}'`;
+      if (etype) cmd += ` element_type:'${etype}'`;
+      const label = [specId, etype && `type:${etype}`, filt && `filter:${filt}`, `fmt:${selFmt}`].filter(Boolean).join(' · ');
+      appendMessage('you', `▶ Run ${label}`);
+      submitQuery(cmd, { intent_override: 'command' });
+    };
+    filterInput.onkeydown = etypeInput.onkeydown = (e) => { if (e.key === 'Enter') runBtn.click(); };
+    btnRow.appendChild(runBtn);
+
+    const modBtn = document.createElement('button');
+    modBtn.className = 'px-3 py-1.5 rounded text-xs font-semibold bg-violet-800 hover:bg-violet-700 text-white transition-colors';
+    modBtn.textContent = '✎ Modify spec';
+    modBtn.title = 'Open the Report Spec canvas to edit columns and parameters';
+    modBtn.onclick = async () => {
+      modBtn.disabled = true; modBtn.textContent = 'Opening…';
+      try {
+        const resp = await fetch('/api/reports/specs/edit-by-name', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+          body: JSON.stringify({ report_name: specId }),
+        });
+        const data = await resp.json();
+        if (data.found && data.draft_id) {
+          _activeDraftId = data.draft_id;
+          await ReportSpecCanvas.open(data.draft_id);
+        } else {
+          modBtn.textContent = '✎ Modify spec';
+          modBtn.disabled = false;
+          submitQuery(query, { intent_override: 'create' });
+        }
+      } catch { modBtn.textContent = '✎ Modify spec'; modBtn.disabled = false; }
+    };
+    btnRow.appendChild(modBtn);
+
+    const newBtn = document.createElement('button');
+    newBtn.className = 'px-3 py-1.5 rounded text-xs font-semibold bg-orange-800 hover:bg-orange-700 text-white transition-colors';
+    newBtn.textContent = '＋ New report spec';
+    newBtn.title = 'Build a new custom report spec from scratch';
+    newBtn.onclick = () => submitQuery(query, { intent_override: 'create' });
+    btnRow.appendChild(newBtn);
+
+    confirmRow.appendChild(btnRow);
+    wrap.appendChild(confirmRow);
+  }
+
   // Executed plan banner
   if (qtype === 'plan_executed' && result.doc_id) {
+    const execBanner = document.createElement('div');
+    execBanner.className = 'mt-2 px-3 py-2 rounded bg-emerald-950/60 border border-emerald-700/50 text-xs';
+    execBanner.innerHTML =
+      `<span class="text-emerald-400 font-semibold">Executed</span> — ` +
+      `<code class="text-emerald-300">${result.doc_id}.md</code> has been moved to your outbox with the outcome appended.`;
+    wrap.appendChild(execBanner);
+  }
+
+  // Act post-run follow-up actions
+  if (qtype === 'act_report_result') {
+    const specId = result.matched_spec_id;
+
+    // Helper: open spec canvas by name
+    async function _openSpecCanvas(reportName, fallbackQuery) {
+      const resp = await fetch('/api/reports/specs/edit-by-name', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+        body: JSON.stringify({ report_name: reportName }),
+      });
+      const data = await resp.json();
+      if (data.found && data.draft_id) {
+        _activeDraftId = data.draft_id;
+        await ReportSpecCanvas.open(data.draft_id);
+        return true;
+      }
+      return false;
+    }
+
+    const label = document.createElement('div');
+    label.className = 'mt-3 mb-1 text-xs text-slate-500 font-semibold uppercase tracking-wide';
+    label.textContent = 'What would you like to do next?';
+    wrap.appendChild(label);
+
+    const actNav = document.createElement('div');
+    actNav.className = 'flex gap-2 flex-wrap';
+
+    // ── Save result to outbox ────────────────────────────────────────────────
+    if (result.base_doc_id) {
+      const archBtn = document.createElement('button');
+      archBtn.className = 'px-3 py-1.5 rounded text-xs font-semibold bg-emerald-800 hover:bg-emerald-700 text-white transition-colors';
+      archBtn.textContent = '⬇ Save result';
+      archBtn.title = 'Save this result snapshot to your outbox';
+      archBtn.onclick = async () => {
+        archBtn.disabled = true; archBtn.textContent = 'Saving…';
+        try {
+          const r = await fetch(`/api/reports/specs/${encodeURIComponent(result.base_doc_id)}/archive`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+            body: JSON.stringify({ content: result.execution_output || '' }),
+          });
+          const data = await r.json();
+          archBtn.textContent = data.ok ? '✓ Saved' : '✗ Failed';
+          if (data.ok) loadReportDocs();
+        } catch { archBtn.textContent = '✗ Error'; }
+      };
+      actNav.appendChild(archBtn);
+    }
+
+    // ── Modify ───────────────────────────────────────────────────────────────
+    if (result.base_doc_id) {
+      const modBtn = document.createElement('button');
+      modBtn.className = 'px-3 py-1.5 rounded text-xs font-semibold bg-violet-800 hover:bg-violet-700 text-white transition-colors';
+      modBtn.textContent = '✎ Modify this spec';
+      modBtn.title = 'Open the Report Spec canvas to change columns, filters, or parameters';
+      modBtn.onclick = async () => {
+        modBtn.disabled = true; modBtn.textContent = 'Opening…';
+        try {
+          const r = await fetch(`/api/reports/specs/${encodeURIComponent(result.base_doc_id)}/edit`, {
+            method: 'POST', headers: Auth.getHeaders(),
+          });
+          const data = await r.json();
+          if (data.found && data.draft_id) {
+            _activeDraftId = data.draft_id;
+            sessionStorage.setItem('ea_active_draft', _activeDraftId);
+            await ReportSpecCanvas.open(data.draft_id);
+            setSidebarTab('reports');
+          } else {
+            appendMessage('system', data.error || 'Spec not found in catalog.');
+          }
+        } catch (e) { appendMessage('system', 'Could not open canvas: ' + e.message); }
+        modBtn.textContent = '✎ Modify this spec'; modBtn.disabled = false;
+      };
+      actNav.appendChild(modBtn);
+    }
+
+    const forkBtn = document.createElement('button');
+    forkBtn.className = 'px-3 py-1.5 rounded text-xs font-semibold bg-orange-800 hover:bg-orange-700 text-white transition-colors';
+    forkBtn.textContent = '＋ Save as new spec';
+    forkBtn.title = 'Create a new custom report spec based on this query';
+    forkBtn.onclick = () => submitQuery(query, { intent_override: 'create' });
+    actNav.appendChild(forkBtn);
+
+    // ── Format selector + Run again ──────────────────────────────────────────
+    const fmtSel = document.createElement('select');
+    fmtSel.className = 'bg-slate-700 border border-slate-600 rounded px-1.5 py-1 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 transition-colors';
+    fmtSel.title = 'Output format for next run';
+    ['TABLE','LIST','MERMAID','REPORT','JSON'].forEach(f => {
+      const o = document.createElement('option');
+      o.value = f; o.textContent = f;
+      if (f === (result.extracted_format || 'TABLE')) o.selected = true;
+      fmtSel.appendChild(o);
+    });
+    actNav.appendChild(fmtSel);
+
+    const rerunBtn = document.createElement('button');
+    rerunBtn.className = 'px-3 py-1.5 rounded text-xs font-semibold bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors';
+    rerunBtn.textContent = '↺ Run again';
+    rerunBtn.title = 'Run again with chosen format';
+    if (result.base_doc_id) {
+      rerunBtn.onclick = () => submitQuery(`execute report spec ${result.base_doc_id}`, { output_format: fmtSel.value });
+    } else {
+      rerunBtn.onclick = () => submitQuery(query, { intent_override: 'command' });
+    }
+    actNav.appendChild(rerunBtn);
+
+    // ── Done — close post-run nav ────────────────────────────────────────────
+    const doneBtn = document.createElement('button');
+    doneBtn.className = 'px-3 py-1.5 rounded text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-400 transition-colors';
+    doneBtn.textContent = '✓ Done';
+    doneBtn.onclick = () => { label.remove(); actNav.remove(); };
+    actNav.appendChild(doneBtn);
+
+    wrap.appendChild(actNav);
+  }
+
+  // Executed report banner
+  if (qtype === 'report_executed' && result.doc_id) {
     const execBanner = document.createElement('div');
     execBanner.className = 'mt-2 px-3 py-2 rounded bg-emerald-950/60 border border-emerald-700/50 text-xs';
     execBanner.innerHTML =
@@ -1294,9 +1812,23 @@ function _applyQueryResult(query, result, wrap) {
   btnUp.dataset.vote = '1';
   btnUp.dataset.perspective = selectedPerspective || '';
   btnUp.dataset.routingAgent = routingAgentFromResult;
-  btnUp.dataset.intentOverride = document.getElementById('intent-select')?.value || 'auto';
+  btnUp.dataset.intentOverride = selectedIntent || 'auto';
   btnUp.dataset.responseText = responseText.slice(0, 2000);
   btnUp.addEventListener('click', feedbackClick);
+  
+  const btnNeutral = document.createElement('button');
+  btnNeutral.className = 'text-xs text-slate-500 hover:text-amber-400 transition-colors';
+  btnNeutral.textContent = '😐';
+  btnNeutral.title = 'Partially correct / helpful';
+  btnNeutral.dataset.q = query;
+  btnNeutral.dataset.qt = qtype;
+  btnNeutral.dataset.vote = '0';
+  btnNeutral.dataset.perspective = selectedPerspective || '';
+  btnNeutral.dataset.routingAgent = routingAgentFromResult;
+  btnNeutral.dataset.intentOverride = selectedIntent || 'auto';
+  btnNeutral.dataset.responseText = responseText.slice(0, 2000);
+  btnNeutral.addEventListener('click', feedbackClick);
+  
   const btnDown = document.createElement('button');
   btnDown.className = 'text-xs text-slate-500 hover:text-red-400 transition-colors';
   btnDown.textContent = '👎';
@@ -1305,10 +1837,12 @@ function _applyQueryResult(query, result, wrap) {
   btnDown.dataset.vote = '-1';
   btnDown.dataset.perspective = selectedPerspective || '';
   btnDown.dataset.routingAgent = routingAgentFromResult;
-  btnDown.dataset.intentOverride = document.getElementById('intent-select')?.value || 'auto';
+  btnDown.dataset.intentOverride = selectedIntent || 'auto';
   btnDown.dataset.responseText = responseText.slice(0, 2000);
   btnDown.addEventListener('click', feedbackClick);
+  
   fb.appendChild(btnUp);
+  fb.appendChild(btnNeutral);
   fb.appendChild(btnDown);
   wrap.appendChild(fb);
 }
@@ -1350,6 +1884,14 @@ function renderClarification(mdText, candidates) {
     };
     btnRow.appendChild(btn);
   });
+
+  // Cancel button
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'px-3 py-1 rounded text-sm font-medium transition-colors border border-slate-700 bg-slate-800/40 text-slate-500 hover:text-slate-300 hover:bg-slate-700/60';
+  cancelBtn.textContent = 'None / cancel';
+  cancelBtn.onclick = () => { clearClarification(); wrap.remove(); };
+  btnRow.appendChild(cancelBtn);
+
   wrap.appendChild(btnRow);
 
   messages.appendChild(wrap);
@@ -1381,7 +1923,7 @@ function renderIntentClarification(mdText, labels, intents, originalQuery) {
   ];
 
   labels.forEach((label, i) => {
-    const intent = intents[i] || 'code_search';
+    const intent = intents[i] || 'code_help';
     const btn = document.createElement('button');
     btn.className = 'px-4 py-1.5 rounded text-sm font-medium transition-colors border ' +
       (STYLES[i] || STYLES[0]);
@@ -1496,7 +2038,9 @@ async function feedbackClick(e) {
   const fb = btn.parentElement;
   fb.innerHTML = vote > 0
     ? '<span class="text-xs text-green-400">👍 Thanks!</span>'
-    : '<span class="text-xs text-red-400">👎 Noted.</span>';
+    : (vote === 0
+        ? '<span class="text-xs text-amber-400">😐 Noted (Partially helpful).</span>'
+        : '<span class="text-xs text-red-400">👎 Noted.</span>');
 }
 
 // ── Utils ──────────────────────────────────────────────────────────────────────
@@ -1602,7 +2146,6 @@ function initCanvasResize() {
   const canvas = document.getElementById('plan-canvas-panel');
   const wrapper = handle.closest('.flex');   // the flex row containing chat + canvas
 
-  const MIN_W  = 260;
   const STOR_K = 'ea_canvas_w';
 
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
@@ -1612,12 +2155,32 @@ function initCanvasResize() {
     return isNaN(v) ? Math.round(wrapper.clientWidth * 0.44) : v;
   }
 
-  // Called by PlanCanvas.open() — applies saved/default width
+    // Called by PlanCanvas.open() and ReportSpecCanvas.open() — applies saved/default width
   window._applyCanvasWidth = function(w) {
-    w = clamp(w || savedWidth(), MIN_W, wrapper.clientWidth - 320);
-    canvas.style.flexBasis = w + 'px';
-    canvas.style.flexShrink = '0';
-    canvas.style.flexGrow   = '0';
+    const planCanvas = document.getElementById('plan-canvas-panel');
+    const reportCanvas = document.getElementById('report-canvas-panel');
+    let target = planCanvas;
+    let key = 'ea_canvas_w';
+    if (reportCanvas && !reportCanvas.classList.contains('hidden')) {
+      target = reportCanvas;
+      key = 'ea_report_canvas_w';
+    }
+    if (!target) return;
+    const wrp = target.closest('.flex');
+    if (!wrp) return;
+    const clmp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const baseW = wrp.clientWidth || window.innerWidth || 1200;
+    const saved = () => {
+      const v = parseInt(localStorage.getItem(key));
+      const defaultW = Math.max(450, Math.round(baseW * 0.44));
+      return isNaN(v) ? defaultW : v;
+    };
+    const minW = Math.max(380, Math.round(baseW * 0.25));
+    const maxW = Math.max(minW, baseW - 320);
+    w = clmp(w || saved(), minW, maxW);
+    target.style.flexBasis = w + 'px';
+    target.style.flexShrink = '0';
+    target.style.flexGrow   = '0';
   };
 
   handle.addEventListener('mousedown', e => {
@@ -1627,7 +2190,8 @@ function initCanvasResize() {
     const startW = canvas.getBoundingClientRect().width;
 
     function onMove(ev) {
-      const newW = clamp(startW - (ev.clientX - startX), MIN_W, wrapper.clientWidth - 320);
+      const minW = Math.max(380, Math.round(wrapper.clientWidth * 0.25));
+      const newW = clamp(startW - (ev.clientX - startX), minW, wrapper.clientWidth - 320);
       canvas.style.flexBasis = newW + 'px';
     }
     function onUp() {
@@ -1674,6 +2238,43 @@ function openForkModal(doc_id, version_file, defaultTitle) {
 function closeBuilderModal() {
   document.getElementById('builder-title-modal').classList.add('hidden');
   document.getElementById('builder-title-input').value = '';
+}
+
+// ── Add Column modal ─────────────────────────────────────────────────────────
+let _addColumnCallback = null;
+
+function openAddColumnModal(callback) {
+  _addColumnCallback = callback;
+  const nameEl = document.getElementById('add-column-name');
+  const keyEl  = document.getElementById('add-column-key');
+  nameEl.value = '';
+  keyEl.value  = '';
+  document.getElementById('add-column-modal').classList.remove('hidden');
+  setTimeout(() => nameEl.focus(), 50);
+
+  // Auto-fill key from name
+  nameEl.oninput = () => {
+    keyEl.value = nameEl.value.trim().toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+  };
+
+  nameEl.onkeydown = keyEl.onkeydown = (e) => {
+    if (e.key === 'Enter') confirmAddColumn();
+    if (e.key === 'Escape') closeAddColumnModal();
+  };
+}
+
+function closeAddColumnModal() {
+  document.getElementById('add-column-modal').classList.add('hidden');
+  _addColumnCallback = null;
+}
+
+function confirmAddColumn() {
+  const name = document.getElementById('add-column-name').value.trim();
+  const key  = document.getElementById('add-column-key').value.trim();
+  if (!name) return;
+  const cb = _addColumnCallback;   // save before close() nulls it
+  closeAddColumnModal();
+  if (cb) cb(name, key);
 }
 
 async function submitTitleModal() {
@@ -1872,6 +2473,438 @@ function _renderCmdPickerList(searchQ) {
 function _esc(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
+
+// ── Custom Specs Helper Functions ────────────────────────────────────────────────
+async function loadReportDocs() {
+  let docData, draftData;
+  try {
+    const docRes = await fetch('/api/reports/docs', { headers: Auth.getHeaders() });
+    docData = await docRes.json();
+    const draftRes = await fetch('/api/reports/drafts', { headers: Auth.getHeaders() });
+    draftData = await draftRes.json();
+  } catch (e) {
+    console.error("Failed to load report docs/drafts", e);
+    return;
+  }
+
+  const el = document.getElementById('report-doc-list');
+  if (!el) return;
+  el.innerHTML = '';
+
+  const drafts = draftData || [];
+  const inbox = docData.inbox || [];
+  const outbox = docData.outbox || [];
+  const trash = docData.trash || [];
+
+  if (!drafts.length && !inbox.length && !outbox.length && !trash.length) {
+    el.innerHTML = '<div class="px-2 text-slate-600 italic text-[11px]">No report specs yet</div>';
+    return;
+  }
+
+  const makeRow = (item, type) => {
+    const row = document.createElement('div');
+    row.className = 'flex items-center gap-1';
+
+    const btn = document.createElement('button');
+    let colorCls = '';
+
+    if (type === 'draft') {
+      const isActive = item.draft_id === _activeDraftId;
+      colorCls = isActive ? 'text-amber-300 bg-amber-900/30' : 'text-amber-400/70 hover:bg-amber-900/20 hover:text-amber-300';
+      btn.className = `flex-1 text-left px-2 py-0.5 rounded transition-colors truncate ${colorCls}`;
+      const label = item.answers?.Heading || item.title || item.draft_id;
+      btn.textContent = (isActive ? '▸ ' : '') + (label.length > 30 ? label.slice(0, 29) + '…' : label);
+      btn.title = `${label}\nPhase: ${item.phase_label || item.phase}`;
+      btn.onclick = () => {
+        if (isActive) return;
+        appendMessage('you', `Resume draft ${item.draft_id}`);
+        submitQuery(`resume draft ${item.draft_id}`, { intent_override: 'report' });
+      };
+
+      row.appendChild(btn);
+
+      const phase = document.createElement('span');
+      phase.className = 'shrink-0 text-slate-600 text-[10px] truncate max-w-[60px]';
+      phase.textContent = (item.phase_label || item.phase || '').replace('elicit_', 'Q&A:').replace('_', ' ');
+      row.appendChild(phase);
+
+      const del = document.createElement('button');
+      del.className = 'shrink-0 text-slate-700 hover:text-red-400 transition-colors text-xs px-1';
+      del.title = 'Discard this draft';
+      del.textContent = '✕';
+      del.onclick = async e => {
+        e.stopPropagation();
+        if (!confirm(`Discard draft "${label}"?`)) return;
+        if (item.draft_id === _activeDraftId) {
+          _activeDraftId = null;
+          sessionStorage.removeItem('ea_active_draft');
+          ReportSpecCanvas.close();
+        }
+        await fetch(`/api/reports/drafts/${item.draft_id}`, { method: 'DELETE', headers: Auth.getHeaders() }).catch(() => {});
+        loadReportDocs();
+      };
+      row.appendChild(del);
+
+    } else {
+      const folder = item.folder || type;
+      colorCls = folder === 'inbox' ? 'text-violet-300 hover:bg-violet-900/40'
+               : folder === 'outbox' ? (item.status === 'Failed' ? 'text-rose-400 hover:bg-rose-950/30' : 'text-emerald-400 hover:bg-emerald-900/30')
+               : 'text-slate-500 hover:bg-slate-800/50 line-through';
+      btn.className = `flex-1 text-left px-2 py-0.5 rounded transition-colors truncate ${colorCls}`;
+      const label = item.title && item.title !== '(untitled)' ? item.title : item.doc_id;
+      btn.textContent = label;
+      btn.title = item.doc_id;
+      btn.onclick = () => viewReportDocInChat(item.doc_id);
+
+      row.appendChild(btn);
+
+      if (folder === 'inbox') {
+        const editBtn = document.createElement('button');
+        editBtn.className = 'shrink-0 px-1 py-0.5 rounded text-slate-500 hover:text-violet-300 hover:bg-violet-950/40 text-xs transition-colors';
+        editBtn.title = 'Edit report columns in canvas';
+        editBtn.textContent = '✏';
+        editBtn.onclick = async e => {
+          e.stopPropagation();
+          if (item.draft_id) {
+            _activeDraftId = item.draft_id;
+            sessionStorage.setItem('ea_active_draft', _activeDraftId);
+            ReportSpecCanvas.open(_activeDraftId);
+          } else {
+            editBtn.disabled = true; editBtn.textContent = '…';
+            try {
+              const r = await fetch(`/api/reports/specs/${encodeURIComponent(item.doc_id)}/edit`, {
+                method: 'POST', headers: Auth.getHeaders(),
+              });
+              const data = await r.json();
+              if (data.found && data.draft_id) {
+                _activeDraftId = data.draft_id;
+                sessionStorage.setItem('ea_active_draft', _activeDraftId);
+                await ReportSpecCanvas.open(data.draft_id);
+                setSidebarTab('reports');
+                loadReportDocs();
+              } else {
+                appendMessage('system', `Could not open editor for **${item.doc_id}**: ${data.error || 'unknown error'}`);
+              }
+            } catch(err) {
+              appendMessage('system', `Edit failed: ${err.message}`);
+            } finally {
+              editBtn.disabled = false; editBtn.textContent = '✏';
+            }
+          }
+        };
+        row.appendChild(editBtn);
+
+        const execFmtSel = document.createElement('select');
+        execFmtSel.className = 'shrink-0 bg-slate-700 border border-slate-600 rounded px-1 py-0.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 transition-colors';
+        execFmtSel.title = 'Output format';
+        ['TABLE','LIST','MERMAID','REPORT','JSON'].forEach(f => {
+          const o = document.createElement('option'); o.value = f; o.textContent = f;
+          execFmtSel.appendChild(o);
+        });
+        execFmtSel.onclick = e => e.stopPropagation();
+        row.appendChild(execFmtSel);
+
+        const execBtn = document.createElement('button');
+        execBtn.className = 'shrink-0 px-1.5 py-0.5 rounded bg-violet-800 hover:bg-violet-700 text-white text-xs transition-colors';
+        execBtn.title = 'Execute this report spec';
+        execBtn.textContent = '▶';
+        execBtn.onclick = e => {
+          e.stopPropagation();
+          const fmt = execFmtSel.value || 'TABLE';
+          appendMessage('you', `execute report spec ${item.doc_id} (${fmt})`);
+          submitQuery(`execute report spec ${item.doc_id}`, { output_format: fmt });
+        };
+        row.appendChild(execBtn);
+      } else if (folder === 'outbox') {
+        const recoverBtn = document.createElement('button');
+        recoverBtn.className = 'shrink-0 px-1 py-0.5 rounded text-slate-500 hover:text-amber-300 hover:bg-slate-800/50 text-xs transition-colors';
+        recoverBtn.title = 'Edit this report spec before re-running (strips outcome)';
+        recoverBtn.textContent = '✏';
+        recoverBtn.onclick = async e => {
+          e.stopPropagation();
+          recoverBtn.disabled = true; recoverBtn.textContent = '…';
+          try {
+            const r = await fetch(`/api/reports/docs/${encodeURIComponent(item.doc_id)}/recover`, { method: 'POST', headers: Auth.getHeaders() });
+            if (!r.ok) {
+              const err = await r.json().catch(() => ({}));
+              throw new Error(err.detail || `Server error ${r.status}`);
+            }
+            const res = await r.json();
+            await loadReportDocs();
+            viewReportDocInChat(res.doc_id);
+          } catch (err) {
+            alert(`Could not recover report: ${err.message}`);
+            recoverBtn.disabled = false; recoverBtn.textContent = '✏';
+          }
+        };
+        row.appendChild(recoverBtn);
+
+        const rerunBtn = document.createElement('button');
+        rerunBtn.className = 'shrink-0 px-1.5 py-0.5 rounded bg-emerald-800 hover:bg-emerald-700 text-white text-xs transition-colors';
+        rerunBtn.title = 'Re-run this report now';
+        rerunBtn.textContent = '▶';
+        rerunBtn.onclick = async e => {
+          e.stopPropagation();
+          if (!confirm(`Re-run "${label}" now? This runs the report query again.`)) return;
+          rerunBtn.disabled = true; rerunBtn.textContent = '…';
+          try {
+            const r = await fetch(`/api/reports/docs/${encodeURIComponent(item.doc_id)}/retry`, { method: 'POST', headers: Auth.getHeaders() });
+            if (!r.ok) {
+              const err = await r.json().catch(() => ({}));
+              throw new Error(err.detail || `Server error ${r.status}`);
+            }
+            const res = await r.json();
+            await loadReportDocs();
+            viewReportDocInChat(res.doc_id);
+          } catch (err) {
+            alert(`Could not re-run report: ${err.message}`);
+          } finally {
+            rerunBtn.disabled = false; rerunBtn.textContent = '▶';
+          }
+        };
+        row.appendChild(rerunBtn);
+      } else if (folder === 'trash') {
+        const restoreBtn = document.createElement('button');
+        restoreBtn.className = 'shrink-0 px-1.5 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs transition-colors';
+        restoreBtn.title = 'Restore this report spec to Inbox';
+        restoreBtn.textContent = '↺';
+        restoreBtn.onclick = async e => {
+          e.stopPropagation();
+          restoreBtn.disabled = true;
+          try {
+            const r = await fetch(`/api/reports/docs/${encodeURIComponent(item.doc_id)}/restore-trash`, { method: 'POST', headers: Auth.getHeaders() });
+            if (!r.ok) {
+              const err = await r.json().catch(() => ({}));
+              throw new Error(err.detail || `Server error ${r.status}`);
+            }
+            await loadReportDocs();
+          } catch (err) {
+            alert(`Could not restore report: ${err.message}`);
+            restoreBtn.disabled = false;
+          }
+        };
+        row.appendChild(restoreBtn);
+
+        const purgeBtn = document.createElement('button');
+        purgeBtn.className = 'shrink-0 px-1 py-0.5 rounded text-slate-600 hover:text-red-400 hover:bg-red-950/40 text-xs transition-colors';
+        purgeBtn.title = 'Permanently delete';
+        purgeBtn.textContent = '🗑';
+        purgeBtn.onclick = async e => {
+          e.stopPropagation();
+          if (!confirm(`Permanently delete "${label}"?\n\nThis cannot be undone.`)) return;
+          purgeBtn.disabled = true;
+          try {
+            const r = await fetch(`/api/reports/docs/${encodeURIComponent(item.doc_id)}/purge`, { method: 'DELETE', headers: Auth.getHeaders() });
+            if (!r.ok) {
+              const err = await r.json().catch(() => ({}));
+              throw new Error(err.detail || `Server error ${r.status}`);
+            }
+            loadReportDocs();
+          } catch (err) {
+            alert(`Could not purge report: ${err.message}`);
+            purgeBtn.disabled = false;
+          }
+        };
+        row.appendChild(purgeBtn);
+        return row;
+      }
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'shrink-0 px-1 py-0.5 rounded text-slate-600 hover:text-red-400 hover:bg-red-950/40 text-xs transition-colors';
+      delBtn.title = 'Move this report spec to Trash';
+      delBtn.textContent = '×';
+      delBtn.onclick = async e => {
+        e.stopPropagation();
+        if (!confirm(`Move "${label}" to Trash?`)) return;
+        delBtn.disabled = true;
+        try {
+          const r = await fetch(`/api/reports/docs/${encodeURIComponent(item.doc_id)}`, { method: 'DELETE', headers: Auth.getHeaders() });
+          if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            throw new Error(err.detail || `Server error ${r.status}`);
+          }
+          loadReportDocs();
+        } catch (err) {
+          alert(`Could not delete report spec: ${err.message}`);
+          delBtn.disabled = false;
+        }
+      };
+      row.appendChild(delBtn);
+    }
+    return row;
+  };
+
+  const renderGroup = (items, type, label) => {
+    if (!items.length) return;
+    const hdr = document.createElement('div');
+    hdr.className = 'px-2 pt-1 text-slate-600 uppercase text-xs font-semibold tracking-wider';
+    hdr.textContent = label;
+    el.appendChild(hdr);
+    items.forEach(item => el.appendChild(makeRow(item, type)));
+  };
+
+  renderGroup(drafts, 'draft', 'Active Drafts');
+  renderGroup(inbox, 'inbox', 'Inbox');
+  renderGroup(outbox, 'outbox', 'Outbox');
+
+  if (trash.length) {
+    const hdr = document.createElement('div');
+    hdr.className = 'px-2 pt-1 flex items-center gap-1 cursor-pointer text-slate-600 uppercase text-xs font-semibold tracking-wider hover:text-slate-400';
+    hdr.textContent = `${_trashExpandedReports ? '▾' : '▸'} Trash (${trash.length})`;
+    hdr.onclick = () => { _trashExpandedReports = !_trashExpandedReports; loadReportDocs(); };
+    el.appendChild(hdr);
+    if (_trashExpandedReports) {
+      trash.forEach(item => el.appendChild(makeRow(item, 'trash')));
+    }
+  }
+}
+let _trashExpandedReports = false;
+
+function triggerReportGeneration() {
+  if (!_activeDraftId) return;
+  appendMessage('you', 'generate now');
+  submitQuery('generate now', { intent_override: 'report' });
+}
+
+function triggerReportExecution(explicitDocId) {
+  const docId = explicitDocId || document.getElementById('rcanvas-title')?.dataset?.docId || _activeDraftId;
+  if (!docId) return;
+  const fmt = document.getElementById('rcanvas-format-select')?.value || 'REPORT';
+  const limitEl = document.getElementById('rcanvas-limit-select');
+  const limit = limitEl ? parseInt(limitEl.value) : 100;
+  appendMessage('you', `▶ Run Report (${fmt}, limit ${limit})`);
+  submitQuery(`execute report spec ${docId}`, { output_format: fmt, page_size: limit });
+}
+
+function openReportBuilderModal() {
+  document.getElementById('report-builder-title-input').value = '';
+  document.getElementById('report-builder-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('report-builder-title-input').focus(), 50);
+}
+
+function closeReportBuilderModal() {
+  document.getElementById('report-builder-modal').classList.add('hidden');
+  document.getElementById('report-builder-title-input').value = '';
+}
+
+async function submitReportBuilderModal() {
+  const title = document.getElementById('report-builder-title-input').value.trim();
+  if (!title) return;
+  await createReportBuilderDraft(title);
+}
+
+async function createReportBuilderDraft(title) {
+  closeReportBuilderModal();
+  try {
+    const r = await fetch('/api/reports/drafts/builder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      body: JSON.stringify({ title }),
+    });
+    if (!r.ok) { const err = await r.json().catch(() => ({})); throw new Error(err.detail || r.statusText); }
+    const spec = await r.json();
+    _activeDraftId = spec.draft_id;
+    sessionStorage.setItem('ea_active_draft', _activeDraftId);
+    ReportSpecCanvas.open(_activeDraftId);
+    setSidebarTab('reports');
+    loadReportDocs();
+    appendMessage('assistant',
+      `**${title}** — report canvas is open. Use the canvas to customize columns and metadata, or ask me questions in chat.`
+    );
+  } catch (e) {
+    appendMessage('assistant', 'Could not create report draft: ' + e.message);
+  }
+}
+
+function openReportSpecCanvas(draftId) {
+  ReportSpecCanvas.open(draftId);
+}
+
+async function viewReportDocInChat(doc_id) {
+  try {
+    const r = await fetch(`/api/reports/docs/${encodeURIComponent(doc_id)}`, { headers: Auth.getHeaders() });
+    if (!r.ok) { alert(`Could not load report spec ${doc_id}`); return; }
+    const data = await r.json();
+    const title = data.folder === 'outbox' ? `Run outcome for **${doc_id}**` : `Report spec document **${doc_id}**`;
+    const wrap = appendMessage('assistant', `### ${title}\n\n\`\`\`markdown\n${data.content}\n\`\`\``);
+
+    if (data.folder === 'inbox') {
+      const banner = document.createElement('div');
+      banner.className = 'mt-2 px-3 py-2 rounded bg-slate-700/50 border border-slate-600/50 text-xs flex items-center gap-3';
+
+      const info = document.createElement('span');
+      info.className = 'text-slate-300 flex-1';
+      info.innerHTML = `Would you like to run this report or edit its columns?`;
+      banner.appendChild(info);
+
+      const runBtn = document.createElement('button');
+      runBtn.className = 'px-3 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold shrink-0 transition-colors';
+      runBtn.textContent = '▶ Run Report';
+      runBtn.onclick = () => {
+        triggerReportExecution(doc_id);
+      };
+      banner.appendChild(runBtn);
+
+      const editBtn = document.createElement('button');
+      editBtn.className = 'px-3 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold shrink-0 transition-colors';
+      editBtn.textContent = '✏ Edit Canvas';
+      editBtn.onclick = async () => {
+        try {
+          const res = await fetch(`/api/reports/specs/${encodeURIComponent(doc_id)}/edit`, {
+            method: 'POST', headers: Auth.getHeaders(),
+          });
+          const editData = await res.json();
+          if (editData.found && editData.draft_id) {
+            _activeDraftId = editData.draft_id;
+            sessionStorage.setItem('ea_active_draft', _activeDraftId);
+            await ReportSpecCanvas.open(editData.draft_id);
+            setSidebarTab('reports');
+            loadReportDocs();
+          }
+        } catch (e) {
+          alert(`Error: ${e.message}`);
+        }
+      };
+      banner.appendChild(editBtn);
+
+      wrap.appendChild(banner);
+    }
+  } catch (e) {
+    alert(`Error loading report doc: ${e.message}`);
+  }
+}
+
+function initReportCanvasResize() {
+  const handle = document.getElementById('resize-chat-report-canvas');
+  const canvas = document.getElementById('report-canvas-panel');
+  if (!handle || !canvas) return;
+  const wrapper = handle.closest('.flex');
+
+  const STOR_K = 'ea_report_canvas_w';
+
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+  handle.addEventListener('mousedown', e => {
+    e.preventDefault();
+    handle.classList.add('dragging');
+    const startX = e.clientX;
+    const startW = canvas.getBoundingClientRect().width;
+
+    function onMove(ev) {
+      const minW = Math.max(380, Math.round(wrapper.clientWidth * 0.25));
+      const newW = clamp(startW - (ev.clientX - startX), minW, wrapper.clientWidth - 320);
+      canvas.style.flexBasis = newW + 'px';
+    }
+    function onUp() {
+      handle.classList.remove('dragging');
+      localStorage.setItem(STOR_K, Math.round(canvas.getBoundingClientRect().width));
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
+  });
+}
 </script>
 
 <!-- ── Plan Editor Overlay ─────────────────────────────────────────────────── -->
@@ -2041,8 +3074,9 @@ function _esc(s) {
   </div>
 </div>
 
-<script src="/static/artifact_canvas.js?v=20260616c"></script>
-<script src="/static/plan_canvas.js?v=20260616c"></script>
-<script src="/static/plan_editor.js?v=20260616c"></script>
+<script src="/static/artifact_canvas.js?v=20260629i"></script>
+<script src="/static/plan_canvas.js?v=20260629i"></script>
+<script src="/static/plan_editor.js?v=20260629i"></script>
+<script src="/static/report_spec_canvas.js?v=20260629i"></script>
 </body>
 </html>

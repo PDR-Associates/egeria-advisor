@@ -51,7 +51,10 @@ class MultiCollectionStore:
         top_k: Optional[int] = None,
         max_collections: int = 3,
         min_score: Optional[float] = None,
-        filters: Optional[Dict[str, Any]] = None
+        filters: Optional[Dict[str, Any]] = None,
+        intent: Optional[str] = None,
+        boosted_collections: Optional[List[str]] = None,
+        feedback_adjustments: Optional[Dict[str, float]] = None
     ) -> MultiCollectionSearchResult:
         """
         Search with intelligent collection routing.
@@ -62,12 +65,21 @@ class MultiCollectionStore:
             max_collections: Maximum collections to search
             min_score: Minimum similarity score threshold (uses collection default if None)
             filters: Optional metadata filters
+            intent: Optional query intent
+            boosted_collections: Collections to boost
+            feedback_adjustments: Feedback loop adjustments
             
         Returns:
             MultiCollectionSearchResult with merged results
         """
         # Route query to collections
-        collection_names = self.router.route_query(query, max_collections=max_collections)
+        collection_names = self.router.route_query(
+            query,
+            max_collections=max_collections,
+            intent=intent,
+            boosted_collections=boosted_collections,
+            feedback_adjustments=feedback_adjustments
+        )
         
         if not collection_names:
             logger.warning("No collections matched query, using defaults")

@@ -56,3 +56,28 @@ class BaseAdvisorAgent(ABC):
                 return ex.submit(_in_thread).result(timeout=60)
         except RuntimeError:
             return asyncio.run(_inner())
+
+
+class BaseAgent(ABC):
+    """Legacy base agent class for specialized agents not using BeeAI."""
+
+    def __init__(self, name: str):
+        self.name = name
+
+    @abstractmethod
+    def process(self, query: str, context: Any = None) -> Any:
+        pass
+
+    def _format_response(
+        self,
+        response: str,
+        sources: Any = None,
+        confidence: float = 1.0
+    ) -> Any:
+        return {
+            "agent": self.name,
+            "response": response,
+            "sources": sources or [],
+            "confidence": confidence
+        }
+

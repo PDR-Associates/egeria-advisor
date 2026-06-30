@@ -230,25 +230,184 @@ class AnalyticsManager:
             }
         }
     
+    # ── symbol-store helpers ────────────────────────────────────────────────
+
+    def _symbol_store(self):
+        try:
+            from advisor.code_symbol_store import get_symbol_store
+            return get_symbol_store()
+        except Exception:
+            return None
+
+    @staticmethod
+    def _collection_for_filter(path_filter: Optional[str]) -> Optional[str]:
+        """Map a user-supplied path filter to a canonical collection name."""
+        if not path_filter:
+            return None
+        pf = path_filter.lower().replace("-", "_").replace(" ", "_")
+        aliases = {
+            "pyegeria": "pyegeria",
+            "pyegeria_cli": "pyegeria_cli",
+            "cli": "pyegeria_cli",
+            "pyegeria_dre": "pyegeria_drE",
+            "pyegeria_dre": "pyegeria_dre",
+            "dre": "pyegeria_drE",
+            "dr_egeria": "pyegeria_drE",
+            "egeria_java": "egeria_java",
+            "java": "egeria_java",
+        }
+        return aliases.get(pf, pf)
+
+    def _format_class_list(self, rows: list, collection_label: str) -> str:
+        if not rows:
+            return f"No classes found in {collection_label}."
+        lines = [f"**{len(rows)} classes** in {collection_label}:\n"]
+        for r in rows:
+            loc = r.get("loc", 0)
+            doc = (r.get("docstring") or "").split("\n")[0][:80]
+            suffix = f" — {doc}" if doc else ""
+            lines.append(f"- `{r['name']}` ({loc} lines){suffix}")
+        return "\n".join(lines)
+
+    def _format_method_list(self, rows: list, class_name: str) -> str:
+        if not rows:
+            return f"No public methods found for `{class_name}`."
+        lines = [f"**{len(rows)} public methods** on `{class_name}`:\n"]
+        for r in rows:
+            sig = r.get("signature") or r["name"]
+            doc = (r.get("docstring") or "").split("\n")[0][:80]
+            async_tag = " *(async)*" if r.get("is_async") else ""
+            lines.append(f"- `{sig}`{async_tag}" + (f" — {doc}" if doc else ""))
+        return "\n".join(lines)
+
+    def _format_symbol_search(self, rows: list, pattern: str) -> str:
+        if not rows:
+            return f"No symbols matching `{pattern}` found."
+        lines = [f"**{len(rows)} symbols** matching `{pattern}`:\n"]
+        for r in rows:
+            parent = f" in `{r['parent_class']}`" if r.get("parent_class") else ""
+            lines.append(f"- `{r['kind']}` **{r['name']}**{parent} ({r['collection']})")
+        return "\n".join(lines)
+
+    def _collection_summary_text(self, ss, collection: Optional[str]) -> str:
+        summary = ss.collection_summary(collection)
+        if not summary:
+            return "No symbol data available yet — re-run ingestion to populate the symbol table."
+        lines = ["**Collection symbol summary:**\n"]
+        for col, data in sorted(summary.items()):
+            lines.append(
+                f"**{col}**: {data.get('classes', 0)} classes · "
+                f"{data.get('methods', 0)} methods · "
+                f"{data.get('functions', 0)} functions · "
+                f"~{data.get('loc', 0):,} LOC"
+            )
+        return "\n".join(lines)
+
     def answer_quantitative_query(self, query: str, path_filter: Optional[str] = None) -> str:
         """
         Answer a quantitative query about the codebase.
-        
+
         Args:
             query: User's quantitative question
             path_filter: Optional directory path to filter by (e.g., "pyegeria")
-            
+
         Returns:
             Formatted answer with statistics
         """
         query_lower = query.lower()
-        
+        ss = self._symbol_store()
+        collection = self._collection_for_filter(path_filter)
+
         # Build scope description
-        if path_filter:
+        if collection:
+            scope = f"the **{collection}** collection"
+        elif path_filter:
             scope = f"the **{path_filter}** directory"
         else:
             scope = "the egeria-python codebase"
-        
+
+        # ── Live symbol-store queries (populated at ingest time) ──────────
+
+        if ss:
+            import re as _re
+
+            # "largest/biggest class" — check BEFORE generic "classes in" list
+            if any(p in query_lower for p in ("largest class", "biggest class",
+                                               "most methods", "class with most")):
+                rows = ss.largest_classes(collection, limit=10)
+                if not rows:
+                    return "No class data available yet."
+                lines = [f"**Top {len(rows)} largest classes** in {scope}:\n"]
+                for r in rows:
+                    lines.append(
+                        f"- **{r['name']}** — {r['method_count']} methods, "
+                        f"{r.get('loc', 0)} lines ({r['collection']})"
+                    )
+                return "\n".join(lines)
+
+            # "what classes are in pyegeria?" / "list classes in pyegeria_cli"
+            if any(p in query_lower for p in ("what class", "list class", "show class",
+                                               "which class", "classes in", "classes does")):
+                rows = ss.list_classes(collection)
+                return self._format_class_list(rows, scope)
+
+            # "most complex methods" / "highest complexity" — check BEFORE class-method
+            # regex so "most complex methods in pyegeria" doesn't misparse "pyegeria" as a class
+            if any(p in query_lower for p in ("most complex", "highest complex",
+                                               "complex method", "complex function")):
+                rows = ss.most_complex(collection, limit=10)
+                if not rows:
+                    return "No complexity data available yet."
+                lines = [f"**Top {len(rows)} most complex functions/methods** in {scope}:\n"]
+                for r in rows:
+                    parent = f"`{r['parent_class']}.`" if r.get("parent_class") else ""
+                    lines.append(
+                        f"- {parent}**{r['name']}** — complexity {r['complexity']}, "
+                        f"{r.get('loc', 0)} lines ({r['collection']})"
+                    )
+                return "\n".join(lines)
+
+            # "what methods does GlossaryManager have?" — require CamelCase to avoid
+            # matching collection names like "pyegeria" as class names
+            _class_method_re = _re.compile(
+                r'(?:methods?\s+(?:does|on|of|for|in)\s+|methods?\s+available\s+(?:on|in)\s+'
+                r'|what\s+(?:methods?|api)\s+does\s+|api\s+for\s+)([A-Z][A-Za-z0-9]+)',
+            )
+            m = _class_method_re.search(query)
+            if m:
+                class_name = m.group(1)
+                rows = ss.methods_for_class(class_name, collection)
+                return self._format_method_list(rows, class_name)
+
+            # "find method X" / "search for symbol X"
+            _search_re = _re.compile(
+                r'(?:find|search\s+for|locate|where\s+is)\s+(?:method|function|class|symbol)?\s*["\']?(\w+)["\']?',
+                _re.IGNORECASE,
+            )
+            ms = _search_re.search(query)
+            if ms:
+                pattern = ms.group(1)
+                rows = ss.search_symbols(pattern, collection)
+                return self._format_symbol_search(rows, pattern)
+
+            # "collection summary" / "symbol summary" / "code summary"
+            if any(p in query_lower for p in ("collection summar", "symbol summar",
+                                               "code summar", "ingestion summar")):
+                return self._collection_summary_text(ss, collection)
+
+            # Enrich count queries with live data from symbol store
+            if "how many class" in query_lower:
+                count = ss.count_by_kind("class", collection)
+                return f"There are **{count:,} classes** in {scope}."
+            if "how many method" in query_lower:
+                count = ss.count_by_kind("method", collection)
+                return f"There are **{count:,} methods** in {scope}."
+            if "how many function" in query_lower:
+                count = ss.count_by_kind("function", collection)
+                return f"There are **{count:,} functions** in {scope}."
+
+        # ── Fall back to stale JSON cache for non-structural queries ──────
+
         # Detect what the user is asking about
         if "how many class" in query_lower:
             count = self.get_total_classes(path_filter)

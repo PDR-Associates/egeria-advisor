@@ -5,6 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 > **Context for new conversations:** See `docs/PROJECT_SUMMARY.md` for a complete
 > phase history, capabilities overview, lessons learned, and next steps.
 > See `docs/literate-governance-plan.md` for full LGCI design documentation.
+> See `docs/design/REPORT_SPEC_BUILDER_DESIGN.md` for report spec builder architecture
+> and `docs/user-docs/REPORT_SPEC_GUIDE.md` for usage.
 
 ## Project Overview
 
@@ -263,6 +265,20 @@ Primary config: `config/advisor.yaml`. Environment overrides: `.env` (copy from 
 Key config sections: `pgvector`, `vector_store_backend`, `llm`, `embeddings`, `rag`, `observability`, `agents`.
 
 Settings are managed via Pydantic models in `advisor/config.py`.
+
+### Report Spec Builder Design Rules
+
+**A. Lifecycle invariant — specs never leave the catalog on execute.** `move_to_outbox` writes a result snapshot `<spec_id>_executed_<ts>.md` to outbox but does NOT unlink the source from inbox. `retry` strips the `_executed_<ts>` suffix and calls `execute()` on `base_doc_id` directly; no file move is needed. `recover` just confirms the spec is in inbox.
+
+**B. Registration key alignment.** `register_report_spec(base_doc_id, spec)` and `exec_report_spec(base_doc_id, …)` both use the same `base_doc_id` (with `_executed_<ts>` stripped). The registration happens in `ReportSpecAgent.execute()` immediately before calling `exec_report_spec`, so the lookup always hits.
+
+**C. Validation checks the named client class.** `validate_report_spec` does `getattr(pyegeria, client_name)` to get the actual class (e.g. `GlossaryManager`) and then `hasattr(client_class, method_name)`. Never check `EgeriaTech` directly — it uses `__getattr__` on instances, so `hasattr(EgeriaTech, method)` on the class always returns False.
+
+**D. Three-category parameter model** — markdown sections `### Content Filters`, `### Shape Defaults`, `### Performance Hints` under `## Create Report Spec`. The parser (`report_spec_parser.py`) merges all three into `ActionParameter.spec_params`. The draft JSON stores them as separate dicts (`content_filters`, `shape_defaults`, `performance_hints`). `_generate_report_spec_md` emits all three. `PATCH /api/reports/drafts/{draft_id}/columns` accepts all three to keep canvas edits in sync.
+
+**E. Custom-column routing guard.** In `_process_query` (before the report pipeline block), `_custom_columns_pattern` detects "show/list X **with their** Y **and** Z" queries. These name specific columns the pre-built reports don't have, so they route to `ReportSpecElicitor` instead of the MCP pipeline. Pattern: `\b(show|list|get|…)\b .{0,60} \b(with their|including|containing)\b .{0,60} \b(and|,)\b`. Bare "show all glossaries" (no column list) does NOT match and goes to the pipeline.
+
+**F. Canvas → markdown sync.** `PATCH /api/reports/drafts/{draft_id}/columns` (in `app.py`) calls `elicitor._generate_report_spec_md(spec)` and `doc_manager.update(doc_id, new_content)` after saving the draft. This ensures canvas edits are reflected in the markdown that `exec_report_spec` reads.
 
 ### Report Pipeline Design Rules
 

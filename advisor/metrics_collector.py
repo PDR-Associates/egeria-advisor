@@ -4,9 +4,9 @@ Metrics collection framework for monitoring system performance.
 Collects and stores metrics about queries, collections, and system resources.
 """
 
-import sqlite3
 import time
 import psutil
+import json
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, asdict
@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from loguru import logger
 
 from advisor.config import get_full_config
+from advisor.db_consolidated import get_db_manager
 
 
 @dataclass
@@ -33,6 +34,19 @@ class QueryMetric:
     llm_time_ms: Optional[float] = None
     avg_relevance_score: Optional[float] = None
     sources_json: Optional[str] = None  # JSON string of source metadata
+    
+    # Audit / Context columns
+    active_perspective: Optional[str] = None
+    resolved_intent: Optional[str] = None
+    routing_agent: Optional[str] = None
+    applied_policy_rule: Optional[Dict[str, Any]] = None  # Saved as JSONB
+    perspective_history: Optional[List[str]] = None  # Saved as JSONB
+    session_id: Optional[str] = None
+    user_id: Optional[str] = None
+    rating: Optional[str] = None
+    star_rating: Optional[int] = None
+    suggested_collection: Optional[str] = None
+    feedback_text: Optional[str] = None
 
 
 @dataclass
@@ -65,7 +79,7 @@ class MetricsCollector:
     Collect and store system metrics.
     
     Provides methods to record query metrics, collection health,
-    and system resource usage.
+    and system resource usage in consolidated PostgreSQL.
     """
     
     def __init__(self, db_path: Optional[Path] = None):
@@ -73,107 +87,16 @@ class MetricsCollector:
         Initialize metrics collector.
         
         Args:
-            db_path: Path to SQLite database for metrics storage
+            db_path: Ignored, retained for signature compatibility.
         """
-        if db_path is None:
-            config = get_full_config()
-            data_dir = Path(config.get("data_dir", "data"))
-            db_path = data_dir / "metrics.db"
-        
-        self.db_path = db_path
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_database()
+        self.db_manager = get_db_manager()
+        self.db_manager.connect()
         
         # Track disk I/O baseline
         self._disk_io_baseline = psutil.disk_io_counters()
         self._network_baseline = psutil.net_io_counters()
         
-        logger.info(f"Initialized MetricsCollector with database: {db_path}")
-    
-    def _init_database(self):
-        """Initialize database schema."""
-        with sqlite3.connect(self.db_path) as conn:
-            # Query metrics table
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS query_metrics (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp REAL NOT NULL,
-                    query_text TEXT NOT NULL,
-                    collection_name TEXT,
-                    latency_ms REAL NOT NULL,
-                    query_type TEXT,
-                    cache_hit BOOLEAN NOT NULL,
-                    success BOOLEAN NOT NULL,
-                    error_message TEXT,
-                    result_count INTEGER,
-                    embedding_time_ms REAL,
-                    search_time_ms REAL,
-                    llm_time_ms REAL,
-                    avg_relevance_score REAL,
-                    sources_json TEXT
-                )
-            """)
-            
-            # Collection health table
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS collection_health (
-                    collection_name TEXT PRIMARY KEY,
-                    last_check REAL NOT NULL,
-                    entity_count INTEGER NOT NULL,
-                    health_score REAL NOT NULL,
-                    storage_size_mb REAL NOT NULL,
-                    last_update REAL NOT NULL,
-                    status TEXT NOT NULL
-                )
-            """)
-            
-            # System metrics table
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS system_metrics (
-                    timestamp REAL PRIMARY KEY,
-                    cpu_percent REAL NOT NULL,
-                    memory_percent REAL NOT NULL,
-                    gpu_percent REAL,
-                    disk_io_read_mb REAL NOT NULL,
-                    disk_io_write_mb REAL NOT NULL,
-                    network_sent_mb REAL NOT NULL,
-                    network_recv_mb REAL NOT NULL
-                )
-            """)
-            
-            # Error log table
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS error_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp REAL NOT NULL,
-                    error_type TEXT NOT NULL,
-                    error_message TEXT NOT NULL,
-                    stack_trace TEXT,
-                    context TEXT
-                )
-            """)
-            
-            # Plan lifecycle events table
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS plan_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp REAL NOT NULL,
-                    doc_id TEXT NOT NULL,
-                    event_type TEXT NOT NULL,
-                    title TEXT,
-                    command_families TEXT,
-                    outcome_status TEXT,
-                    perspective TEXT
-                )
-            """)
-
-            # Create indexes
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_query_timestamp ON query_metrics(timestamp)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_query_collection ON query_metrics(collection_name)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_system_timestamp ON system_metrics(timestamp)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_plan_doc_id ON plan_events(doc_id)")
-            
-            conn.commit()
+        logger.info("Initialized MetricsCollector using consolidated PostgreSQL database")
     
     def record_query(self, metric: QueryMetric):
         """
@@ -182,30 +105,47 @@ class MetricsCollector:
         Args:
             metric: QueryMetric instance
         """
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                INSERT INTO query_metrics
-                (timestamp, query_text, collection_name, latency_ms, query_type,
-                 cache_hit, success, error_message, result_count, embedding_time_ms,
-                 search_time_ms, llm_time_ms, avg_relevance_score, sources_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                metric.timestamp,
-                metric.query_text,
-                metric.collection_name,
-                metric.latency_ms,
-                metric.query_type,
-                metric.cache_hit,
-                metric.success,
-                metric.error_message,
-                metric.result_count,
-                metric.embedding_time_ms,
-                metric.search_time_ms,
-                metric.llm_time_ms,
-                metric.avg_relevance_score,
-                metric.sources_json
-            ))
-            conn.commit()
+        sql = """
+            INSERT INTO query_metrics
+            (timestamp, query_text, collection_name, latency_ms, query_type,
+             cache_hit, success, error_message, result_count, embedding_time_ms,
+             search_time_ms, llm_time_ms, avg_relevance_score, sources_json,
+             active_perspective, resolved_intent, routing_agent,
+             applied_policy_rule, perspective_history, session_id, user_id,
+             rating, star_rating, suggested_collection, feedback_text)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        
+        applied_policy_rule_json = json.dumps(metric.applied_policy_rule) if metric.applied_policy_rule is not None else None
+        perspective_history_json = json.dumps(metric.perspective_history) if metric.perspective_history is not None else None
+        
+        self.db_manager.execute_update(sql, (
+            metric.timestamp,
+            metric.query_text,
+            metric.collection_name,
+            metric.latency_ms,
+            metric.query_type,
+            bool(metric.cache_hit),
+            bool(metric.success),
+            metric.error_message,
+            metric.result_count,
+            metric.embedding_time_ms,
+            metric.search_time_ms,
+            metric.llm_time_ms,
+            metric.avg_relevance_score,
+            metric.sources_json,
+            metric.active_perspective,
+            metric.resolved_intent,
+            metric.routing_agent,
+            applied_policy_rule_json,
+            perspective_history_json,
+            metric.session_id,
+            metric.user_id,
+            metric.rating,
+            metric.star_rating,
+            metric.suggested_collection,
+            metric.feedback_text
+        ))
     
     def record_plan_event(
         self,
@@ -218,13 +158,12 @@ class MetricsCollector:
     ) -> None:
         """Record a plan lifecycle event (created / executed / archived)."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                conn.execute("""
-                    INSERT INTO plan_events
-                    (timestamp, doc_id, event_type, title, command_families, outcome_status, perspective)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (time.time(), doc_id, event_type, title, command_families, outcome_status, perspective))
-                conn.commit()
+            sql = """
+                INSERT INTO plan_events
+                (timestamp, doc_id, event_type, title, command_families, outcome_status, perspective)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """
+            self.db_manager.execute_update(sql, (time.time(), doc_id, event_type, title, command_families, outcome_status, perspective))
         except Exception as exc:
             logger.warning(f"MetricsCollector.record_plan_event failed: {exc}")
 
@@ -235,44 +174,49 @@ class MetricsCollector:
         Args:
             health: CollectionHealth instance
         """
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                INSERT OR REPLACE INTO collection_health
-                (collection_name, last_check, entity_count, health_score,
-                 storage_size_mb, last_update, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                health.collection_name,
-                health.last_check,
-                health.entity_count,
-                health.health_score,
-                health.storage_size_mb,
-                health.last_update,
-                health.status
-            ))
-            conn.commit()
+        sql = """
+            INSERT INTO collection_health
+            (collection_name, last_check, entity_count, health_score,
+             storage_size_mb, last_update, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (collection_name) DO UPDATE SET
+                last_check = EXCLUDED.last_check,
+                entity_count = EXCLUDED.entity_count,
+                health_score = EXCLUDED.health_score,
+                storage_size_mb = EXCLUDED.storage_size_mb,
+                last_update = EXCLUDED.last_update,
+                status = EXCLUDED.status
+        """
+        self.db_manager.execute_update(sql, (
+            health.collection_name,
+            health.last_check,
+            health.entity_count,
+            health.health_score,
+            health.storage_size_mb,
+            health.last_update,
+            health.status
+        ))
     
     def record_system_metrics(self):
         """Record current system resource metrics."""
         metric = self.collect_system_metrics()
         
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                INSERT INTO system_metrics
-                (timestamp, cpu_percent, memory_percent, gpu_percent,
-                 disk_io_read_mb, disk_io_write_mb, network_sent_mb, network_recv_mb)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                metric.timestamp,
-                metric.cpu_percent,
-                metric.memory_percent,
-                metric.gpu_percent,
-                metric.disk_io_read_mb,
-                metric.disk_io_write_mb,
-                metric.network_sent_mb,
-                metric.network_recv_mb
-            ))
-            conn.commit()
+        sql = """
+            INSERT INTO system_metrics
+            (timestamp, cpu_percent, memory_percent, gpu_percent,
+             disk_io_read_mb, disk_io_write_mb, network_sent_mb, network_recv_mb)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        self.db_manager.execute_update(sql, (
+            metric.timestamp,
+            metric.cpu_percent,
+            metric.memory_percent,
+            metric.gpu_percent,
+            metric.disk_io_read_mb,
+            metric.disk_io_write_mb,
+            metric.network_sent_mb,
+            metric.network_recv_mb
+        ))
     
     def collect_system_metrics(self) -> SystemMetric:
         """
@@ -292,8 +236,6 @@ class MetricsCollector:
             if torch.cuda.is_available():
                 gpu_percent = torch.cuda.utilization()
             elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-                # On macOS, getting exact MPS utilization is hard without powermetrics
-                # We'll use 0.0 to indicate it's available/being used (but percentage unknown)
                 gpu_percent = 0.0
         except:
             pass
@@ -330,13 +272,12 @@ class MetricsCollector:
             stack_trace: Optional stack trace
             context: Optional context information
         """
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                INSERT INTO error_log
-                (timestamp, error_type, error_message, stack_trace, context)
-                VALUES (?, ?, ?, ?, ?)
-            """, (time.time(), error_type, error_message, stack_trace, context))
-            conn.commit()
+        sql = """
+            INSERT INTO error_log
+            (timestamp, error_type, error_message, stack_trace, context)
+            VALUES (%s, %s, %s, %s, %s)
+        """
+        self.db_manager.execute_update(sql, (time.time(), error_type, error_message, stack_trace, context))
     
     def get_recent_queries(self, limit: int = 100) -> List[Dict]:
         """
@@ -348,14 +289,12 @@ class MetricsCollector:
         Returns:
             List of query metric dicts
         """
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute("""
-                SELECT * FROM query_metrics
-                ORDER BY timestamp DESC
-                LIMIT ?
-            """, (limit,))
-            return [dict(row) for row in cursor.fetchall()]
+        sql = """
+            SELECT * FROM query_metrics
+            ORDER BY timestamp DESC
+            LIMIT %s
+        """
+        return self.db_manager.execute_query(sql, (limit,))
     
     def get_collection_health(self, collection_name: Optional[str] = None) -> List[Dict]:
         """
@@ -367,16 +306,12 @@ class MetricsCollector:
         Returns:
             List of collection health dicts
         """
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            if collection_name:
-                cursor = conn.execute(
-                    "SELECT * FROM collection_health WHERE collection_name = ?",
-                    (collection_name,)
-                )
-            else:
-                cursor = conn.execute("SELECT * FROM collection_health")
-            return [dict(row) for row in cursor.fetchall()]
+        if collection_name:
+            sql = "SELECT * FROM collection_health WHERE collection_name = %s"
+            return self.db_manager.execute_query(sql, (collection_name,))
+        else:
+            sql = "SELECT * FROM collection_health"
+            return self.db_manager.execute_query(sql)
     
     def get_query_stats(self, hours: int = 24) -> Dict[str, Any]:
         """
@@ -390,60 +325,52 @@ class MetricsCollector:
         """
         cutoff = time.time() - (hours * 3600)
         
-        with sqlite3.connect(self.db_path) as conn:
-            # Total queries
-            cursor = conn.execute(
-                "SELECT COUNT(*) FROM query_metrics WHERE timestamp > ?",
-                (cutoff,)
-            )
-            total_queries = cursor.fetchone()[0]
-            
-            # Success rate
-            cursor = conn.execute(
-                "SELECT COUNT(*) FROM query_metrics WHERE timestamp > ? AND success = 1",
-                (cutoff,)
-            )
-            successful_queries = cursor.fetchone()[0]
-            success_rate = successful_queries / total_queries if total_queries > 0 else 0
-            
-            # Cache hit rate
-            cursor = conn.execute(
-                "SELECT COUNT(*) FROM query_metrics WHERE timestamp > ? AND cache_hit = 1",
-                (cutoff,)
-            )
-            cache_hits = cursor.fetchone()[0]
-            cache_hit_rate = cache_hits / total_queries if total_queries > 0 else 0
-            
-            # Average latency
-            cursor = conn.execute(
-                "SELECT AVG(latency_ms) FROM query_metrics WHERE timestamp > ? AND success = 1",
-                (cutoff,)
-            )
-            avg_latency = cursor.fetchone()[0] or 0
-            
-            # Percentiles
-            cursor = conn.execute("""
-                SELECT latency_ms FROM query_metrics 
-                WHERE timestamp > ? AND success = 1
-                ORDER BY latency_ms
-            """, (cutoff,))
-            latencies = [row[0] for row in cursor.fetchall()]
-            
-            p50 = latencies[len(latencies) // 2] if latencies else 0
-            p95 = latencies[int(len(latencies) * 0.95)] if latencies else 0
-            p99 = latencies[int(len(latencies) * 0.99)] if latencies else 0
-            
-            return {
-                "total_queries": total_queries,
-                "successful_queries": successful_queries,
-                "success_rate": success_rate,
-                "cache_hits": cache_hits,
-                "cache_hit_rate": cache_hit_rate,
-                "avg_latency_ms": avg_latency,
-                "p50_latency_ms": p50,
-                "p95_latency_ms": p95,
-                "p99_latency_ms": p99
-            }
+        # Total queries
+        total_sql = "SELECT COUNT(*) AS count FROM query_metrics WHERE timestamp > %s"
+        total_res = self.db_manager.execute_query(total_sql, (cutoff,))
+        total_queries = total_res[0]['count'] if total_res else 0
+        
+        # Success rate
+        success_sql = "SELECT COUNT(*) AS count FROM query_metrics WHERE timestamp > %s AND success = TRUE"
+        success_res = self.db_manager.execute_query(success_sql, (cutoff,))
+        successful_queries = success_res[0]['count'] if success_res else 0
+        success_rate = successful_queries / total_queries if total_queries > 0 else 0
+        
+        # Cache hit rate
+        cache_sql = "SELECT COUNT(*) AS count FROM query_metrics WHERE timestamp > %s AND cache_hit = TRUE"
+        cache_res = self.db_manager.execute_query(cache_sql, (cutoff,))
+        cache_hits = cache_res[0]['count'] if cache_res else 0
+        cache_hit_rate = cache_hits / total_queries if total_queries > 0 else 0
+        
+        # Average latency
+        avg_latency_sql = "SELECT AVG(latency_ms) AS avg FROM query_metrics WHERE timestamp > %s AND success = TRUE"
+        avg_latency_res = self.db_manager.execute_query(avg_latency_sql, (cutoff,))
+        avg_val = avg_latency_res[0]['avg'] if avg_latency_res else None
+        avg_latency = float(avg_val) if avg_val is not None else 0.0
+        
+        # Percentiles
+        percentile_sql = """
+            SELECT latency_ms FROM query_metrics 
+            WHERE timestamp > %s AND success = TRUE
+            ORDER BY latency_ms
+        """
+        latencies = [float(row['latency_ms']) for row in self.db_manager.execute_query(percentile_sql, (cutoff,))]
+        
+        p50 = latencies[len(latencies) // 2] if latencies else 0
+        p95 = latencies[int(len(latencies) * 0.95)] if latencies else 0
+        p99 = latencies[int(len(latencies) * 0.99)] if latencies else 0
+        
+        return {
+            "total_queries": total_queries,
+            "successful_queries": successful_queries,
+            "success_rate": success_rate,
+            "cache_hits": cache_hits,
+            "cache_hit_rate": cache_hit_rate,
+            "avg_latency_ms": avg_latency,
+            "p50_latency_ms": p50,
+            "p95_latency_ms": p95,
+            "p99_latency_ms": p99
+        }
     
     def cleanup_old_metrics(self, days: int = 30):
         """
@@ -454,11 +381,9 @@ class MetricsCollector:
         """
         cutoff = time.time() - (days * 86400)
         
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("DELETE FROM query_metrics WHERE timestamp < ?", (cutoff,))
-            conn.execute("DELETE FROM system_metrics WHERE timestamp < ?", (cutoff,))
-            conn.execute("DELETE FROM error_log WHERE timestamp < ?", (cutoff,))
-            conn.commit()
+        self.db_manager.execute_update("DELETE FROM query_metrics WHERE timestamp < %s", (cutoff,))
+        self.db_manager.execute_update("DELETE FROM system_metrics WHERE timestamp < %s", (cutoff,))
+        self.db_manager.execute_update("DELETE FROM error_log WHERE timestamp < %s", (cutoff,))
         
         logger.info(f"Cleaned up metrics older than {days} days")
 
@@ -490,6 +415,15 @@ def track_query(collector: MetricsCollector, query_text: str,
             self.embedding_time_ms = None
             self.search_time_ms = None
             self.llm_time_ms = None
+            self.avg_relevance_score = None
+            self.sources_json = None
+            
+            # New audit columns
+            self.active_perspective = None
+            self.resolved_intent = None
+            self.routing_agent = None
+            self.applied_policy_rule = None
+            self.perspective_history = None
         
         def set_cache_hit(self, hit: bool):
             self.cache_hit = hit
@@ -532,7 +466,14 @@ def track_query(collector: MetricsCollector, query_text: str,
             result_count=tracker.result_count,
             embedding_time_ms=tracker.embedding_time_ms,
             search_time_ms=tracker.search_time_ms,
-            llm_time_ms=tracker.llm_time_ms
+            llm_time_ms=tracker.llm_time_ms,
+            avg_relevance_score=tracker.avg_relevance_score,
+            sources_json=tracker.sources_json,
+            active_perspective=tracker.active_perspective,
+            resolved_intent=tracker.resolved_intent,
+            routing_agent=tracker.routing_agent,
+            applied_policy_rule=tracker.applied_policy_rule,
+            perspective_history=tracker.perspective_history
         )
         
         collector.record_query(metric)

@@ -82,10 +82,14 @@ function _renderSpecInfo(meta, draftId) {
     const ttEl = container.querySelector('[data-spec-key="target_type"]');
     const hdEl = container.querySelector('[data-spec-key="heading"]');
     const afEl = container.querySelector('[data-spec-key="action_function"]');
+    const peEl = container.querySelector('[data-spec-key="perspectives"]');
+    const quEl = container.querySelector('[data-spec-key="questions"]');
     const body = {};
     if (ttEl && ttEl.value.trim()) body.target_type = ttEl.value.trim();
     if (hdEl && hdEl.value.trim()) body.heading = hdEl.value.trim();
     if (afEl) body.action_function = afEl.value.trim();
+    if (peEl) body.perspectives = peEl.value.split(',').map(s => s.trim()).filter(Boolean);
+    if (quEl) body.questions = quEl.value.split(',').map(s => s.trim()).filter(Boolean);
     if (Object.keys(body).length) {
       try {
         await fetch(`/api/reports/drafts/${encodeURIComponent(draftId)}/columns`, {
@@ -109,6 +113,8 @@ function _renderSpecInfo(meta, draftId) {
     { key: 'target_type',     label: 'Target type',     value: meta.target_type || '',     placeholder: 'e.g. Collection, Glossary' },
     { key: 'heading',         label: 'Heading',         value: meta.answers?.Heading || '', placeholder: 'Report title' },
     { key: 'action_function', label: 'Action function', value: meta.action_function || '', placeholder: 'e.g. GlossaryManager.find_glossaries' },
+    { key: 'perspectives',    label: 'Perspectives',    value: (meta.perspectives || []).join(', '), placeholder: 'e.g. Developer, Data Steward' },
+    { key: 'questions',       label: 'Questions',       value: (meta.questions || []).join(', '),    placeholder: 'e.g. what glossaries are defined?, list glossaries' },
   ].forEach(f => {
     const lbl = document.createElement('label');
     lbl.className = 'text-[11px] text-slate-500 whitespace-nowrap';
@@ -220,14 +226,34 @@ function _renderParamSections(meta, draftId) {
 
 // ── ArtifactCanvas adapter ──────────────────────────────────────────────────
 
+let _canvasActiveDraftId = null;
+
 const _reportAdapter = {
   async fetch(draftId) {
+    _canvasActiveDraftId = draftId;
     const r = await fetch(`/api/reports/drafts/${encodeURIComponent(draftId)}`, { headers: Auth.getHeaders() });
     if (!r.ok) throw new Error(`Report draft ${draftId} not found`);
     const spec = await r.json();
+    // Derive supported output formats from column restrictions
+    const _ALL_FMTS = ['TABLE','LIST','MERMAID','REPORT','JSON'];
+    const cols = spec.columns || [];
+    let supportedFormats = _ALL_FMTS;
+    if (cols.length) {
+      const restricted = cols
+        .map(c => (c.formats || 'ALL').toUpperCase())
+        .filter(f => f !== 'ALL');
+      if (restricted.length) {
+        // union of all restricted sets — formats any column supports
+        const union = new Set();
+        restricted.forEach(f => f.split(',').map(s => s.trim()).forEach(s => union.add(s)));
+        supportedFormats = _ALL_FMTS.filter(f => union.has(f));
+        if (!supportedFormats.length) supportedFormats = _ALL_FMTS;
+      }
+    }
+
     return {
       title: spec.answers?.Heading || spec.title || 'Untitled Report Spec',
-      items: spec.columns || [],
+      items: cols,
       meta: {
         id: draftId,
         doc_id: spec.doc_id,
@@ -237,6 +263,7 @@ const _reportAdapter = {
         content_filters:   spec.content_filters   || { search_string: '*' },
         shape_defaults:    spec.shape_defaults     || {},
         performance_hints: spec.performance_hints  || { page_size: 100, start_from: 0 },
+        supportedFormats,
       },
     };
   },
@@ -250,9 +277,56 @@ const _reportAdapter = {
   },
 
   fieldUrl(action, mode) {
+    if (_canvasActiveDraftId) {
+      return `/api/templates/${encodeURIComponent(action)}/fields?draft_id=${encodeURIComponent(_canvasActiveDraftId)}`;
+    }
     return `/api/templates/${encodeURIComponent(action)}/fields`;
   },
 };
+
+function _deriveColumnNameFromPath(path) {
+  if (!path) return '';
+  const parts = path.split('.');
+  let leaf = parts[parts.length - 1].replace(/\[\]/g, '');
+  
+  // Standardize common leaf fields
+  const leafMap = {
+    displayName: 'Name',
+    qualifiedName: 'Qualified Name',
+    guid: 'GUID',
+    description: 'Description',
+    status: 'Status',
+    typeName: 'Type'
+  };
+  
+  // Convert camelCase/snake_case/kebab-case to Space Separated Title Case
+  function toTitleCase(str) {
+    str = str.replace(/([a-z])([A-Z])/g, '$1 $2');
+    str = str.replace(/[_-]/g, ' ');
+    return str.replace(/\b\w/g, c => c.toUpperCase());
+  }
+  
+  function depluralize(str) {
+    const lower = str.toLowerCase();
+    if (lower.endsWith('ies')) return str.slice(0, -3) + 'y';
+    if (lower.endsWith('s') && !lower.endsWith('ss')) return str.slice(0, -1);
+    return str;
+  }
+  
+  const leafLabel = leafMap[leaf] || toTitleCase(leaf);
+  
+  const contexts = [];
+  for (let i = 0; i < parts.length - 1; i++) {
+    const clean = parts[i].replace(/\[\]/g, '');
+    if (['properties', 'elementHeader', 'relatedElement', 'relationshipProperties'].includes(clean)) {
+      continue;
+    }
+    contexts.push(depluralize(toTitleCase(clean)));
+  }
+  
+  if (contexts.length === 0) return leafLabel;
+  return contexts.join(' ') + ' ' + leafLabel;
+}
 
 const _reportItemAdapter = {
   getType(col) {
@@ -299,6 +373,27 @@ const _reportItemAdapter = {
       col.name = v;
     } else if (name === 'Key') {
       col.key = v;
+      if (!col.name || col.name === 'New Column' || col.name.trim() === '') {
+        const derived = _deriveColumnNameFromPath(v);
+        col.name = derived;
+        
+        // Find the active fields-section (not hidden) and update the Name input field directly in DOM
+        const activeSection = document.querySelector('.fields-section:not(.hidden)');
+        if (activeSection) {
+          const labels = activeSection.querySelectorAll('label');
+          for (const label of labels) {
+            if (label.textContent.trim().startsWith('Name')) {
+              const input = label.nextElementSibling;
+              if (input && input.tagName === 'INPUT') {
+                input.value = derived;
+                // Dispatch event so the input's listener in ArtifactCanvas saves and syncs the Name change
+                input.dispatchEvent(new Event('input'));
+              }
+              break;
+            }
+          }
+        }
+      }
     } else if (name === 'Apply formatting') {
       if (!v || v === 'False' || v === 'false') {
         col.format = false;
@@ -359,10 +454,21 @@ const ReportSpecCanvas = (() => {
           _renderParamSections(data.meta, _draftId);
         }
 
+        // Sync format selector to a format this spec actually supports
+        const fmtSel = document.getElementById('rcanvas-format-select');
+        if (fmtSel && data?.meta?.supportedFormats) {
+          const supported = data.meta.supportedFormats;
+          if (!supported.includes(fmtSel.value)) {
+            fmtSel.value = supported[0] || 'TABLE';
+          }
+        }
+
         // Toggles Generate vs. Execute buttons
+        const activeId = docId || data?.meta?.id;
         document.getElementById('rcanvas-generate-btn')?.classList.remove('hidden');
-        document.getElementById('rcanvas-execute-btn')?.classList.toggle('hidden', !docId);
-        document.getElementById('rcanvas-format-select')?.classList.toggle('hidden', !docId);
+        document.getElementById('rcanvas-execute-btn')?.classList.toggle('hidden', !activeId);
+        fmtSel?.classList.toggle('hidden', !activeId);
+        document.getElementById('rcanvas-limit-select')?.classList.toggle('hidden', !activeId);
       },
     });
     return _canvas;
@@ -370,13 +476,21 @@ const ReportSpecCanvas = (() => {
 
   async function open(draftId) {
     _draftId = draftId;
+    if (typeof setContext === 'function') {
+      setContext({ task: 'report_spec_elicitor', draft_id: draftId, phase: 'confirm_action' });
+    }
     await _ensureCanvas().open(draftId);
-    PlanCanvas.close();
+    if (typeof PlanCanvas !== 'undefined' && PlanCanvas.close) PlanCanvas.close();
   }
 
   function close() {
+    const closedId = _draftId;
     _draftId = null;
+    if (typeof setContext === 'function' && typeof _ctx !== 'undefined' && _ctx?.draft_id === closedId) {
+      setContext(null);
+    }
     if (_canvas) _canvas.close();
+    closeSchemaExplorer();
   }
 
   async function refresh(draftId) {
@@ -387,5 +501,190 @@ const ReportSpecCanvas = (() => {
     await _ensureCanvas().addItem();
   }
 
-  return { open, close, refresh, addColumn };
+  const explorerStyles = `
+  #schema-explorer-modal details summary::marker,
+  #schema-explorer-modal details summary::-webkit-details-marker {
+    display: none;
+  }
+  #schema-explorer-modal details[open] > summary span {
+    transform: rotate(90deg);
+  }
+  `;
+
+  function _buildSchemaTree(schemaList) {
+    const tree = {};
+    schemaList.forEach(item => {
+      const path = item.attribute_path || '';
+      const type = item.data_type || 'string';
+      if (path === 'Error' || path === 'Info') return;
+      
+      const parts = path.split('.');
+      let current = tree;
+      for (let i = 0; i < parts.length; i++) {
+        const part = parts[i];
+        if (i === parts.length - 1) {
+          current[part] = { _path: path, _type: type };
+        } else {
+          if (!current[part]) current[part] = {};
+          current = current[part];
+        }
+      }
+    });
+    return tree;
+  }
+
+  function _renderTreeHtml(node, name = '') {
+    if (node._path) {
+      const path = node._path;
+      const type = node._type;
+      const derivedName = _deriveColumnNameFromPath(path);
+      return `
+        <div class="flex items-center justify-between py-1 px-2 hover:bg-slate-800/40 rounded transition-colors text-xs text-slate-300">
+          <span class="font-mono text-slate-400">${name} <span class="text-[10px] text-violet-400/80">(${type})</span></span>
+          <button class="px-1.5 py-0.5 rounded bg-violet-700/60 hover:bg-violet-600/80 text-[10px] text-white font-semibold transition-colors"
+            onclick="ReportSpecCanvas.addColumnFromExplorer('${path}', '${derivedName}')">＋ Add</button>
+        </div>
+      `;
+    }
+    
+    let html = `
+      <details class="pl-2 border-l border-slate-800/60 my-0.5" open>
+        <summary class="cursor-pointer select-none text-xs font-semibold text-slate-400 hover:text-slate-200 py-0.5 outline-none list-none flex items-center gap-1">
+          <span class="text-slate-500 text-[10px] transition-transform inline-block">▸</span> ${name}
+        </summary>
+        <div class="flex flex-col gap-0.5 pl-1.5 mt-0.5">
+    `;
+    for (const key in node) {
+      html += _renderTreeHtml(node[key], key);
+    }
+    html += `
+        </div>
+      </details>
+    `;
+    return html;
+  }
+
+  function openSchemaExplorer() {
+    if (!_draftId) return;
+    
+    let modal = document.getElementById('schema-explorer-modal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'schema-explorer-modal';
+      modal.className = 'fixed inset-0 bg-slate-950/70 backdrop-blur-sm z-[2000] flex items-center justify-center p-4';
+      
+      const styleTag = document.createElement('style');
+      styleTag.textContent = explorerStyles;
+      document.head.appendChild(styleTag);
+      
+      modal.innerHTML = `
+        <div class="bg-slate-900 border border-slate-800 rounded-lg shadow-2xl w-full max-w-lg max-h-[80vh] flex flex-col overflow-hidden">
+          <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between bg-slate-900/50">
+            <h3 class="text-sm font-semibold text-slate-200 flex items-center gap-1.5">
+              <span class="text-violet-500 text-base">📊</span> Schema Explorer
+            </h3>
+            <button onclick="ReportSpecCanvas.closeSchemaExplorer()" class="text-slate-500 hover:text-slate-200 text-sm transition-colors">✕</button>
+          </div>
+          <div class="p-4 overflow-y-auto flex-1 flex flex-col gap-2" id="schema-explorer-content">
+            <p class="text-xs text-slate-500">Loading schema attributes from Egeria...</p>
+          </div>
+          <div class="px-4 py-3 border-t border-slate-800/60 bg-slate-900/30 flex justify-end">
+            <button onclick="ReportSpecCanvas.closeSchemaExplorer()" class="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 transition-colors">Close</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+    }
+    
+    modal.classList.remove('hidden');
+    const content = document.getElementById('schema-explorer-content');
+    content.innerHTML = '<p class="text-xs text-slate-400 p-2 italic animate-pulse">Running speculative discovery at depth=5 against Egeria...</p>';
+    
+    fetch(`/api/reports/drafts/${encodeURIComponent(_draftId)}/schema`, { headers: Auth.getHeaders() })
+      .then(async r => {
+        const text = await r.text();
+        if (!r.ok) {
+          let errText = '';
+          try {
+            const errJson = JSON.parse(text);
+            errText = errJson.detail || errJson.message;
+          } catch {
+            errText = text;
+          }
+          throw new Error(errText || `HTTP ${r.status} ${r.statusText}`);
+        }
+        if (!text.trim()) return [];
+        return JSON.parse(text);
+      })
+      .then(schemaList => {
+        if (!schemaList || schemaList.length === 0 || (schemaList.length === 1 && schemaList[0].attribute_path === 'Error')) {
+          content.innerHTML = `
+            <div class="p-3 bg-red-950/20 border border-red-900/40 rounded flex flex-col gap-1.5 text-xs text-red-400">
+              <span class="font-semibold">Discovery failed</span>
+              <span>${(schemaList?.[0]?.data_type) || 'No schema attributes returned. Please make sure Egeria has active data and is connected.'}</span>
+            </div>
+          `;
+          return;
+        }
+        
+        if (schemaList.length === 1 && schemaList[0].attribute_path === 'Info') {
+          content.innerHTML = `
+            <div class="p-3 bg-amber-950/20 border border-amber-900/40 rounded flex flex-col gap-1.5 text-xs text-amber-400">
+              <span class="font-semibold">No data found</span>
+              <span>Egeria returned no sample elements to inspect. Cannot dynamically discover schema attributes until an element is created.</span>
+            </div>
+          `;
+          return;
+        }
+        
+        const tree = _buildSchemaTree(schemaList);
+        let html = '<div class="flex flex-col gap-1 pr-1">';
+        for (const rootKey in tree) {
+          html += _renderTreeHtml(tree[rootKey], rootKey);
+        }
+        html += '</div>';
+        content.innerHTML = html;
+      })
+      .catch(err => {
+        console.error("openSchemaExplorer failed:", err);
+        content.innerHTML = `
+          <div class="p-3 bg-red-950/20 border border-red-900/40 rounded flex flex-col gap-1.5 text-xs text-red-400">
+            <span class="font-semibold">API Error</span>
+            <span>Failed to fetch schema metadata from Advisor backend: ${err}</span>
+          </div>
+        `;
+      });
+  }
+
+  function closeSchemaExplorer() {
+    const modal = document.getElementById('schema-explorer-modal');
+    if (modal) modal.classList.add('hidden');
+  }
+
+  async function addColumnFromExplorer(key, name) {
+    if (!_canvas) return;
+    
+    // Check if the column is already present to prevent duplicates
+    const currentItems = _canvas._items;
+    const exists = currentItems.some(col => col.key === key);
+    if (exists) {
+      alert(`Column with key "${key}" is already in the report spec.`);
+      return;
+    }
+    
+    // Create new column and add it to canvas
+    const newCol = {
+      name: name,
+      key: key,
+      format: false,
+      detail_spec: null,
+      formats: 'ALL',
+    };
+    
+    currentItems.push(newCol);
+    await _canvas._sync();
+    _canvas._render();
+  }
+
+  return { open, close, refresh, addColumn, openSchemaExplorer, closeSchemaExplorer, addColumnFromExplorer };
 })();

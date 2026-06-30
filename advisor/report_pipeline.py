@@ -758,7 +758,7 @@ class ReportPipeline:
     _TEXT_FORMATS = {"LIST", "REPORT", "REPORT-GRAPH", "FORM", "MD", "MERMAID", "HTML", "GRAPH"}
 
     @staticmethod
-    def _format_output(raw: Any, fmt: str, report_name: str) -> str:
+    def _format_output(raw: Any, fmt: str, report_name: str, spec: Optional[Any] = None) -> str:
         """
         Convert raw report output (dict / list / str) to the requested display format.
         """
@@ -783,13 +783,71 @@ class ReportPipeline:
             return f"```json\n{json.dumps(raw, indent=2)}\n```"
 
         # TABLE or DICT — render as a Markdown table.
-        return ReportPipeline._dict_to_markdown_table(raw, report_name)
+        return ReportPipeline._dict_to_markdown_table(raw, report_name, spec=spec)
 
     @staticmethod
-    def _dict_to_markdown_table(data: Any, title: str = "") -> str:
+    def _dict_to_markdown_table(data: Any, title: str = "", spec: Optional[Any] = None) -> str:
         """Render a dict or list of dicts as a markdown table."""
         if not data:
             return f"*No results returned for {title}.*"
+
+        # If a spec is provided, extract the columns definition
+        columns = []
+        if spec:
+            for fmt_obj in spec.formats:
+                if any(t in ("ALL", "TABLE") for t in fmt_obj.types):
+                    columns = fmt_obj.attributes
+                    break
+
+        if columns:
+            # Normalize list vs dictionary of elements to a list of dicts
+            elements_list = []
+            if isinstance(data, list):
+                elements_list = [el for el in data if isinstance(el, dict)]
+            elif isinstance(data, dict):
+                sample_val = next(iter(data.values()), None)
+                if isinstance(sample_val, dict):
+                    elements_list = [el for el in data.values() if isinstance(el, dict)]
+                else:
+                    elements_list = [data]
+
+            if elements_list:
+                # Format using columns from the spec
+                headers = [col.name for col in columns]
+                markdown_lines = []
+                markdown_lines.append("| " + " | ".join(headers) + " |")
+                markdown_lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+
+                # Extract _get_element_value and materialize_egeria_summary from pyegeria
+                from pyegeria.view.output_formatter import _get_element_value, materialize_egeria_summary
+
+                for raw_el in elements_list:
+                    # Materialize headers (like status, versions, created_by, etc.)
+                    el_flat = materialize_egeria_summary(raw_el)
+                    
+                    row_vals = []
+                    for col in columns:
+                        val = None
+                        if col.key in el_flat:
+                            val = el_flat[col.key]
+                        else:
+                            val = _get_element_value(raw_el, col.key)
+                            
+                        if isinstance(val, list):
+                            val = ", ".join(str(x) for x in val)
+                        elif isinstance(val, dict):
+                            val = json.dumps(val)
+                        elif val is None:
+                            val = ""
+                        else:
+                            val = str(val)
+                            
+                        val = val.replace("|", "\\|")
+                        row_vals.append(val)
+                        
+                    markdown_lines.append("| " + " | ".join(row_vals) + " |")
+                    
+                return "\n".join(markdown_lines)
 
         rows: List[Dict[str, Any]] = []
         if isinstance(data, list):

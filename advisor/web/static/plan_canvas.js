@@ -115,11 +115,19 @@ const PlanCanvas = (() => {
 
   async function open(draftId) {
     _draftId = draftId;
+    if (typeof setContext === 'function') {
+      setContext({ task: 'plan_elicitor', draft_id: draftId, phase: 'confirm_action' });
+    }
     await _ensureCanvas().open(draftId);
+    if (typeof ReportSpecCanvas !== 'undefined' && ReportSpecCanvas.close) ReportSpecCanvas.close();
   }
 
   function close() {
+    const closedId = _draftId;
     _draftId = null;
+    if (typeof setContext === 'function' && typeof _ctx !== 'undefined' && _ctx?.draft_id === closedId) {
+      setContext(null);
+    }
     if (_canvas) _canvas.close();
   }
 

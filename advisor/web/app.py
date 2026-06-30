@@ -1022,6 +1022,95 @@ async def get_report_draft(draft_id: str) -> Dict[str, Any]:
     return spec
 
 
+_SCHEMA_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+async def discover_draft_schema_internal(draft_id: str) -> List[Dict[str, str]]:
+    """Internal helper to dynamically retrieve the schema for a draft report specification."""
+    from advisor.report_draft import get_report_draft_manager
+    from advisor.report_spec_parser import register_report_spec, parse_report_spec_markdown
+    from advisor.agents.report_spec_elicitor import get_report_spec_elicitor
+    from advisor.report_pipeline import get_report_pipeline
+    from pyegeria.egeria_tech_client import EgeriaTech
+    import time
+
+    dm = get_report_draft_manager()
+    draft = dm.load(draft_id)
+    if not draft:
+        logger.warning(f"Draft {draft_id} not found for schema discovery")
+        return []
+
+    # Check cache first
+    import copy
+    current_config = copy.deepcopy({
+        "action_function": draft.get("action_function"),
+        "target_type": draft.get("target_type"),
+        "answers": draft.get("answers")
+    })
+    cached = _SCHEMA_CACHE.get(draft_id)
+    if cached:
+        time_elapsed = time.time() - cached["timestamp"]
+        if time_elapsed < 3600 and cached["draft_config"] == current_config:
+            logger.info(f"Returning cached schema for draft {draft_id}")
+            return cached["schema_data"]
+
+    try:
+        elicitor = get_report_spec_elicitor()
+        md_content = elicitor._generate_report_spec_md(draft)
+        spec = parse_report_spec_markdown(md_content)
+    except Exception as exc:
+        logger.warning(f"Failed to parse draft spec in schema discovery: {exc}")
+        return []
+
+    pipeline = get_report_pipeline()
+    try:
+        conn = pipeline._read_pyegeria_connection()
+    except Exception as exc:
+        logger.error(f"Failed to read Egeria connection info: {exc}")
+        return []
+
+    if not all((conn.get("view_server"), conn.get("platform_url"),
+                conn.get("user_id"), conn.get("user_pwd"))):
+        logger.warning("Egeria connection is not fully configured; skipping schema discovery")
+        return []
+
+    temp_spec_id = f"temp_schema_{draft_id}"
+    register_report_spec(temp_spec_id, spec)
+
+    try:
+        client = EgeriaTech(
+            view_server=conn["view_server"],
+            platform_url=conn["platform_url"],
+            user_id=conn["user_id"],
+            user_pwd=conn["user_pwd"]
+        )
+        client.create_egeria_bearer_token()
+        
+        # Speculative Discovery: query Egeria using client at depth 5
+        schema_data = client.get_report_spec_schema(
+            report_spec_name=temp_spec_id,
+            search_string="*",
+            graph_query_depth=5,
+            exclude_system_properties=True
+        )
+        # Store in cache
+        _SCHEMA_CACHE[draft_id] = {
+            "timestamp": time.time(),
+            "draft_config": current_config,
+            "schema_data": schema_data
+        }
+        return schema_data
+    except Exception as e:
+        logger.warning(f"Live schema discovery failed on Egeria server: {e}")
+        return []
+
+
+@app.get("/api/reports/drafts/{draft_id}/schema")
+async def get_report_draft_schema(draft_id: str) -> List[Dict[str, str]]:
+    """Return the dynamically discovered schema attributes for a report draft."""
+    return await discover_draft_schema_internal(draft_id)
+
+
 @app.delete("/api/reports/drafts/{draft_id}")
 async def delete_report_draft(draft_id: str) -> Dict[str, str]:
     """Discard an active report spec draft."""
@@ -1042,7 +1131,7 @@ async def create_report_builder_draft(body: Dict[str, Any]) -> Dict[str, Any]:
         action_function="GlossaryManager.find_glossaries",
         target_type="Glossary",
         columns=[
-            {"name": "Display Name", "key": "display_name", "format": False, "detail_spec": None, "formats": "ALL"},
+            {"name": "Display Name", "key": "displayName", "format": False, "detail_spec": None, "formats": "ALL"},
             {"name": "GUID", "key": "guid", "format": True, "detail_spec": None, "formats": "ALL"}
         ],
         answers={
@@ -1074,6 +1163,11 @@ async def edit_spec_by_name(body: Dict[str, Any]) -> Dict[str, Any]:
 
     dm_doc = get_report_spec_doc_manager()
     dm_draft = get_report_draft_manager()
+
+    if report_name.startswith("draft_report_"):
+        draft = dm_draft.load(report_name)
+        if draft:
+            return {"found": True, "draft_id": report_name, "doc_id": draft.get("doc_id")}
 
     # Search inbox for a spec whose doc_id or title matches report_name
     inbox = dm_doc.list_inbox()
@@ -1140,6 +1234,11 @@ async def edit_spec_by_id(doc_id: str) -> Dict[str, Any]:
     dm_doc   = get_report_spec_doc_manager()
     dm_draft = get_report_draft_manager()
 
+    if doc_id.startswith("draft_report_"):
+        draft = dm_draft.load(doc_id)
+        if draft:
+            return {"found": True, "draft_id": doc_id, "doc_id": draft.get("doc_id")}
+
     # Return existing draft if one already tracks this doc_id
     for draft in dm_draft.list_drafts():
         if draft.get("doc_id") == doc_id:
@@ -1165,12 +1264,21 @@ async def edit_spec_by_id(doc_id: str) -> Dict[str, Any]:
                 "formats": "ALL",
             })
 
+    perspectives = []
+    questions = []
+    if parsed.question_spec:
+        for qs in parsed.question_spec:
+            perspectives.extend(getattr(qs, "perspectives", []) or [])
+            questions.extend(getattr(qs, "questions", []) or [])
+
     spec = dm_draft.create(
         title=parsed.heading or doc_id,
         original_query=f"[edit] {doc_id}",
         action_function=(parsed.action.function if parsed.action else ""),
         target_type=parsed.target_type or "",
         columns=columns,
+        perspectives=perspectives,
+        questions=questions,
     )
     spec["doc_id"]  = doc_id
     spec["answers"] = {"Heading": parsed.heading, "Description": parsed.description}
@@ -1216,6 +1324,10 @@ async def patch_report_draft_columns(draft_id: str, body: Dict[str, Any]) -> Dic
         spec["target_type"] = body["target_type"]
     if "heading" in body:
         spec.setdefault("answers", {})["Heading"] = body["heading"]
+    if "perspectives" in body:
+        spec["perspectives"] = body["perspectives"]
+    if "questions" in body:
+        spec["questions"] = body["questions"]
     if "content_filters" in body:
         spec["content_filters"] = body["content_filters"]
     if "shape_defaults" in body:
@@ -1314,8 +1426,16 @@ async def get_session(session_id: str) -> Dict[str, Any]:
 
 
 @app.get("/api/templates/Column/fields")
-async def get_column_fields() -> Dict[str, Any]:
+async def get_column_fields(draft_id: Optional[str] = None) -> Dict[str, Any]:
     """Return the fields configuration for a Report Column card in the canvas."""
+    valid_keys = []
+    if draft_id:
+        try:
+            schema_data = await discover_draft_schema_internal(draft_id)
+            valid_keys = [item["attribute_path"] for item in schema_data if "attribute_path" in item]
+        except Exception as e:
+            logger.warning(f"Failed to auto-populate Column Key valid_values: {e}")
+
     return {
         "fields": [
             {
@@ -1328,7 +1448,7 @@ async def get_column_fields() -> Dict[str, Any]:
                 "name": "Key",
                 "required": True,
                 "description": "Egeria attribute property key (e.g. display_name)",
-                "valid_values": []
+                "valid_values": valid_keys
             },
             {
                 "name": "Apply formatting",

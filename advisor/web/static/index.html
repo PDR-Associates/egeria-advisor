@@ -99,16 +99,25 @@
     }
     .resize-handle-v:hover::after, .resize-handle-v.dragging::after { opacity: 1; }
 
-    /* Plan Canvas panel */
-    #plan-canvas-panel { min-width: 260px; }
-    .pcanvas-card { transition: opacity .15s, box-shadow .15s; }
+    /* Plan & Report Canvas panels height constraints */
+    #plan-canvas-panel, #report-canvas-panel {
+      min-width: 260px;
+      height: calc(100vh - 49px) !important;
+      max-height: calc(100vh - 49px) !important;
+      min-height: 0 !important;
+    }
+    .pcanvas-card {
+      transition: opacity .15s, box-shadow .15s;
+      flex-shrink: 0 !important;
+    }
     .pcanvas-card.dragging-over { box-shadow: 0 -2px 0 #7c3aed; }
     .pcanvas-card.drag-ghost { opacity: .4; }
 
     /* Scrollbars */
-    ::-webkit-scrollbar { width:5px; }
+    ::-webkit-scrollbar { width:8px; height:8px; }
     ::-webkit-scrollbar-track { background:#0f172a; }
-    ::-webkit-scrollbar-thumb { background:#334155; border-radius:3px; }
+    ::-webkit-scrollbar-thumb { background:#475569; border-radius:4px; }
+    ::-webkit-scrollbar-thumb:hover { background:#64748b; }
 
     /* Report group toggle */
     details > summary { cursor:pointer; list-style:none; }
@@ -297,7 +306,7 @@
 
   <!-- ── Plan Canvas panel (hidden until draft active) ─────────────────── -->
   <section id="plan-canvas-panel"
-    class="hidden flex-col bg-slate-800 border-l border-slate-700 overflow-hidden">
+    class="hidden h-full flex-col bg-slate-800 border-l border-slate-700 overflow-hidden">
 
     <!-- Canvas toolbar -->
     <div class="flex items-center gap-2 px-3 py-2 bg-slate-900 border-b border-slate-700 shrink-0">
@@ -344,10 +353,10 @@
 
   <!-- ── Report Spec Canvas panel (hidden until draft active) ─────────────────── -->
   <section id="report-canvas-panel"
-    class="hidden flex-col bg-slate-800 border-l border-slate-700 overflow-hidden h-full">
+    class="hidden h-full flex-col bg-slate-800 border-l border-slate-700 overflow-hidden">
 
     <!-- Canvas toolbar -->
-    <div class="flex items-center gap-2 px-3 py-2 bg-slate-900 border-b border-slate-700 shrink-0">
+    <div class="flex items-center gap-2 px-3 py-2 bg-slate-900 border-b border-slate-700 shrink-0 flex-wrap">
       <span class="text-violet-400 font-bold text-xs shrink-0">Report Canvas</span>
       <span id="rcanvas-title" class="text-slate-200 text-xs font-semibold flex-1 truncate"></span>
       <button id="rcanvas-mode-btn"
@@ -368,10 +377,23 @@
         <option value="MERMAID">MERMAID</option>
         <option value="JSON">JSON</option>
       </select>
+      <select id="rcanvas-limit-select"
+        class="hidden bg-slate-700 border border-slate-600 rounded px-1.5 py-1 text-xs text-slate-200
+               focus:outline-none focus:border-emerald-500 transition-colors"
+        title="Preview limit (page size)">
+        <option value="5">Preview: 5 rows</option>
+        <option value="10">Preview: 10 rows</option>
+        <option value="25">Preview: 25 rows</option>
+        <option value="100">Full: 100 rows</option>
+      </select>
       <button id="rcanvas-execute-btn"
         class="hidden px-2 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold transition-colors"
-        title="Run this report spec and view results"
-        onclick="triggerReportExecution()">▶ Run Report</button>
+        title="Preview this report spec and view results"
+        onclick="triggerReportExecution()">▶ Preview Report</button>
+      <button id="rcanvas-browse-btn"
+        class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors mr-1"
+        title="Browse and select Egeria attributes visually"
+        onclick="ReportSpecCanvas.openSchemaExplorer()">Add Attribute</button>
       <button onclick="ReportSpecCanvas.close()"
         class="text-slate-500 hover:text-slate-200 text-sm transition-colors ml-1" title="Close canvas">✕</button>
     </div>
@@ -387,8 +409,9 @@
     <div class="px-3 py-2 border-t border-slate-700 shrink-0 flex gap-2">
       <button onclick="ReportSpecCanvas.addColumn()"
         class="flex-1 text-xs text-slate-500 hover:text-violet-300 border border-dashed border-slate-700
-               hover:border-violet-500/50 rounded py-1.5 transition-colors">
-        + Add Column
+               hover:border-violet-500/50 rounded py-1.5 transition-colors"
+        title="Manually type a custom column name and key path">
+        + Add Custom Column
       </button>
     </div>
   </section>
@@ -1483,7 +1506,7 @@ function _applyQueryResult(query, result, wrap) {
       btn.textContent = def.label;
       btn.onclick = () => {
         if (key === 'run_spec') {
-          triggerReportExecution();
+          triggerReportExecution(result.doc_id || result.draft_id);
           return;
         }
         const commands = {
@@ -2123,7 +2146,6 @@ function initCanvasResize() {
   const canvas = document.getElementById('plan-canvas-panel');
   const wrapper = handle.closest('.flex');   // the flex row containing chat + canvas
 
-  const MIN_W  = 260;
   const STOR_K = 'ea_canvas_w';
 
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
@@ -2133,7 +2155,7 @@ function initCanvasResize() {
     return isNaN(v) ? Math.round(wrapper.clientWidth * 0.44) : v;
   }
 
-  // Called by PlanCanvas.open() and ReportSpecCanvas.open() — applies saved/default width
+    // Called by PlanCanvas.open() and ReportSpecCanvas.open() — applies saved/default width
   window._applyCanvasWidth = function(w) {
     const planCanvas = document.getElementById('plan-canvas-panel');
     const reportCanvas = document.getElementById('report-canvas-panel');
@@ -2147,11 +2169,15 @@ function initCanvasResize() {
     const wrp = target.closest('.flex');
     if (!wrp) return;
     const clmp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const baseW = wrp.clientWidth || window.innerWidth || 1200;
     const saved = () => {
       const v = parseInt(localStorage.getItem(key));
-      return isNaN(v) ? Math.round(wrp.clientWidth * 0.44) : v;
+      const defaultW = Math.max(450, Math.round(baseW * 0.44));
+      return isNaN(v) ? defaultW : v;
     };
-    w = clmp(w || saved(), 260, wrp.clientWidth - 320);
+    const minW = Math.max(380, Math.round(baseW * 0.25));
+    const maxW = Math.max(minW, baseW - 320);
+    w = clmp(w || saved(), minW, maxW);
     target.style.flexBasis = w + 'px';
     target.style.flexShrink = '0';
     target.style.flexGrow   = '0';
@@ -2164,7 +2190,8 @@ function initCanvasResize() {
     const startW = canvas.getBoundingClientRect().width;
 
     function onMove(ev) {
-      const newW = clamp(startW - (ev.clientX - startX), MIN_W, wrapper.clientWidth - 320);
+      const minW = Math.max(380, Math.round(wrapper.clientWidth * 0.25));
+      const newW = clamp(startW - (ev.clientX - startX), minW, wrapper.clientWidth - 320);
       canvas.style.flexBasis = newW + 'px';
     }
     function onUp() {
@@ -2739,12 +2766,14 @@ function triggerReportGeneration() {
   submitQuery('generate now', { intent_override: 'report' });
 }
 
-function triggerReportExecution() {
-  const docId = document.getElementById('rcanvas-title')?.dataset?.docId;
+function triggerReportExecution(explicitDocId) {
+  const docId = explicitDocId || document.getElementById('rcanvas-title')?.dataset?.docId || _activeDraftId;
   if (!docId) return;
   const fmt = document.getElementById('rcanvas-format-select')?.value || 'REPORT';
-  appendMessage('you', `▶ Run Report (${fmt})`);
-  submitQuery(`execute report spec ${docId}`, { output_format: fmt });
+  const limitEl = document.getElementById('rcanvas-limit-select');
+  const limit = limitEl ? parseInt(limitEl.value) : 100;
+  appendMessage('you', `▶ Run Report (${fmt}, limit ${limit})`);
+  submitQuery(`execute report spec ${docId}`, { output_format: fmt, page_size: limit });
 }
 
 function openReportBuilderModal() {
@@ -2797,7 +2826,49 @@ async function viewReportDocInChat(doc_id) {
     if (!r.ok) { alert(`Could not load report spec ${doc_id}`); return; }
     const data = await r.json();
     const title = data.folder === 'outbox' ? `Run outcome for **${doc_id}**` : `Report spec document **${doc_id}**`;
-    appendMessage('assistant', `### ${title}\n\n\`\`\`markdown\n${data.content}\n\`\`\``);
+    const wrap = appendMessage('assistant', `### ${title}\n\n\`\`\`markdown\n${data.content}\n\`\`\``);
+
+    if (data.folder === 'inbox') {
+      const banner = document.createElement('div');
+      banner.className = 'mt-2 px-3 py-2 rounded bg-slate-700/50 border border-slate-600/50 text-xs flex items-center gap-3';
+
+      const info = document.createElement('span');
+      info.className = 'text-slate-300 flex-1';
+      info.innerHTML = `Would you like to run this report or edit its columns?`;
+      banner.appendChild(info);
+
+      const runBtn = document.createElement('button');
+      runBtn.className = 'px-3 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold shrink-0 transition-colors';
+      runBtn.textContent = '▶ Run Report';
+      runBtn.onclick = () => {
+        triggerReportExecution(doc_id);
+      };
+      banner.appendChild(runBtn);
+
+      const editBtn = document.createElement('button');
+      editBtn.className = 'px-3 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold shrink-0 transition-colors';
+      editBtn.textContent = '✏ Edit Canvas';
+      editBtn.onclick = async () => {
+        try {
+          const res = await fetch(`/api/reports/specs/${encodeURIComponent(doc_id)}/edit`, {
+            method: 'POST', headers: Auth.getHeaders(),
+          });
+          const editData = await res.json();
+          if (editData.found && editData.draft_id) {
+            _activeDraftId = editData.draft_id;
+            sessionStorage.setItem('ea_active_draft', _activeDraftId);
+            await ReportSpecCanvas.open(editData.draft_id);
+            setSidebarTab('reports');
+            loadReportDocs();
+          }
+        } catch (e) {
+          alert(`Error: ${e.message}`);
+        }
+      };
+      banner.appendChild(editBtn);
+
+      wrap.appendChild(banner);
+    }
   } catch (e) {
     alert(`Error loading report doc: ${e.message}`);
   }
@@ -2809,7 +2880,6 @@ function initReportCanvasResize() {
   if (!handle || !canvas) return;
   const wrapper = handle.closest('.flex');
 
-  const MIN_W  = 260;
   const STOR_K = 'ea_report_canvas_w';
 
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
@@ -2821,7 +2891,8 @@ function initReportCanvasResize() {
     const startW = canvas.getBoundingClientRect().width;
 
     function onMove(ev) {
-      const newW = clamp(startW - (ev.clientX - startX), MIN_W, wrapper.clientWidth - 320);
+      const minW = Math.max(380, Math.round(wrapper.clientWidth * 0.25));
+      const newW = clamp(startW - (ev.clientX - startX), minW, wrapper.clientWidth - 320);
       canvas.style.flexBasis = newW + 'px';
     }
     function onUp() {
@@ -3003,9 +3074,9 @@ function initReportCanvasResize() {
   </div>
 </div>
 
-<script src="/static/artifact_canvas.js?v=20260627a"></script>
-<script src="/static/plan_canvas.js?v=20260616c"></script>
-<script src="/static/plan_editor.js?v=20260616c"></script>
-<script src="/static/report_spec_canvas.js?v=20260627b"></script>
+<script src="/static/artifact_canvas.js?v=20260629i"></script>
+<script src="/static/plan_canvas.js?v=20260629i"></script>
+<script src="/static/plan_editor.js?v=20260629i"></script>
+<script src="/static/report_spec_canvas.js?v=20260629i"></script>
 </body>
 </html>

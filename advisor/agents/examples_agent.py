@@ -217,6 +217,68 @@ CODEBASE ORGANIZATION REFERENCE:
 """
 
 
+def _search_report_specs(query: str) -> list[dict[str, str]]:
+    """Search inbox report specs for matches against query."""
+    import os
+    from advisor.report_spec_docs import get_report_spec_doc_manager
+    try:
+        dm = get_report_spec_doc_manager()
+        specs = dm.list_inbox()
+    except Exception as e:
+        logger.warning(f"Could not load report specs catalog: {e}")
+        return []
+    
+    query_words = [w.lower() for w in query.split() if len(w) > 3]
+    if not query_words:
+        query_words = [w.lower() for w in query.split()]
+        
+    matches = []
+    for spec in specs:
+        title = spec.get("title", "").lower()
+        doc_id = spec.get("doc_id", "").lower()
+        desc = ""
+        path = spec.get("path")
+        if path and os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                    lines = content.splitlines()
+                    for idx, line in enumerate(lines):
+                        if "### description" in line.strip().lower():
+                            for next_line in lines[idx+1:]:
+                                val = next_line.strip()
+                                if val and not val.startswith("#"):
+                                    desc = val
+                                    break
+                                if val.startswith("#"):
+                                    break
+                            break
+            except Exception:
+                pass
+        
+        score = 0
+        for w in query_words:
+            if w in title:
+                score += 10
+            if w in doc_id:
+                score += 5
+            if w in desc.lower():
+                score += 2
+        if score > 0:
+            matches.append((score, spec, desc))
+            
+    matches.sort(key=lambda x: (-x[0], x[1]["doc_id"]))
+    return [
+        {
+            "doc_id": m[1]["doc_id"],
+            "title": m[1]["title"],
+            "path": m[1].get("path", ""),
+            "description": m[2]
+        }
+        for m in matches[:3]
+    ]
+
+
 class ExamplesAgent(BaseAdvisorAgent):
     def __init__(self):
         self._api_ref_mode = False
@@ -253,23 +315,63 @@ class ExamplesAgent(BaseAdvisorAgent):
         q = query.lower()
         return any(sig in q for sig in _METHOD_DISCOVERY_SIGNALS)
 
-    def handle(self, query: str) -> dict:
+    def handle(self, query: str, perspective: str | None = None) -> dict:
         if self._is_method_discovery(query):
             logger.info("ExamplesAgent: method-discovery mode")
-            return self._handle_api_reference(query)
+            res = self._handle_api_reference(query, perspective=perspective)
+        else:
+            # Direct retrieval + single LLM call — BeeAI ReAct loop skipped because
+            # each Ollama round-trip costs 30-90s and the multi-turn loop adds no value
+            # over the structured retrieval below with a local 8B model.
+            logger.info("ExamplesAgent: direct retrieval path")
+            res = _make_result(query, self._fallback(query, perspective=perspective), "example")
 
-        # Direct retrieval + single LLM call — BeeAI ReAct loop skipped because
-        # each Ollama round-trip costs 30-90s and the multi-turn loop adds no value
-        # over the structured retrieval below with a local 8B model.
-        logger.info("ExamplesAgent: direct retrieval path")
-        return _make_result(query, self._fallback(query), "example")
+        # Programmatically find and append related templates and report specs
+        template_content = ""
+        try:
+            from advisor.agents.tools import _find_dre_template_raw
+            template_content = _find_dre_template_raw(query, level="basic", perspective=perspective)
+        except Exception as e:
+            logger.warning(f"Could not load Dr.Egeria templates: {e}")
 
-    def _handle_api_reference(self, query: str) -> dict:
+        has_template = template_content and "No Dr.Egeria template found matching" not in template_content
+
+        matched_specs = _search_report_specs(query)
+
+        extra = []
+        if has_template:
+            extra.append("\n\n### 📝 Related Dr.Egeria Templates\n"
+                         "If you want to perform this action interactively or define governance templates, "
+                         "you can use the following Dr.Egeria commands:\n\n"
+                         f"{template_content}")
+
+        if matched_specs:
+            spec_lines = []
+            spec_lines.append("\n\n### 📊 Related Report Specs\n"
+                               "If you want to run or customize a report on this metadata, the following "
+                               "report specifications are available in your catalog:\n")
+            for spec in matched_specs:
+                path = spec.get("path", "")
+                doc_id = spec["doc_id"]
+                title = spec["title"]
+                desc = spec["description"]
+                desc_part = f" — {desc}" if desc else ""
+                link = f"[{doc_id}](file://{path})"
+                spec_lines.append(f"- **{title}** ({link}){desc_part}")
+            extra.append("".join(spec_lines))
+
+        if extra:
+            res["response"] = res["response"].rstrip() + "".join(extra)
+            res["context_length"] = len(res["response"])
+
+        return res
+
+    def _handle_api_reference(self, query: str, perspective: str | None = None) -> dict:
         """Return a structured method-reference listing rather than a code example."""
         logger.info("ExamplesAgent: direct API reference retrieval")
-        return _make_result(query, self._fallback_api_reference(query), "code_search")
+        return _make_result(query, self._fallback_api_reference(query, perspective=perspective), "code_search")
 
-    def _fallback_api_reference(self, query: str) -> str:
+    def _fallback_api_reference(self, query: str, perspective: str | None = None) -> str:
         """Fallback: retrieve pyegeria source chunks and ask the LLM to format a reference."""
         from advisor.agents.tools import _search_egeria_content_raw, _get_egeria_symbol_raw
         from advisor.llm_client import get_ollama_client
@@ -351,7 +453,7 @@ class ExamplesAgent(BaseAdvisorAgent):
         except Exception as exc:
             return f"Could not retrieve API reference: {exc}"
 
-    def _fallback(self, query: str) -> str:
+    def _fallback(self, query: str, perspective: str | None = None) -> str:
         from advisor.agents.tools import _search_egeria_content_raw, _get_egeria_symbol_raw
         from advisor.llm_client import get_ollama_client
 

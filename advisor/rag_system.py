@@ -485,14 +485,31 @@ class RAGSystem:
             if re.match(r'^(discard)\b', _q):             return _rse.discard(_ctx_draft_id)
             if re.match(r'^(restart|redo\s+(q&a|questions))\b', _q): return _rse.restart_qa(_ctx_draft_id)
             if re.search(r'\b(execute|run|go ahead|proceed)\b', _q):
-                from advisor.report_spec_docs import get_report_spec_doc_manager
-                _spec = get_report_spec_doc_manager().load(_ctx_draft_id)
-                if _spec and (context or {}).get("phase") == "refine":
-                    _doc_id = _spec if isinstance(_spec, str) else None
-                    # parse doc_id from content
-                    import re as _re
-                    _m = _re.search(r'^# (.+)$', _spec, _re.MULTILINE) if isinstance(_spec, str) else None
-                # Always fall through to elicitor for execute-within-draft
+                # Fetch page_size/format override from query payload if available
+                custom_params = {}
+                if page_size is not None:
+                    custom_params["page_size"] = page_size
+                _fmt_m = re.search(r"\bfmt:'([^']+)'", user_query, re.IGNORECASE)
+                _output_fmt = _fmt_m.group(1).upper() if _fmt_m else "TABLE"
+                
+                from advisor.report_draft import get_report_draft_manager as _rdm
+                spec = _rdm().load(_ctx_draft_id)
+                doc_id = spec.get("doc_id") if spec else None
+                exec_id = doc_id if doc_id else _ctx_draft_id
+                
+                logger.info(f"Elicitor draft execute command detected — executing spec/draft {exec_id}")
+                try:
+                    result = get_report_spec_agent().execute(
+                        exec_id,
+                        perspective=perspective,
+                        output_format=_output_fmt,
+                        custom_params=custom_params if custom_params else None
+                    )
+                    # Preserve context so the canvas state is maintained
+                    result["next_context"] = context
+                    return result
+                except Exception as exc:
+                    logger.warning(f"Draft execute failed: {exc}")
             return _rse.process(_ctx_draft_id, user_query)
 
         elif _ctx_task == "plan_elicitor" and _ctx_draft_id:
@@ -630,22 +647,23 @@ class RAGSystem:
                 from advisor.report_draft import get_report_draft_manager as _rdm
                 spec = _rdm().load(draft_id)
                 doc_id = spec.get("doc_id") if spec else None
-                if doc_id:
-                    logger.info(f"Draft execute command detected — executing report {doc_id}")
-                    return agent.execute(doc_id)
-                else:
-                    return {
-                        "query": user_query,
-                        "response": (
-                            "The report spec hasn't been generated yet — use **Generate Spec** "
-                            "on the canvas first, then **Execute** when ready."
-                        ),
-                        "query_type": "report_spec_clarification",
-                        "draft_id": draft_id,
-                        "can_go_back": False,
-                        "navigation": [],
-                        "sources": [],
-                    }
+                
+                # Fetch page_size/format override from query payload if available
+                custom_params = {}
+                if page_size is not None:
+                    custom_params["page_size"] = page_size
+                _fmt_m = re.search(r"\bfmt:'([^']+)'", user_query, re.IGNORECASE)
+                _output_fmt = _fmt_m.group(1).upper() if _fmt_m else "TABLE"
+                
+                # Fall back to draft_id to allow previewing adhoc report spec drafts
+                exec_id = doc_id if doc_id else draft_id
+                logger.info(f"Draft execute command detected — executing spec/draft {exec_id}")
+                return agent.execute(
+                    exec_id,
+                    perspective=perspective,
+                    output_format=_output_fmt,
+                    custom_params=custom_params if custom_params else None
+                )
 
             return elicitor.process(draft_id, user_query)
 
@@ -997,9 +1015,13 @@ class RAGSystem:
             _fmt_m = re.search(r"\bfmt:'([^']+)'", user_query, re.IGNORECASE)
             _output_fmt = _fmt_m.group(1).upper() if _fmt_m else "TABLE"
             try:
+                custom_params = {}
+                if page_size is not None:
+                    custom_params["page_size"] = page_size
                 from advisor.agents.report_spec_agent import get_report_spec_agent
                 result = get_report_spec_agent().execute(
-                    _doc_id, perspective=perspective, dry_run=_dry_run, output_format=_output_fmt
+                    _doc_id, perspective=perspective, dry_run=_dry_run, output_format=_output_fmt,
+                    custom_params=custom_params if custom_params else None
                 )
                 result.setdefault("routing_agent", "report_spec_agent")
                 result.update({
@@ -1309,7 +1331,7 @@ class RAGSystem:
             logger.info(f"Routing query to ExamplesAgent")
             try:
                 from advisor.agents.examples_agent import get_examples_agent
-                result = get_examples_agent().handle(user_query)
+                result = get_examples_agent().handle(user_query, perspective=perspective)
                 result.setdefault("routing_agent", "examples_agent")
                 result.update({
                     "active_perspective": active_perspective,

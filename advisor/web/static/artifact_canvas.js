@@ -52,6 +52,7 @@ class ArtifactCanvas {
   async open(id) {
     if (!id) return;
     this._id = id;
+    this._fieldsCache = {}; // Clear cache on opening new draft
     const { panelId, handleId } = this._opts;
     const panel  = document.getElementById(panelId);
     const handle = document.getElementById(handleId);
@@ -162,7 +163,7 @@ class ArtifactCanvas {
     const statusTitle = dn ? 'Name set' : 'Display Name missing';
 
     const card = document.createElement('div');
-    card.className = 'pcanvas-card bg-slate-900 rounded-lg border border-slate-700/60 overflow-hidden select-none';
+    card.className = 'pcanvas-card bg-slate-900 rounded-lg border border-slate-700/60 overflow-hidden select-none shrink-0';
     card.dataset.acIdx = idx;
     card.draggable = true;
 
@@ -224,7 +225,7 @@ class ArtifactCanvas {
           rows="2" placeholder="Rationale, instructions, or notes…"
           data-ac-idx="${idx}">${_acEsc(narrative)}</textarea>
       </div>
-      <div class="fields-section hidden px-2.5 pb-2.5 flex flex-col gap-1.5 overflow-y-auto" style="max-height:32rem"></div>
+      <div class="fields-section hidden px-2.5 pb-2.5 flex flex-col gap-1.5 overflow-y-auto" style="max-height:15rem"></div>
     `;
 
     // ── Drag-and-drop ──────────────────────────────────────────────────────
@@ -303,11 +304,17 @@ class ArtifactCanvas {
     const fieldUrl = this._opts.adapter.fieldUrl(type, this._mode);
     section.innerHTML = '<p class="text-xs text-slate-600 p-1">Loading fields…</p>';
 
-    let fields = [];
-    try {
-      const r = await fetch(fieldUrl, { headers: (typeof Auth !== 'undefined' ? Auth.getHeaders() : {}) });
-      if (r.ok) fields = (await r.json()).fields || [];
-    } catch { /* skip */ }
+    this._fieldsCache = this._fieldsCache || {};
+    let fields = this._fieldsCache[fieldUrl];
+    if (!fields) {
+      try {
+        const r = await fetch(fieldUrl, { headers: (typeof Auth !== 'undefined' ? Auth.getHeaders() : {}) });
+        if (r.ok) {
+          fields = (await r.json()).fields || [];
+          this._fieldsCache[fieldUrl] = fields;
+        }
+      } catch { /* skip */ }
+    }
 
     const existingValues = this._opts.itemAdapter.getFieldValues(item);
     section.innerHTML = '';
@@ -317,7 +324,8 @@ class ArtifactCanvas {
     }
 
     fields.forEach(f => {
-      const val        = existingValues[f.name] || '';
+      const rawVal     = existingValues[f.name];
+      const val        = Array.isArray(rawVal) ? rawVal.join(',') : String(rawVal || '');
       const hasOptions = Array.isArray(f.valid_values) && f.valid_values.length > 0;
       const isMulti    = !!f.multi_select && hasOptions;
 

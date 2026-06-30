@@ -168,6 +168,26 @@ Each column in a spec has these fields:
 Common keys: `display_name`, `qualified_name`, `guid`, `description`, `status`,
 `create_time`, `update_time`, `classification_names`, `asset_type`.
 
+## Perspectives & Example Questions (Question Specs)
+
+Report Specs can be annotated with target **Perspectives** (user roles) and **Questions** (example natural language queries). Egeria Advisor uses this information to intelligently guide users to relevant reports.
+
+### 1 — How Guidance Works
+When a user asks a question in the chat (e.g. *"what active glossaries do we have?"*), Egeria Advisor performs:
+1. **Semantic Search over Question Specs:** It embeds the user prompt and calculates semantic similarity against all example questions defined across report specs.
+2. **Perspective Boosting:** If the user has a selected role active (e.g., Developer or Data Steward), reports tagged with that perspective receive a score boost, prioritizing them in the recommendations.
+
+If a match score is high enough, the Advisor suggests or automatically triggers the relevant report.
+
+### 2 — Configuring Perspectives and Questions
+You can attach this information to your report specs in three ways:
+
+* **Via the Canvas Editor:** Expand the **Spec Info** section at the top of the Report Canvas. Enter your roles and questions into the **Perspectives** and **Questions** input fields as comma-separated lists:
+  * *Perspectives:* `Developer, Data Steward`
+  * *Questions:* `what glossaries exist?, show all active glossaries`
+* **Via the Markdown Spec File:** In your report spec's `.md` file, add `### Perspectives` and `### Questions` under the `## Create Report Spec` header (see example below).
+* **Via Chat:** Ask the advisor to add perspectives or questions during the spec drafting/clarification phase (e.g., *"add Developer to perspectives"* or *"add the question: show my glossaries"*).
+
 ---
 
 ## Markdown spec format (for manual editing)
@@ -184,6 +204,12 @@ My Report Heading
 
 ### Description
 All active glossaries with descriptions.
+
+### Perspectives
+Developer, Data Steward
+
+### Questions
+what glossaries exist?, show all active glossaries
 
 ### Action Function
 GlossaryManager.find_glossaries
@@ -219,19 +245,14 @@ guid
 True
 ```
 
-After editing the file directly, the spec is immediately available to run — no rebuild step
-is needed.
+After editing the file directly, the spec is immediately available to run — no rebuild step is needed.
 
 ---
 
 ## Tips
 
-- **Start broad, filter later.** Leave `search_string=*` in the spec and override it at
-  run time when you want a focused result.
-- **Use `LIST` for browsing, `REPORT` for sharing.** `LIST` gives you a compact table;
-  `REPORT` gives a rich per-element breakdown readable by non-technical stakeholders.
-- **Name specs by purpose, not by filter.** `active_glossaries` is a bad name; `glossary_catalog`
-  is better — it can run with any `search_string` and `status_filter`.
-- **Version history is automatic.** Every save (including canvas edits and chat-driven
-  changes) writes a version snapshot in `~/egeria-reports/versions/`.
+- **Start broad, filter later.** Leave `search_string=*` in the spec and override it at run time when you want a focused result.
+- **Use `LIST` for browsing, `REPORT` for sharing.** `LIST` gives you a compact table; `REPORT` gives a rich per-element breakdown readable by non-technical stakeholders.
+- **Name specs by purpose, not by filter.** `active_glossaries` is a bad name; `glossary_catalog` is better — it can run with any `search_string` and `status_filter`.
+- **Version history is automatic.** Every save (including canvas edits and chat-driven changes) writes a version snapshot in `~/egeria-reports/versions/`.
 - **Drafts auto-save.** Close the window during Q&A and resume from **Drafts** in the sidebar.

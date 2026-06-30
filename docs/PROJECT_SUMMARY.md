@@ -344,6 +344,59 @@ The expand/collapse trigger on each command card was a tiny `▾` character. Rep
 | `9f6664b` | Fix symbol store typo, structural query routing, and regex safety |
 | `3cdd645` | Java symbol extraction via tree-sitter for egeria_java collection |
 
+### Phase 12 — Report Spec Builder & Parameter Model (Jun 26, 2026)
+
+**Theme:** Egeria Advisor's report creation and execution lifecycle was redesigned from a one-time execution document model (like plans) to a persistent saved view specification model. Column configuration and execution parameters were integrated into a visual, editable canvas and unified into the three-category parameter model (Content Filters, Shape Defaults, Performance Hints).
+
+**Report Spec Document (RSD) Lifecycle** ✓
+- Inbox catalog (`~/egeria-reports/inbox/`) stores persistent report specifications (`.md` files conforming to Egeria command/attribute syntax).
+- Executing a report spec generates a timestamped result snapshot in outbox (`~/egeria-reports/outbox/<spec_id>_executed_<timestamp>.md`), keeping the original specification intact in the catalog.
+- "Customize/Edit" opens the RSD in the visual canvas. "Rerun" executes the catalog entry as-is.
+
+**Three-Category Parameter Model** ✓
+- Grouped report execution configuration into:
+  - **Content Filters**: `search_string`, `status_filter` (part of spec identity; determines what data is retrieved).
+  - **Shape Defaults**: `sort_field`, `sort_order`, `graph_query_depth`, `include_anchors`, `include_lineage` (determines output layout/depth).
+  - **Performance Hints**: `page_size`, `start_from` (operational parameters).
+- Merges default parameters with user runtime overrides in a unified JSON query structure.
+
+**Visual Canvas Parameter Panels** ✓
+- Added three collapsible details sections (Content Filters, Shape Defaults, Performance Hints) above the drag-and-drop Column cards in `report_spec_canvas.js`.
+- Implemented debounced PATCH requests to `/api/reports/drafts/{draft_id}` on any input value change to ensure seamless UI-to-draft synchronization.
+
+**Act Intent Extension & Verb Split** ✓
+- Expanded `Act` intent (`rag_system.py`) to support both report pipeline execution (for read verbs SHOW/LIST/FIND/DISPLAY) and Dr.Egeria governance commands (for write verbs CREATE/UPDATE/ASSIGN/DELETE).
+- Displays post-run action buttons in the chat response: **Modify spec** (opens canvas with spec parameters pre-populated) and **Run again** (prompts for overrides).
+
+**Create Intent & CreateRouter** ✓
+- Created `CreateRouter` (`advisor/agents/create_router.py`) to classify `create` intent queries as a plan request (`PlanElicitor`), a report spec builder request (`ReportSpecElicitor`), or ambiguous (presents a Python/Dr.Egeria button choice).
+- Renamed "Report" sidebar button to "Run Report" and "Plan" to "Create" in UI.
+
+**Commits:**
+
+| SHA | Summary |
+|---|---|
+| `2849d61` | Fixing the spec builder, parser, three-category params, and Create router |
+
+
+### Phase 12b — Composite Examples Agent ("Show me") (Jun 28, 2026)
+
+**Theme:** Programming help and reference lookups ("Show me") were expanded to provide composite responses. The Examples Agent now programmatically searches for and appends related Dr.Egeria command templates and active report specifications alongside the generated Python code example or class/method reference table.
+
+**Programmatic Multi-Resource Discovery** ✓
+- Enriched `ExamplesAgent` (`advisor/agents/examples_agent.py`) to search the local filesystem templates (`_find_dre_template_raw`) and report catalog (`_search_report_specs`) based on the user's query keywords.
+- Appends matching Dr.Egeria command templates under `### 📝 Related Dr.Egeria Templates` in fenced code blocks.
+- Lists matching catalog report specifications under `### 📊 Related Report Specs` with clickable `file://` scheme links, including auto-extracted descriptions.
+
+**Active Perspective Propagation** ✓
+- Propagates resolved user `perspective` (resolved via `PerspectiveRoutingEngine` based on session history and active role) down from RAG routing (`rag_system.py`) to the Examples Agent, allowing role-based template filtering.
+
+**Commits:**
+
+| SHA | Summary |
+|---|---|
+| `[HEAD]` | Composite Examples Agent, perspective propagation, and unit tests |
+
 ---
 
 ## Architecture evolution (Mermaid diagrams)
@@ -809,8 +862,10 @@ docs/
 - Phase 11e ✓ — report selection & execution rework (all three paths fixed, name-first resolution, dynamic format picker)
 - Phase 11f ✓ — UI artifact lifecycle refactoring (tabbed sidebar, plan offer CTA, Python-vs-DrEgeria clarification)
 - Phase 11g ✓ — code intelligence & symbol analysis (SQLite symbol table, Python + Java, structural query routing)
+- Phase 12 ✓ — report spec builder & parameter model (RSD lifecycle, parameter model, collapsible canvas panels, Create intent, Act verb split)
+- Phase 12b ✓ — composite examples agent (Show me composite response, related templates, related report specs with file:// links)
 
-**What's working end-to-end (Jun 25, 2026):**
+**What's working end-to-end (Jun 28, 2026):**
 - Plans generate via conversational Q&A or Plan Editor builder mode
 - Execution reaches Dr.Egeria MCP → Egeria REST API; objects created in Egeria confirmed by GUID in output
 - Outbox plan shows: structured Outcome with GUID/QN per command + filtered Execution Results (Mermaid diagrams) + collapsible raw Dr.Egeria output
@@ -822,6 +877,8 @@ docs/
 - Dr.Egeria template responses offer a plan CTA instead of hallucinating Jupyter notebook usage
 - "How many classes are in pyegeria?", "list methods on AssetManager", "most complex methods in egeria_java" — all answered via live SQL from symbol store
 - Java symbol table: ~38,900 symbols from 4,181 `.java` files in the egeria_java collection
+- Report specifications are fully editable via visual canvas (drag-and-drop columns + Content Filters, Shape Defaults, and Performance Hints panels)
+- Show me queries return composite responses linking relevant Python code, Dr.Egeria templates, and catalog report specs with clickable file:// links
 
 **Planned next (in priority order):**
 

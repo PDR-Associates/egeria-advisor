@@ -70,6 +70,8 @@ class ReportDraftManager:
         content_filters: Optional[Dict[str, Any]] = None,
         shape_defaults: Optional[Dict[str, Any]] = None,
         performance_hints: Optional[Dict[str, Any]] = None,
+        perspectives: Optional[List[str]] = None,
+        questions: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Create a new report spec draft, persist it, and return it."""
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -86,6 +88,8 @@ class ReportDraftManager:
             "content_filters": content_filters if content_filters is not None else {"search_string": "*"},
             "shape_defaults": shape_defaults or {},
             "performance_hints": performance_hints if performance_hints is not None else {"page_size": 100, "start_from": 0},
+            "perspectives": perspectives or [],
+            "questions": questions or [],
             "answers": answers or {},
             "pending_questions": pending_questions or {},
             "doc_id": None,
@@ -136,6 +140,8 @@ class ReportDraftManager:
             "content_filters": copy.deepcopy(spec.get("content_filters", {})),
             "shape_defaults": copy.deepcopy(spec.get("shape_defaults", {})),
             "performance_hints": copy.deepcopy(spec.get("performance_hints", {})),
+            "perspectives": copy.deepcopy(spec.get("perspectives", [])),
+            "questions": copy.deepcopy(spec.get("questions", [])),
             "answers": copy.deepcopy(spec["answers"]),
             "pending_questions": copy.deepcopy(spec["pending_questions"]),
             "summary_of_answers": spec.get("summary_of_answers", ""),
@@ -153,6 +159,8 @@ class ReportDraftManager:
         spec["content_filters"] = snapshot.get("content_filters", {})
         spec["shape_defaults"] = snapshot.get("shape_defaults", {})
         spec["performance_hints"] = snapshot.get("performance_hints", {})
+        spec["perspectives"] = snapshot.get("perspectives", [])
+        spec["questions"] = snapshot.get("questions", [])
         spec["answers"] = snapshot["answers"]
         spec["pending_questions"] = snapshot["pending_questions"]
         spec["summary_of_answers"] = snapshot.get("summary_of_answers", "")

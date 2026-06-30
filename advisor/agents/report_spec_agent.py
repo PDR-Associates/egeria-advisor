@@ -16,6 +16,24 @@ from advisor.report_spec_parser import parse_report_spec_markdown, register_repo
 from advisor.report_pipeline import get_report_pipeline
 
 
+def calculate_required_depth(key: str) -> int:
+    """Determine the required Egeria graph query depth for a given dot-notation path."""
+    if not key:
+        return 0
+    parts = key.split('.')
+    if len(parts) <= 1:
+        return 0
+    
+    ancestors = parts[:-1]
+    depth = 0
+    for anc in ancestors:
+        clean = anc.replace("[]", "").strip()
+        if clean in ("properties", "elementHeader", "relatedElement", "relationshipProperties"):
+            continue
+        depth += 1
+    return depth
+
+
 class ReportSpecAgent:
     """Agent for executing report specs and managing run outcomes."""
 
@@ -40,8 +58,21 @@ class ReportSpecAgent:
           6. Move/write the document to outbox with Outcome section appended.
         """
         base_doc_id = re.sub(r'_executed_\d{8}_\d{6}$', '', doc_id)
-        doc_manager = get_report_spec_doc_manager()
-        content = doc_manager.load(base_doc_id)
+        if base_doc_id.startswith("draft_report_"):
+            from advisor.report_draft import get_report_draft_manager
+            from advisor.agents.report_spec_elicitor import get_report_spec_elicitor
+            dm = get_report_draft_manager()
+            draft = dm.load(base_doc_id)
+            if not draft:
+                return self._error_result(
+                    doc_id,
+                    f"Report spec draft `{doc_id}` not found."
+                )
+            elicitor = get_report_spec_elicitor()
+            content = elicitor._generate_report_spec_md(draft)
+        else:
+            doc_manager = get_report_spec_doc_manager()
+            content = doc_manager.load(base_doc_id)
 
         if not content:
             return self._error_result(
@@ -120,9 +151,34 @@ class ReportSpecAgent:
             if met and met[0].islower():
                 params["metadata_element_type"] = met[0].upper() + met[1:]
 
+        # Determine optimized graph query depth from active column keys
+        column_keys = set()
+        for fmt in spec.formats:
+            for col in fmt.attributes:
+                if col.key:
+                    column_keys.add(col.key)
+                    
+        max_depth = 0
+        for k in column_keys:
+            depth = calculate_required_depth(k)
+            if depth > max_depth:
+                max_depth = depth
+                
+        # Auto-tune: set graph_query_depth if not explicitly overridden by custom_params
+        if not custom_params or "graph_query_depth" not in custom_params:
+            params["graph_query_depth"] = max_depth
+            logger.info(f"Auto-tuned graph_query_depth to {max_depth} based on column projection keys")
+            
+        # Backlog shape optimization: if max_depth is 0, auto-set skip_relationships = True
+        if max_depth == 0 and (not custom_params or "skip_relationships" not in custom_params):
+            params["skip_relationships"] = True
+            logger.info("Auto-tuned skip_relationships to True (depth is 0)")
+
         from pyegeria import exec_report_spec
 
-        fetch_format = output_format  # pass format through to pyegeria as-is
+        # Request raw JSON from pyegeria when TABLE or DICT is selected,
+        # allowing Egeria Advisor to apply its own multi-column pipeline formatters.
+        fetch_format = "JSON" if output_format in ("TABLE", "DICT") else output_format
 
         ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         status = "Completed"
@@ -145,13 +201,13 @@ class ReportSpecAgent:
             elif isinstance(raw, dict):
                 kind = raw.get("kind")
                 if kind == "json":
-                    execution_output = pipeline._format_output(raw.get("data"), output_format, spec.heading)
+                    execution_output = pipeline._format_output(raw.get("data"), output_format, spec.heading, spec=spec)
                 elif kind == "text":
                     execution_output = raw.get("content", "")
                 else:
-                    execution_output = pipeline._format_output(raw, output_format, spec.heading)
+                    execution_output = pipeline._format_output(raw, output_format, spec.heading, spec=spec)
             else:
-                execution_output = pipeline._format_output(raw, output_format, spec.heading)
+                execution_output = pipeline._format_output(raw, output_format, spec.heading, spec=spec)
         except Exception as exc:
             status = "Failed"
             error_msg = str(exc)

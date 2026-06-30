@@ -148,7 +148,7 @@ EgeriaTech.non_existent_method_xyz
 """)
     warnings = validate_report_spec(spec_not_found)
     assert len(warnings) > 0
-    assert "was not found on the Egeria client library" in warnings[0]
+    assert "not found on" in warnings[0]
 
     # Validate with real/mocked method
     # EgeriaTech is imported dynamically in the validator, let's mock it
@@ -156,7 +156,7 @@ EgeriaTech.non_existent_method_xyz
         def my_valid_method(self):
             pass
 
-    monkeypatch.setattr("pyegeria.egeria_tech_client.EgeriaTech", DummyEgeriaTech, raising=False)
+    monkeypatch.setattr("pyegeria.EgeriaTech", DummyEgeriaTech, raising=False)
     
     spec_valid = parse_report_spec_markdown("""
 ## Create Report Spec

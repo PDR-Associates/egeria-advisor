@@ -487,6 +487,14 @@ Do not output any introductory or summary text. Just the markdown document:
             lines.append("### Description")
             lines.append(spec["answers"].get("Description"))
             lines.append("")
+        if spec.get("perspectives"):
+            lines.append("### Perspectives")
+            lines.append(", ".join(spec.get("perspectives")))
+            lines.append("")
+        if spec.get("questions"):
+            lines.append("### Questions")
+            lines.append(", ".join(spec.get("questions")))
+            lines.append("")
         if spec.get("action_function"):
             lines.append("### Action Function")
             lines.append(spec.get("action_function"))

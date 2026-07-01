@@ -121,6 +121,27 @@ See `egeria-workspaces-fs/BACKLOG.md` IX-1 through IX-5 for the full item list.
 
 ---
 
+## Session & Interaction State
+
+Full design: `docs/design/SESSION_AND_INTERACTION_STATE.md`.
+
+Confirmed via code review (Jul 2026) that a user finishing one flow (report
+spec / plan draft) and switching to another (e.g. running a pre-built report
+from the sidebar) can leave the system acting on stale state from the
+previous flow. The `fix/report-selection-execution-rework` merge introduced
+a unified `_ctx` "authoritative task/phase state" object which is a real
+structural improvement, but did not close the gap — see SS-1.
+
+| # | Item | Status | Notes |
+|---|------|--------|-------|
+| SS-1 | Fix interaction-mode leak — report run doesn't clear active task context | open | `runReport()`/`confirmRunReport()` (`index.html:739-770`) never call `clearContext()`; backend `context.task` routing (`rag_system.py:474-540`) is unconditional on `context.task`, ignoring `intent_override` entirely. |
+| SS-2 | Tighten bare-word regex false positive in `report_spec_elicitor` context routing | open | `rag_system.py:487` — `re.search(r'\b(execute\|run\|go ahead\|proceed)\b', _q)` matches "run report X" on bare `run`, executing the stale draft instead of the requested report. `plan_elicitor` block already fixed (`run\s+the\s+plan`, line 524) — apply same pattern here. |
+| SS-3 | Backend session store — session-scoped ephemeral interaction state | open | New `session_id`, minted client-side (UUID in `sessionStorage`, sent as `X-Session-Id` header), backend in-memory `Dict[session_id, SessionState]` (TTL-evicted). Needed because `user_id` scoping alone is insufficient — demo/shared accounts run multiple concurrent sessions under one `user_id`. Note: `session_id`/`user_id` already exist as params threaded through `_process_query` (`rag_system.py:464-465`) but only for metrics/observability — frontend never sends `session_id` today, and no storage manager uses it. |
+| SS-4 | Per-user artifact directory namespacing | open | `DraftManager`, `DocumentManager`, `PlanTemplateManager`, `SessionLogger` (all under `~/egeria-plans/`) and `ReportDraftManager`, `ReportSpecDocumentManager` (under `~/egeria-reports/`, added by the Report Spec Builder work — same unscoped pattern replicated) need `user_id`-scoped roots. Currently any client that knows/guesses a `draft_id` can act on another user's draft — no ownership check exists. |
+| SS-5 | Optimistic concurrency check for same-user concurrent draft edits | deferred | Two sessions of the same (demo) user editing the same draft. Spec already has `updated_at` — reject/warn a save if it moved since this session last read it. Not blocking SS-1 through SS-4. |
+
+---
+
 ## Done (recent)
 
 | Item | Date | Notes |

@@ -101,6 +101,30 @@ class ReportSpecDocumentManager:
             return path.read_text(encoding="utf-8")
         return None
 
+    def import_document(self, content: str, title: Optional[str] = None) -> str:
+        """
+        Import externally-written Report Spec markdown as a new managed spec
+        in inbox/, exactly like a generated report spec.
+
+        Validates the content parses as a Report Spec (must contain a
+        'Create Report Spec' command — see parse_report_spec_markdown) so a
+        malformed import fails fast instead of silently producing a spec
+        that can't be run. Mirrors DocumentManager.import_document().
+
+        Returns the new doc_id.
+        """
+        content = content.strip()
+        if not content:
+            raise ValueError("Cannot import empty content")
+
+        from advisor.report_spec_parser import parse_report_spec_markdown
+        spec = parse_report_spec_markdown(content)  # raises ValueError if invalid
+
+        final_title = title or spec.heading or "Imported Report Spec"
+        doc_id = self.create(final_title, content)
+        logger.info(f"ReportSpecDocumentManager: imported external document as {doc_id!r}")
+        return doc_id
+
     def update(self, doc_id: str, content: str) -> bool:
         """Overwrite a report spec document in place (inbox only)."""
         path = self._paths["inbox"] / f"{doc_id}.md"

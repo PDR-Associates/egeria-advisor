@@ -41,6 +41,7 @@ dependencies = [
     "beeai-framework>=0.1.72",
     "tree-sitter>=0.23.0",
     "tree-sitter-java>=0.23.0",
+    "nest-asyncio>=1.6.0",
 ]
 
 [project.optional-dependencies]

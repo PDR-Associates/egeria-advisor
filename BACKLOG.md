@@ -112,6 +112,7 @@ The `act_result` response dict should include `matched_spec_id` (populated when 
 | RS-4 | "Fork / Customize" entry point from sidebar (see IB-6) | open | Pre-populate elicitor from existing spec. |
 | RS-5 | Master-detail parameter inheritance model | deferred | Unresolved: do detail specs inherit content_filters / shape_defaults from master? |
 | RS-6 | Parameter profiles ("deep traversal", "quick lookup") | deferred | Named reusable parameter sets. |
+| RS-7 | Report spec import/export — feature parity with Plans | open | Plans have `POST /api/plans/import` + `GET /api/plans/{doc_id}/export` (`app.py:510,566`); Report Specs have neither, and no UI hook (`report_spec_canvas.js` has no export/import/download link, unlike `plan_editor.js:304`'s report-export link). `ReportSpecDocumentManager.load()` already exists (`report_spec_docs.py:59`) so export is a thin wrapper; import needs an `import_document()`-equivalent (parse/validate externally-authored report spec markdown — no analog exists yet in `report_spec_docs.py`, unlike `governance_docs.py`'s `import_document`). |
 
 ---
 

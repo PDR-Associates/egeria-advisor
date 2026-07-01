@@ -759,6 +759,9 @@ function confirmRunReport() {
   const outputFmt = document.getElementById('output-format-select').value || 'DICT';
   closeSearchModal();
   if (!name) return;
+  // Running a pre-built report is an unambiguous mode switch away from any
+  // in-progress elicitor task (report spec / plan Q&A). See BACKLOG.md SS-1.
+  if (_ctx && _ctx.task) clearContext();
   const fmtLabel = outputFmt !== 'LIST' ? ` (${outputFmt})` : '';
   const label = filter
     ? `Run report: **${name}** — filter: *${filter}*${fmtLabel}`
@@ -1146,6 +1149,10 @@ function setIntent(btn) {
   document.querySelectorAll('.intent-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   selectedIntent = btn.dataset.intent;
+  // Explicitly picking an intent is an unambiguous mode switch — don't let a
+  // stale elicitor task context (report spec / plan Q&A) keep intercepting
+  // subsequent messages. See BACKLOG.md SS-1.
+  if (selectedIntent && _ctx && _ctx.task) clearContext();
 }
 
 // ── Sidebar tab switcher ───────────────────────────────────────────────────────

@@ -9,52 +9,85 @@ Symptom: user completes work in one flow (e.g. a report spec / plan draft),
 switches to a different action (e.g. "run a pre-built report" from the
 sidebar), and the system responds as if still inside the previous flow.
 
-### Root cause
+### Root cause (original diagnosis, since partially reworked — see below)
 
-The frontend tracks "is a plan draft active" with a single flag,
-`_activeDraftId` (`advisor/web/static/index.html:428`, mirrored to
-`sessionStorage`). It is set whenever a response comes back with
-`query_type: 'plan_clarification'`, and is **only** cleared when a response
-comes back as `plan` (saved to inbox) or `plan_executed`
-(`index.html:1099-1110`). No other user action clears it — in particular,
-`runReport()` / `confirmRunReport()` / `closeSearchModal()`
-(`index.html:505-543`, the "run a pre-built report" sidebar flow) never
-read or clear `_activeDraftId`.
+The frontend originally tracked "is a plan draft active" with a single
+flag, `_activeDraftId`, mirrored to `sessionStorage`, cleared only on
+specific response types, and never touched by the report-run sidebar flow.
+`submitQuery()` always sent `draft_id: _activeDraftId || null` regardless of
+what else was being requested, and the backend's `if draft_id:` branch
+(`_process_query`) took unconditional priority over `intent_override`.
 
-`submitQuery()` (`index.html:944-955`) always sends
-`draft_id: _activeDraftId || null` in the request body regardless of what
-else is being requested. So if a draft is still open (e.g. mid Q&A, not yet
-saved or executed) and the user clicks a sidebar report, the request carries
-**both** `intent_override: 'report'` *and* the stale `draft_id`.
+### Update (post `fix/report-selection-execution-rework`, PR #8): bug persists in relocated form
 
-On the backend, `_process_query` (`advisor/rag_system.py:388`) starts with
-an unconditional `if draft_id:` branch that never consults
-`intent_override` at all — this is intentional per the existing design
-(`CLAUDE.md` rule 17: "all messages forwarded to PlanElicitor... regardless
-of intent"). Worse, the query text built for a report run,
-`"run report <name>"` (`index.html:535`), matches the exec-intent regex at
-`rag_system.py:430-435` on the bare `run` alternative:
+A rework landed (merged via PR #8, `docs/design/REPORT_SPEC_BUILDER_DESIGN.md`
+era) that introduced a unified client-side context object as the intended
+single source of truth:
 
-```python
->>> _exec_pattern.match("run report x")
-<re.Match object; span=(0, 3), match='run'>
+```js
+// index.html:585 — "authoritative task/phase state"
+let _ctx = JSON.parse(sessionStorage.getItem('ea_ctx') || 'null') || {};
+// task values: "report_spec_elicitor" | "plan_elicitor" | "act_confirm" |
+//              "report_disambiguation" | null
 ```
 
-So clicking "run report X" while a stale draft is attached doesn't fall
-through to chat — it hits `agent.execute(doc_id)` for the **stale draft**,
-silently re-executing (or erroring on) the previous plan instead of running
-the requested report.
+`setContext()`/`clearContext()` (`index.html:587-631`) centralize updates,
+and a "New Task" UI indicator (`index.html:276`, `clearContext()` button)
+lets the user manually clear a stale context. This is a real structural
+improvement — one object instead of four independent flags — **but the
+underlying bug is unchanged, just relocated**:
 
-### Contributing structural issue
+- `runReport()` / `confirmRunReport()` (`index.html:739-770`, the "run a
+  pre-built report" sidebar flow) still never call `clearContext()` or
+  otherwise touch `_ctx`. A stale `_ctx.task` left over from an abandoned
+  report-spec or plan Q&A session rides along unchanged.
+- `submitQuery()`'s draft-id resolution (`index.html:1195-1197`):
+  ```js
+  const hasCtx = _ctx && _ctx.task;
+  const draftId = hasCtx ? (_ctx.draft_id || null)
+                : (selectedIntent ? null : (_activeDraftId || null));
+  ```
+  When `hasCtx` is true, `draftId` (and the full `context` payload) is sent
+  **unconditionally** — not gated on `selectedIntent` or the caller's
+  `intent_override` at all. `confirmRunReport()`'s `extra.intent_override =
+  'report'` has no effect on whether the stale context is attached.
+- Backend `_process_query` (`advisor/rag_system.py:474-540`) checks
+  `context.task` first, still with no cross-check against
+  `intent_override`/`query_type_override`:
+  ```python
+  _ctx_task = (context or {}).get("task")
+  if _ctx_task == "report_spec_elicitor" and _ctx_draft_id:
+      ...
+  elif _ctx_task == "plan_elicitor" and _ctx_draft_id:
+      ...
+  ```
+- The bare-word regex false positive also survives, now in the
+  `report_spec_elicitor` context block (`rag_system.py:487`):
+  ```python
+  if re.search(r'\b(execute|run|go ahead|proceed)\b', _q):
+  ```
+  `"run report X"` still matches on bare `run`, so it still executes the
+  **stale draft's report spec**, not the one the user clicked. (The
+  `plan_elicitor` block was tightened to require `run\s+the\s+plan`,
+  `rag_system.py:524` — the same fix was not applied to the
+  `report_spec_elicitor` block.)
+- A legacy fallback (`rag_system.py:623`, `if draft_id and
+  draft_id.startswith("draft_report_"):`) still exists for backward
+  compatibility and carries the same unconditional-priority shape.
 
-There are four independent client-side "what mode are we in" flags kept in
-sync only by convention: `_activeDraftId` (+ its `sessionStorage` mirror),
-`PlanCanvas`'s own closure-scoped `_draftId`
-(`advisor/web/static/plan_canvas.js:89-127`), `selectedIntent`
-(the intent button bar), and `pendingReportName`/`pendingClarification`.
-Nothing enforces they agree, and the backend has no independent way to
-check — it fully trusts whatever `draft_id` the client attaches to a
-request.
+**Net effect: the fix needs to happen in two places now** — the `_ctx`
+object needs an explicit clearing trigger on any action that starts a
+different flow (report run, different intent button, different sidebar
+report), *and* the backend needs to stop trusting `context.task` when the
+request also carries an explicit, conflicting `intent_override`.
+
+### Contributing structural issue (unchanged)
+
+`PlanCanvas` still keeps its own closure-scoped `_draftId`
+(`advisor/web/static/plan_canvas.js`), synced to `_activeDraftId`/`_ctx`
+only by convention from call sites, not enforced. The backend still has no
+independent way to verify a client-submitted context/draft_id belongs to
+the flow the client claims to be in — see Problem 2.
 
 ## Problem 2: No backend-owned session concept (concurrency/isolation)
 
@@ -71,6 +104,11 @@ session concept at all today.
 - `DocumentManager` (`advisor/governance_docs.py:39`) has the identical
   pattern: one shared `~/egeria-plans/{inbox,outbox}` regardless of caller.
   `PlanTemplateManager` and `SessionLogger` follow the same convention.
+- The newer Report Spec Builder feature (`ReportDraftManager`,
+  `advisor/report_draft.py:39`; `ReportSpecDocumentManager`,
+  `advisor/report_spec_docs.py:24`) replicated the identical unscoped
+  pattern against a second shared root, `~/egeria-reports/` — so the surface
+  area for this fix grew, not shrank, since the original diagnosis.
 - The JWT already carries a `user_id` (`get_current_user()` /
   `advisor/auth.py`), but `/api/query` (`advisor/web/app.py:268-270`) only
   uses it as a boolean (`egeria_authenticated`) — the actual `user_id` is
@@ -113,15 +151,19 @@ same user don't collide).
 ~/egeria-plans/users/{user_id}/outbox/
 ~/egeria-plans/users/{user_id}/templates/
 ~/egeria-plans/users/{user_id}/sessions/     (JSONL transcripts)
+~/egeria-reports/users/{user_id}/drafts/     (report spec drafts)
+~/egeria-reports/users/{user_id}/...         (mirror report_spec_docs.py's existing subfolders)
 ```
 
-`DraftManager`, `DocumentManager`, `PlanTemplateManager`, `SessionLogger`
-each take a `user_id` at construction (or per-call) instead of resolving one
-global `Path.home() / "egeria-plans"`. Same path-resolution pattern as
-today (`_drafts_path()` in `governance_draft.py`, `_paths` dict in
-`governance_docs.py:39-54`), just parameterized by `user_id`. These stop
-being process-wide singletons and become per-user instances (or a small
-cache keyed by `user_id`).
+`DraftManager`, `DocumentManager`, `PlanTemplateManager`, `SessionLogger`,
+`ReportDraftManager`, `ReportSpecDocumentManager` each take a `user_id` at
+construction (or per-call) instead of resolving one global
+`Path.home() / "egeria-plans"` / `Path.home() / "egeria-reports"`. Same
+path-resolution pattern as today (`_drafts_path()` in
+`governance_draft.py`, `_paths` dict in `governance_docs.py:39-54`, the
+equivalent helpers in `report_draft.py`/`report_spec_docs.py`), just
+parameterized by `user_id`. These stop being process-wide singletons and
+become per-user instances (or a small cache keyed by `user_id`).
 
 ### Session store — new, small, in-memory
 

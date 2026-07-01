@@ -201,6 +201,7 @@
         <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Custom Specs</span>
         <div class="flex items-center gap-2">
           <button onclick="openReportBuilderModal()" class="text-xs text-violet-400 hover:text-violet-200 transition-colors font-medium" title="New Report Spec (Builder)">+ Builder</button>
+          <button onclick="openReportSpecImportModal()" class="text-xs text-slate-400 hover:text-slate-200 transition-colors font-medium" title="Import a Report Spec markdown file (paste or upload)">⇧ Import</button>
           <button onclick="loadReportDocs();" class="text-xs text-slate-600 hover:text-slate-400 transition-colors" title="Refresh report specs">↺</button>
         </div>
       </div>
@@ -493,6 +494,30 @@
   </div>
 </div>
 
+<!-- ── Import Report Spec modal ────────────────────────────────────────────── -->
+<div id="import-report-spec-modal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50" onclick="if(event.target===this)closeReportSpecImportModal()">
+  <div class="bg-slate-800 border border-slate-600 rounded-xl p-5 w-[32rem] shadow-2xl">
+    <h3 class="text-sm font-semibold text-slate-200 mb-3">Import Report Spec</h3>
+    <p class="text-xs text-slate-400 mb-3">
+      Paste or upload a Report Spec markdown file (must contain a "Create Report Spec"
+      command block). It will be managed here like any other report spec (edit, execute, export).
+    </p>
+    <input id="import-report-spec-file-input" type="file" accept=".md,text/markdown,text/plain"
+      class="w-full text-xs text-slate-300 mb-2"
+      onchange="_handleReportSpecImportFileChosen(event)" />
+    <textarea id="import-report-spec-content-input" rows="10" placeholder="## Create Report Spec&#10;&#10;### Heading&#10;..."
+      class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-xs text-slate-200 font-mono
+             focus:outline-none focus:border-violet-500 mb-3"></textarea>
+    <input id="import-report-spec-title-input" type="text" placeholder="Title (optional — derived from content if left blank)"
+      class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-slate-200
+             focus:outline-none focus:border-violet-500 mb-4" />
+    <div class="flex gap-2 justify-end">
+      <button onclick="closeReportSpecImportModal()" class="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>
+      <button onclick="submitImportReportSpec()" class="px-4 py-1.5 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition-colors">Import</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Command picker modal ────────────────────────────────────────────────── -->
 <div id="cmd-picker-modal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50" onclick="if(event.target===this)closeCmdPicker()">
   <div class="bg-slate-800 border border-slate-600 rounded-xl shadow-2xl flex flex-col" style="width:680px;max-height:80vh">
@@ -759,6 +784,9 @@ function confirmRunReport() {
   const outputFmt = document.getElementById('output-format-select').value || 'DICT';
   closeSearchModal();
   if (!name) return;
+  // Running a pre-built report is an unambiguous mode switch away from any
+  // in-progress elicitor task (report spec / plan Q&A). See BACKLOG.md SS-1.
+  if (_ctx && _ctx.task) clearContext();
   const fmtLabel = outputFmt !== 'LIST' ? ` (${outputFmt})` : '';
   const label = filter
     ? `Run report: **${name}** — filter: *${filter}*${fmtLabel}`
@@ -1146,6 +1174,10 @@ function setIntent(btn) {
   document.querySelectorAll('.intent-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   selectedIntent = btn.dataset.intent;
+  // Explicitly picking an intent is an unambiguous mode switch — don't let a
+  // stale elicitor task context (report spec / plan Q&A) keep intercepting
+  // subsequent messages. See BACKLOG.md SS-1.
+  if (selectedIntent && _ctx && _ctx.task) clearContext();
 }
 
 // ── Sidebar tab switcher ───────────────────────────────────────────────────────
@@ -2368,6 +2400,43 @@ async function submitImportPlan() {
   }
 }
 
+// ── Import Report Spec modal ──────────────────────────────────────────────────
+function openReportSpecImportModal() {
+  document.getElementById('import-report-spec-content-input').value = '';
+  document.getElementById('import-report-spec-title-input').value = '';
+  document.getElementById('import-report-spec-file-input').value = '';
+  document.getElementById('import-report-spec-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('import-report-spec-content-input').focus(), 50);
+}
+function closeReportSpecImportModal() {
+  document.getElementById('import-report-spec-modal').classList.add('hidden');
+}
+function _handleReportSpecImportFileChosen(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => { document.getElementById('import-report-spec-content-input').value = reader.result; };
+  reader.readAsText(file);
+}
+async function submitImportReportSpec() {
+  const content = document.getElementById('import-report-spec-content-input').value.trim();
+  if (!content) return;
+  const title = document.getElementById('import-report-spec-title-input').value.trim() || null;
+  closeReportSpecImportModal();
+  try {
+    const r = await fetch('/api/reports/specs/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      body: JSON.stringify({ content, title }),
+    });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
+    await loadReportDocs();
+    _showToast('Report spec imported — open it from Custom Specs to review before running.');
+  } catch (e) {
+    alert(`Could not import report spec: ${e.message}`);
+  }
+}
+
 // ── Command picker ──────────────────────────────────────────────────────────────
 let _cmdPickerData = null;   // { family: [{name, family, aliases, in_catalog}] }
 let _cmdPickerFamily = null; // currently selected family filter
@@ -2708,6 +2777,17 @@ async function loadReportDocs() {
         row.appendChild(purgeBtn);
         return row;
       }
+
+      // Export button — inbox and outbox only
+      const exportBtn = document.createElement('button');
+      exportBtn.className = 'shrink-0 px-1 py-0.5 rounded text-slate-600 hover:text-slate-300 hover:bg-slate-800/50 text-xs transition-colors';
+      exportBtn.title = 'Download this report spec as a markdown file';
+      exportBtn.textContent = '⤓';
+      exportBtn.onclick = e => {
+        e.stopPropagation();
+        window.open(`/api/reports/docs/${encodeURIComponent(item.doc_id)}/export`, '_blank');
+      };
+      row.appendChild(exportBtn);
 
       const delBtn = document.createElement('button');
       delBtn.className = 'shrink-0 px-1 py-0.5 rounded text-slate-600 hover:text-red-400 hover:bg-red-950/40 text-xs transition-colors';

@@ -470,9 +470,20 @@ class RAGSystem:
         # Context-based routing — authoritative, no pattern matching needed. #
         # When the frontend sends a context.task the message unambiguously    #
         # belongs to that task's handler regardless of intent button state.  #
+        #                                                                     #
+        # Exception: an explicit query_type_override='report' (user clicked  #
+        # "Run Report" on a specific catalog entry) is itself an unambiguous #
+        # mode switch and always wins over a stale elicitor task context —   #
+        # otherwise a leftover report-spec/plan Q&A session silently         #
+        # swallows the report run instead of executing it. See BACKLOG.md    #
+        # SS-1.                                                              #
         # ------------------------------------------------------------------ #
         _ctx_task     = (context or {}).get("task")
         _ctx_draft_id = (context or {}).get("draft_id")
+        if query_type_override == "report":
+            _ctx_task = None
+            _ctx_draft_id = None
+            draft_id = None
 
         if _ctx_task == "report_spec_elicitor" and _ctx_draft_id:
             from advisor.agents.report_spec_elicitor import get_report_spec_elicitor
@@ -484,7 +495,11 @@ class RAGSystem:
             if re.match(r'^(cancel|start\s+over|abandon)\b', _q):  return _rse.cancel(_ctx_draft_id)
             if re.match(r'^(discard)\b', _q):             return _rse.discard(_ctx_draft_id)
             if re.match(r'^(restart|redo\s+(q&a|questions))\b', _q): return _rse.restart_qa(_ctx_draft_id)
-            if re.search(r'\b(execute|run|go ahead|proceed)\b', _q):
+            # Bare "run" would also match "run report <other name>" (a request
+            # to run a *different*, named report, not this draft's spec) —
+            # require an object or "it" so that case falls through instead.
+            # See BACKLOG.md SS-2.
+            if re.search(r'\b(execute|run\s+(?:the\s+)?spec|run\s+it|go\s+ahead|proceed)\b', _q):
                 # Fetch page_size/format override from query payload if available
                 custom_params = {}
                 if page_size is not None:

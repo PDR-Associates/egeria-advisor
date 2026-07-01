@@ -895,6 +895,42 @@ async def get_report_doc(doc_id: str) -> Dict[str, Any]:
     return {"doc_id": doc_id, "content": content, "folder": folder}
 
 
+@app.get("/api/reports/docs/{doc_id}/export")
+async def export_report_doc(doc_id: str) -> Response:
+    """Download the full current content of a report spec document (inbox or outbox)."""
+    from fastapi import HTTPException
+    from advisor.report_spec_docs import get_report_spec_doc_manager
+    dm = get_report_spec_doc_manager()
+    content = dm.load(doc_id, include_trash=True)
+    if content is None:
+        raise HTTPException(status_code=404, detail=f"Report spec {doc_id!r} not found")
+    return Response(
+        content=content,
+        media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="{doc_id}.md"'},
+    )
+
+
+@app.post("/api/reports/specs/import")
+async def import_report_spec(body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Import an externally-written Report Spec markdown document as a new
+    managed spec in inbox. Mirrors POST /api/plans/import.
+    """
+    from advisor.report_spec_docs import get_report_spec_doc_manager
+    from fastapi import HTTPException
+    content = (body.get("content") or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content required")
+    title = (body.get("title") or "").strip() or None
+    dm = get_report_spec_doc_manager()
+    try:
+        doc_id = dm.import_document(content, title=title)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"status": "ok", "doc_id": doc_id, "folder": "inbox"}
+
+
 @app.put("/api/reports/docs/{doc_id}")
 async def update_report_doc(doc_id: str, body: Dict[str, str]) -> Dict[str, Any]:
     """Update report spec document content (called by canvas or manual save)."""

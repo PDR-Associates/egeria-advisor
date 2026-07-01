@@ -112,12 +112,34 @@ The `act_result` response dict should include `matched_spec_id` (populated when 
 | RS-4 | "Fork / Customize" entry point from sidebar (see IB-6) | open | Pre-populate elicitor from existing spec. |
 | RS-5 | Master-detail parameter inheritance model | deferred | Unresolved: do detail specs inherit content_filters / shape_defaults from master? |
 | RS-6 | Parameter profiles ("deep traversal", "quick lookup") | deferred | Named reusable parameter sets. |
+| RS-7 | Report spec import/export — feature parity with Plans | done | Added `ReportSpecDocumentManager.import_document()` (validates via `parse_report_spec_markdown`, raises `ValueError` on malformed content — `report_spec_docs.py`), `GET /api/reports/docs/{doc_id}/export` + `POST /api/reports/specs/import` (`app.py`, mirroring the Plans endpoints), and sidebar UI: "⇧ Import" button + modal in the Custom Specs header, "⤓" export button on inbox/outbox rows (`index.html`). |
 
 ---
 
 ## Vector Index Expansion
 
 See `egeria-workspaces-fs/BACKLOG.md` IX-1 through IX-5 for the full item list.
+
+---
+
+## Session & Interaction State
+
+Full design: `docs/design/SESSION_AND_INTERACTION_STATE.md`.
+
+Confirmed via code review (Jul 2026) that a user finishing one flow (report
+spec / plan draft) and switching to another (e.g. running a pre-built report
+from the sidebar) can leave the system acting on stale state from the
+previous flow. The `fix/report-selection-execution-rework` merge introduced
+a unified `_ctx` "authoritative task/phase state" object which is a real
+structural improvement, but did not close the gap — see SS-1.
+
+| # | Item | Status | Notes |
+|---|------|--------|-------|
+| SS-1 | Fix interaction-mode leak — report run doesn't clear active task context | done | `runReport()`'s `confirmRunReport()` and `setIntent()` now call `clearContext()` on mode switch (`index.html`); backend `_process_query` now clears `context.task`/`draft_id` unconditionally when `query_type_override == 'report'` (`rag_system.py:483-486`), covering both the context-task branches and the legacy `draft_id.startswith("draft_report_")` fallback. |
+| SS-2 | Tighten bare-word regex false positive in `report_spec_elicitor` context routing | done | `rag_system.py:498` — tightened to `run\s+(?:the\s+)?spec\|run\s+it` (mirrors the `plan_elicitor` block's `run\s+the\s+plan` fix). `run report X` no longer matches; `run it`/`run the spec`/`execute`/`go ahead`/`proceed` still do. |
+| SS-3 | Backend session store — session-scoped ephemeral interaction state | open | New `session_id`, minted client-side (UUID in `sessionStorage`, sent as `X-Session-Id` header), backend in-memory `Dict[session_id, SessionState]` (TTL-evicted). Needed because `user_id` scoping alone is insufficient — demo/shared accounts run multiple concurrent sessions under one `user_id`. Note: `session_id`/`user_id` already exist as params threaded through `_process_query` (`rag_system.py:464-465`) but only for metrics/observability — frontend never sends `session_id` today, and no storage manager uses it. |
+| SS-4 | Per-user artifact directory namespacing | open | `DraftManager`, `DocumentManager`, `PlanTemplateManager`, `SessionLogger` (all under `~/egeria-plans/`) and `ReportDraftManager`, `ReportSpecDocumentManager` (under `~/egeria-reports/`, added by the Report Spec Builder work — same unscoped pattern replicated) need `user_id`-scoped roots. Currently any client that knows/guesses a `draft_id` can act on another user's draft — no ownership check exists. |
+| SS-5 | Optimistic concurrency check for same-user concurrent draft edits | deferred | Two sessions of the same (demo) user editing the same draft. Spec already has `updated_at` — reject/warn a save if it moved since this session last read it. Not blocking SS-1 through SS-4. |
 
 ---
 

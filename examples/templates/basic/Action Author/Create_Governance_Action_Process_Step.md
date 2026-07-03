@@ -1,7 +1,7 @@
 ___
 
-## Create Governance Action
-> An executable action, or sequence of actions to support a governance requirement.
+## Create Governance Action Process Step
+> A description of a call to perform a step in a governance action process. This acts as a template when creating the appropriate engine action instance.
 
 ### Display Name
 >	**Input Required**: True
@@ -189,6 +189,36 @@ ___
 >	**Attribute Type**: Simple List
 
 >	**Description**: The authors.
+
+
+### Produced Guards
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple List
+
+>	**Description**: List of guards that this action type produces.
+
+>	**Alternative Labels**: Guards
+
+
+### Wait Time
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple Int
+
+>	**Description**: Minutes to wait before executing this action.
+
+>	**Default Value**: 0
+
+
+### Ignore Multiple Triggers
+>	**Input Required**: False
+
+>	**Attribute Type**: Bool
+
+>	**Description**: Only run this step once even if the process instance flow links to it multiple times.
+
+>	**Default Value**: false
 
 
 ___

@@ -1,7 +1,9 @@
 ___
 
-## Create DataHub
-> Create a DataHub entity - a collection of data assets that are availble for sharing, as long as the requester satisfies the requirements laid down by the data owner.
+## Create Data Sharing Request
+> The DataSharingRequest entity describes a request for data sharing. It is used to track the status of the request and gather the details of the request (such as the requested data specification) and the data sharing agreement and related resources.
+>
+>	**Alternative Names**: DataSharingRequest
 
 ### Display Name
 >	**Input Required**: True

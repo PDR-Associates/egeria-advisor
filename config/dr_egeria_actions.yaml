@@ -1274,6 +1274,53 @@ actions:
       - connect components
     requires: [Create Solution Component]
 
+  - name: Create Design Pattern
+    family: Solution Architect
+    intent_entity: design_pattern
+    aliases:
+      - design pattern
+      - pattern
+      - architecture pattern
+      - solution pattern
+    creates: design_pattern
+    container_for: [Link Nested Design Patterns, Link Specialized Design Patterns, Link Related Design Patterns]
+    narrative_template: >
+      Creates the design pattern — a reusable solution to a recurring
+      architectural problem, described in terms of its context, forces,
+      and consequences.
+
+  - name: Link Nested Design Patterns
+    family: Solution Architect
+    intent_entity: nested_design_pattern
+    aliases:
+      - nest pattern
+      - nested pattern
+      - nest design pattern
+      - link nested design patterns
+      - pattern hierarchy
+    requires: [Create Design Pattern]
+
+  - name: Link Specialized Design Patterns
+    family: Solution Architect
+    intent_entity: specialized_design_pattern
+    aliases:
+      - specialize pattern
+      - specialized pattern
+      - specialize design pattern
+      - link specialized design patterns
+    requires: [Create Design Pattern]
+
+  - name: Link Related Design Patterns
+    family: Solution Architect
+    intent_entity: related_design_pattern
+    aliases:
+      - relate pattern
+      - related pattern
+      - relate design pattern
+      - link related design patterns
+      - connect patterns
+    requires: [Create Design Pattern]
+
   # ── External Reference ────────────────────────────────────────────────────────
 
   - name: Create External Reference

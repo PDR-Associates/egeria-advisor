@@ -461,6 +461,29 @@ class GovernancePlanAgent:
         # Parse structured response from Dr.Egeria
         ex_success, ex_output, ex_val_errs, ex_exe_errs, ex_counts = _parse_dr_egeria_response(execution_output)
 
+        # Split Dr.Egeria's echoed output into refreshed command definitions
+        # (resolved GUID/Qualified Name etc., for re-editing) and materialized
+        # display content (report tables, Mermaid diagrams), instead of leaving
+        # them mixed together in one raw blob. Only the inbox (first-execution)
+        # path refreshes the Command Sequence in place today — see BACKLOG.md.
+        materialized_display = ""
+        try:
+            original_steps = self._parse_command_steps(command_section)
+            echoed_blocks, _provenance = _split_augmented_output(ex_output or "")
+            if original_steps and echoed_blocks:
+                new_command_md, materialized_display = self._rebuild_command_sequence(
+                    original_steps, echoed_blocks, ex_counts.get('detail', []),
+                )
+                if source_folder != "outbox":
+                    refreshed_plan_content = self._replace_command_section(plan_content, new_command_md)
+                    if not doc_manager.update(doc_id, refreshed_plan_content):
+                        logger.warning(
+                            f"GovernancePlanAgent.execute: could not refresh Command "
+                            f"Sequence for {doc_id!r} before moving to outbox"
+                        )
+        except Exception as exc:
+            logger.warning(f"GovernancePlanAgent.execute: could not split augmented output: {exc}")
+
         # Generate outcome section — pass structured data to reporter
         reporter = get_outcome_reporter()
         outcome_md = reporter.generate(
@@ -471,6 +494,7 @@ class GovernancePlanAgent:
             validation_errors=ex_val_errs,
             execution_errors=ex_exe_errs,
             commands_detail=ex_counts.get('detail', []),
+            materialized_display=materialized_display,
         )
 
         # Append raw Dr.Egeria output as a separate section so it's always available.
@@ -633,6 +657,125 @@ class GovernancePlanAgent:
             re.MULTILINE | re.DOTALL,
         )
         return m.group(1) if m else ""
+
+    @staticmethod
+    def _replace_command_section(plan_content: str, new_command_section_md: str) -> str:
+        """Replace the Command Sequence section's content with a refreshed version."""
+        new_content, n = re.subn(
+            r'^##\s+Command Sequence\s*\n(.*?)(?=^##\s+Outcome\b|\Z)',
+            lambda m: f"## Command Sequence\n\n{new_command_section_md}\n",
+            plan_content,
+            count=1,
+            flags=re.MULTILINE | re.DOTALL,
+        )
+        return new_content if n else plan_content
+
+    # Steps composed by _compose_command_block look like:
+    #   <!-- Step 1: Create Solution Blueprint
+    #        wrapped narrative text... -->
+    #   ## Create Solution Blueprint
+    _STEP_COMMENT_RE = re.compile(
+        r'<!--\s*Step\s+(\d+):\s*(.*?)-->\s*\n##\s+(.+?)\s*\n',
+        re.DOTALL,
+    )
+
+    @classmethod
+    def _parse_command_steps(cls, command_section: str) -> List[Dict[str, Any]]:
+        """Parse the original Command Sequence into ordered {step, action, narrative} dicts."""
+        steps: List[Dict[str, Any]] = []
+        for m in cls._STEP_COMMENT_RE.finditer(command_section):
+            step_num = int(m.group(1))
+            raw_comment = m.group(2)
+            action = m.group(3).strip()
+            # raw_comment is "<action>\n     <wrapped narrative>" — the compose
+            # side only ever inserts "\n     " as a chunk separator when wrapping,
+            # so removing it recovers the original narrative losslessly.
+            first_nl = raw_comment.find("\n")
+            narrative = (
+                raw_comment[first_nl + 1:].replace("\n     ", "").strip()
+                if first_nl != -1 else ""
+            )
+            steps.append({"step": step_num, "action": action, "narrative": narrative})
+        return steps
+
+    _FAILURE_STATUSES = frozenset(("failure", "failed"))
+    _VERB_FLIP_VERBS = frozenset(("Create", "Update"))
+
+    def _rebuild_command_sequence(
+        self,
+        original_steps: List[Dict[str, Any]],
+        echoed_blocks: List[Dict[str, Any]],
+        commands_detail: List[Dict[str, Any]],
+    ) -> Tuple[str, str]:
+        """
+        Build a refreshed Command Sequence from Dr.Egeria's echoed output, plus
+        the combined materialized display content (report/diagram output) for
+        the Outcome section — so re-editing a plan starts from the resolved
+        attributes (Qualified Name, GUID, etc.) rather than the original,
+        under-specified commands.
+
+        A Create->Update verb change from the echo is trusted only when
+        commands_detail confirms that step succeeded; a step marked failed
+        keeps its original verb, since a command that didn't run shouldn't
+        be treated as if it created the object.
+        """
+        by_step = {d.get("step"): d for d in (commands_detail or []) if d.get("step") is not None}
+
+        command_parts: List[str] = []
+        display_parts: List[str] = []
+
+        for i, orig in enumerate(original_steps):
+            step_num = orig["step"]
+            echoed = echoed_blocks[i] if i < len(echoed_blocks) else None
+
+            if echoed is None:
+                # Dr.Egeria didn't echo this step back (e.g. execution stopped
+                # early) — keep the original block unchanged.
+                command_parts.append(self._compose_command_block(
+                    {
+                        "action": orig["action"],
+                        "narrative": orig["narrative"],
+                        "params": {},
+                        "template_parsed": self._load_template(orig["action"]),
+                    },
+                    step_num,
+                ))
+                continue
+
+            final_action = orig["action"]
+            orig_verb = orig["action"].split(" ", 1)[0]
+            echoed_verb = echoed["action"].split(" ", 1)[0]
+            if orig_verb in self._VERB_FLIP_VERBS and echoed_verb in self._VERB_FLIP_VERBS:
+                detail = by_step.get(step_num)
+                status = str((detail or {}).get("status", "")).lower()
+                failed = status in self._FAILURE_STATUSES
+                if failed and echoed_verb != orig_verb:
+                    logger.warning(
+                        f"GovernancePlanAgent: Dr.Egeria echoed {echoed['action']!r} for "
+                        f"step {step_num} but commands_detail marks it failed "
+                        f"({status!r}) — keeping original verb {orig['action']!r}."
+                    )
+                else:
+                    final_action = echoed["action"]
+            # else: not a Create/Update-style command (e.g. View Report / Report /
+            # Link X) — keep the original action name rather than adopting any
+            # cosmetic rename Dr.Egeria's echo happens to use.
+
+            params = {k: v for k, v in echoed["fields"].items() if v and v != "None"}
+            command_parts.append(self._compose_command_block(
+                {
+                    "action": final_action,
+                    "narrative": orig["narrative"],
+                    "params": params,
+                    "template_parsed": self._load_template(final_action),
+                },
+                step_num,
+            ))
+
+            if echoed["display"]:
+                display_parts.append(f"**Step {step_num} — {orig['action']}:**\n\n{echoed['display']}")
+
+        return "\n".join(command_parts), "\n\n".join(display_parts)
 
     @staticmethod
     def _extract_status_from_outcome(outcome_md: str) -> str:
@@ -1765,6 +1908,66 @@ def _parse_dr_egeria_response(raw: str) -> "tuple[bool, str, list[dict], list[di
 
     # Plain text — Dr.Egeria ran but didn't return structured output yet
     return True, raw, [], [], {}
+
+
+def _split_augmented_output(ex_output: str) -> Tuple[List[Dict[str, Any]], str]:
+    """
+    Split Dr.Egeria's augmented execution output into per-command echo blocks
+    plus a trailing provenance note.
+
+    Each command is echoed back as a "## Action" block with resolved field
+    values. Some commands (e.g. View Report) also render display content —
+    that content always starts at the first bare "# " (H1) line inside the
+    block, with no other separator; everything before it is field data,
+    everything from it onward is materialized report/diagram output, not
+    part of the command definition.
+
+    Returns (blocks, provenance) where each block is:
+        {"action": str, "fields": {name: value}, "display": str}
+    """
+    if not ex_output or not ex_output.strip():
+        return [], ""
+
+    # Split off a trailing "## Provenance:" footer, if present.
+    provenance = ""
+    prov_m = re.search(r'^##\s+Provenance:?\s*\n(.*)\Z', ex_output, re.MULTILINE | re.DOTALL)
+    body = ex_output[:prov_m.start()] if prov_m else ex_output
+    if prov_m:
+        provenance = prov_m.group(1).strip()
+
+    blocks: List[Dict[str, Any]] = []
+    for part in re.split(r'(?m)^##\s+', body)[1:]:
+        lines = part.splitlines()
+        if not lines:
+            continue
+        action = lines[0].strip()
+        rest = "\n".join(lines[1:])
+
+        h1_m = re.search(r'^#(?!#)\s+.*$', rest, re.MULTILINE)
+        if h1_m:
+            fields_text = rest[:h1_m.start()]
+            display_text = rest[h1_m.start():].strip()
+        else:
+            fields_text = rest
+            display_text = ""
+
+        # Trim trailing "---" block separator(s) from the fields text.
+        fields_text = re.sub(r'(?:\n+-{3,}\s*)+\Z', '', fields_text).strip()
+        # ...and any trailing separator(s) left at the end of the display text
+        # (pyegeria sometimes emits more than one in a row before the next block).
+        display_text = re.sub(r'(?:\n+-{3,}\s*)+$', '', display_text).strip()
+
+        fields: Dict[str, str] = {}
+        for fp in re.split(r'(?m)^###\s+', fields_text)[1:]:
+            f_lines = fp.splitlines()
+            if not f_lines:
+                continue
+            f_name = f_lines[0].strip()
+            fields[f_name] = "\n".join(f_lines[1:]).strip()
+
+        blocks.append({"action": action, "fields": fields, "display": display_text})
+
+    return blocks, provenance
 
 
 def _build_raw_output_section(raw_output: str) -> str:

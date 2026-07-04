@@ -538,8 +538,8 @@ class RAGSystem:
             if re.match(r'^(restart|redo\s+(q&a|questions))\b', _q): return _gpa.restart_qa(_ctx_draft_id)
             _exec_m = re.search(r'\b(execute|run\s+the\s+plan|go\s+ahead|do\s+it|proceed)\b', _q)
             if _exec_m:
-                from advisor.governance_docs import get_document_manager
-                _dm = get_document_manager()
+                from advisor.governance_docs import get_doc_manager
+                _dm = get_doc_manager()
                 _spec_d = _dm.load(_ctx_draft_id) if hasattr(_dm, 'load') else None
                 if not _spec_d:
                     from advisor.governance_draft import get_draft_manager

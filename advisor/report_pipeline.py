@@ -266,6 +266,11 @@ class QuestionSpecIndex:
     def _build(self) -> None:
         """Build the index from JSON files + pyegeria registry. Called once under lock."""
         try:
+            # Ensure .env is loaded before huggingface_hub (pulled in by
+            # sentence_transformers) reads HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE
+            # from os.environ — it only reads them once, at import time.
+            from dotenv import load_dotenv
+            load_dotenv()
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:
             logger.warning(f"QuestionSpecIndex: sentence-transformers not available — {exc}. Semantic search disabled.")

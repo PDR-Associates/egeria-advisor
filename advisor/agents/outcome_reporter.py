@@ -277,8 +277,8 @@ class OutcomeReporter:
                     search_string=search_filter,
                     page_size=50,
                 )
-                if result and result.get("response"):
-                    results[spec] = result["response"]
+                if result:
+                    results[spec] = result
                     logger.info(f"OutcomeReporter: ran report {spec!r}")
                 else:
                     logger.debug(f"OutcomeReporter: report {spec!r} returned no content")

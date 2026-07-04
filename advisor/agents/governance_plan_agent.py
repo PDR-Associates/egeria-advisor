@@ -134,7 +134,7 @@ class GovernancePlanAgent:
 
     def save_as_template(self, draft_id: str, template_name: str) -> Dict[str, Any]:
         from advisor.governance_draft import get_draft_manager
-        from advisor.governance_docs import get_doc_manager
+        from advisor.governance_docs import get_doc_manager, strip_outcome_sections
         from advisor.plan_templates import get_template_manager
         dm = get_draft_manager()
         spec = dm.load(draft_id)
@@ -146,6 +146,7 @@ class GovernancePlanAgent:
         content = get_doc_manager().load(doc_id)
         if not content:
             return _error_result(draft_id, f"Plan document `{doc_id}` not found.")
+        content = strip_outcome_sections(content)
         stem = get_template_manager().save(template_name, content)
         return {
             "query": f"save as template {template_name}",

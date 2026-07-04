@@ -727,6 +727,49 @@ async def fork_plan(doc_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
     return {"status": "ok", "doc_id": new_doc_id, "forked_from": doc_id}
 
 
+@app.post("/api/plans/{doc_id}/save-as")
+async def save_plan_as(doc_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Save doc_id's current content (or a specific prior version) as a new,
+    independent plan — the specification only, no history (unlike fork,
+    which carries forward a Known Objects appendix and lineage note).
+    """
+    from advisor.governance_docs import get_doc_manager
+    from fastapi import HTTPException
+    title = (body.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title required")
+    version_file = body.get("version_file") or None
+    dm = get_doc_manager()
+    try:
+        new_doc_id = dm.save_as(doc_id, title, version_file=version_file)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return {"status": "ok", "doc_id": new_doc_id}
+
+
+@app.post("/api/plans/{doc_id}/save-as-template")
+async def save_plan_as_template(doc_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Save any existing plan document (inbox or outbox) as a named, reusable
+    template — a starting point for new plans, not itself executable.
+    Outcome/execution history is stripped first.
+    """
+    from advisor.governance_docs import get_doc_manager, strip_outcome_sections
+    from advisor.plan_templates import get_template_manager
+    from fastapi import HTTPException
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name required")
+    dm = get_doc_manager()
+    content = dm.load(doc_id, include_trash=True)
+    if not content:
+        raise HTTPException(status_code=404, detail=f"Plan {doc_id!r} not found")
+    content = strip_outcome_sections(content)
+    stem = get_template_manager().save(name, content)
+    return {"status": "ok", "template": stem}
+
+
 @app.delete("/api/plans/{doc_id}")
 async def delete_plan(doc_id: str) -> Dict[str, Any]:
     """Move a plan document from inbox or outbox to trash (saves a version first). Reversible."""

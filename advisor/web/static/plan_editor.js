@@ -810,10 +810,15 @@ async function pedShowVersionHistory() {
   const list  = document.getElementById('ped-version-list');
   panel.classList.remove('hidden');
   list.innerHTML =
-    `<div class="flex items-center justify-between mb-2 pb-1 border-b border-slate-700">` +
-    `<span class="text-slate-500">Fork from the current content:</span>` +
+    `<div class="flex items-center justify-between mb-2 pb-1 border-b border-slate-700 gap-2">` +
+    `<span class="text-slate-500">From the current content:</span>` +
+    `<span class="flex gap-1 shrink-0">` +
+    `<button class="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 transition-colors" ` +
+    `title="Save the specification only — no history, no reference data" ` +
+    `onclick="openSaveAsModal('${_esc(_ped.doc_id)}', null, '${_esc(_pedTitle())}')">Save As</button>` +
     `<button class="px-2 py-0.5 rounded bg-violet-700 hover:bg-violet-600 text-white transition-colors" ` +
-    `onclick="openForkModal('${_esc(_ped.doc_id)}', null, '${_esc(_pedTitle())}')">Fork Current</button></div>` +
+    `onclick="openForkModal('${_esc(_ped.doc_id)}', null, '${_esc(_pedTitle())}')">Fork Current</button>` +
+    `</span></div>` +
     `<div id="ped-version-list-items">Loading…</div>`;
   const itemsEl = document.getElementById('ped-version-list-items');
   try {
@@ -827,8 +832,9 @@ async function pedShowVersionHistory() {
       row.className = 'flex items-center gap-2 py-0.5';
       // Format timestamp "20260614_170122" → "2026-06-14 17:01:22"
       const ts = v.timestamp.replace(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$/, '$1-$2-$3 $4:$5:$6');
+      const desc = v.description ? `<span class="text-slate-500 italic ml-1">— ${_esc(v.description)}</span>` : '';
       row.innerHTML =
-        `<span class="flex-1 text-slate-300">${ts || v.version_file}</span>` +
+        `<span class="flex-1 text-slate-300">${ts || v.version_file}${desc}</span>` +
         `<button class="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 transition-colors" ` +
         `onclick="pedRestoreVersion('${_esc(v.version_file)}')">Restore</button>` +
         `<button class="px-2 py-0.5 rounded bg-violet-800 hover:bg-violet-700 text-white transition-colors" ` +

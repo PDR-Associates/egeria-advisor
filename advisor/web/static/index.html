@@ -494,6 +494,26 @@
   </div>
 </div>
 
+<!-- ── Save as Template modal ──────────────────────────────────────────────── -->
+<div id="save-as-template-modal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50" onclick="if(event.target===this)closeSaveAsTemplateModal()">
+  <div class="bg-slate-800 border border-slate-600 rounded-xl p-5 w-[28rem] shadow-2xl">
+    <h3 class="text-sm font-semibold text-slate-200 mb-3">Save as Template</h3>
+    <p class="text-xs text-slate-400 mb-3">
+      Saves this plan's narrative and Command Sequence as a reusable, named template —
+      a starting point for new plans. Field values become <code>{{placeholders}}</code>;
+      execution history is not carried forward. Templates are not themselves executable.
+    </p>
+    <input id="save-as-template-name-input" type="text" placeholder="Template name"
+      class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-slate-200
+             focus:outline-none focus:border-violet-500 mb-4"
+      onkeydown="if(event.key==='Enter')confirmSaveAsTemplate(); if(event.key==='Escape')closeSaveAsTemplateModal();" />
+    <div class="flex gap-2 justify-end">
+      <button onclick="closeSaveAsTemplateModal()" class="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>
+      <button onclick="confirmSaveAsTemplate()" class="px-4 py-1.5 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition-colors">Save Template</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Import Report Spec modal ────────────────────────────────────────────── -->
 <div id="import-report-spec-modal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50" onclick="if(event.target===this)closeReportSpecImportModal()">
   <div class="bg-slate-800 border border-slate-600 rounded-xl p-5 w-[32rem] shadow-2xl">
@@ -2237,9 +2257,9 @@ function initCanvasResize() {
   });
 }
 
-// ── Title prompt modal — shared by Builder (new plan) and Fork (copy plan) ──────
-let _titleModalMode = 'builder';   // 'builder' | 'fork'
-let _titleModalCtx  = null;        // fork context: { doc_id, version_file }
+// ── Title prompt modal — shared by Builder (new plan), Fork (copy plan), and Save As ──
+let _titleModalMode = 'builder';   // 'builder' | 'fork' | 'save-as'
+let _titleModalCtx  = null;        // fork/save-as context: { doc_id, version_file }
 
 function openBuilderModal() {
   _titleModalMode = 'builder';
@@ -2261,6 +2281,20 @@ function openForkModal(doc_id, version_file, defaultTitle) {
     'Creates an independent plan seeded from this one. Objects it already created ' +
     '(by Qualified Name / GUID) are carried forward for reference — editing the fork never changes the original.';
   document.getElementById('builder-title-modal-submit').textContent = 'Fork';
+  const input = document.getElementById('builder-title-input');
+  input.value = defaultTitle ? `${defaultTitle} (copy)` : '';
+  document.getElementById('builder-title-modal').classList.remove('hidden');
+  setTimeout(() => { input.focus(); input.select(); }, 50);
+}
+
+function openSaveAsModal(doc_id, version_file, defaultTitle) {
+  _titleModalMode = 'save-as';
+  _titleModalCtx  = { doc_id, version_file };
+  document.getElementById('builder-title-modal-heading').textContent = 'Save As New Plan';
+  document.getElementById('builder-title-modal-desc').textContent =
+    'Saves the specification (narrative + Command Sequence) as a new, independent plan. ' +
+    'No execution history, outcome, or reference data is carried forward — just a clean copy.';
+  document.getElementById('builder-title-modal-submit').textContent = 'Save As';
   const input = document.getElementById('builder-title-input');
   input.value = defaultTitle ? `${defaultTitle} (copy)` : '';
   document.getElementById('builder-title-modal').classList.remove('hidden');
@@ -2314,6 +2348,8 @@ async function submitTitleModal() {
   if (!title) return;
   if (_titleModalMode === 'fork') {
     await _doFork(title);
+  } else if (_titleModalMode === 'save-as') {
+    await _doSaveAs(title);
   } else {
     await createBuilderPlan(title);
   }
@@ -2361,6 +2397,25 @@ async function _doFork(title) {
   }
 }
 
+async function _doSaveAs(title) {
+  const ctx = _titleModalCtx;
+  closeBuilderModal();
+  try {
+    const r = await fetch(`/api/plans/${encodeURIComponent(ctx.doc_id)}/save-as`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      body: JSON.stringify({ title, version_file: ctx.version_file || null }),
+    });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
+    const result = await r.json();
+    await loadPlans();
+    openPlanEditor(result.doc_id, null);
+    _showToast(`Saved as "${title}" — opened in the editor.`);
+  } catch (e) {
+    alert(`Could not save plan: ${e.message}`);
+  }
+}
+
 // ── Import Plan modal ─────────────────────────────────────────────────────────
 function openImportModal() {
   document.getElementById('import-content-input').value = '';
@@ -2397,6 +2452,37 @@ async function submitImportPlan() {
     _showToast('Plan imported — review and Validate before executing.');
   } catch (e) {
     alert(`Could not import plan: ${e.message}`);
+  }
+}
+
+// ── Save as Template modal ─────────────────────────────────────────────────────
+let _saveAsTemplateDocId = null;
+
+function openSaveAsTemplateModal(doc_id) {
+  _saveAsTemplateDocId = doc_id;
+  document.getElementById('save-as-template-name-input').value = '';
+  document.getElementById('save-as-template-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('save-as-template-name-input').focus(), 50);
+}
+function closeSaveAsTemplateModal() {
+  document.getElementById('save-as-template-modal').classList.add('hidden');
+  _saveAsTemplateDocId = null;
+}
+async function confirmSaveAsTemplate() {
+  const name = document.getElementById('save-as-template-name-input').value.trim();
+  if (!name) return;
+  const doc_id = _saveAsTemplateDocId;
+  closeSaveAsTemplateModal();
+  try {
+    const r = await fetch(`/api/plans/${encodeURIComponent(doc_id)}/save-as-template`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      body: JSON.stringify({ name }),
+    });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
+    _showToast(`Saved as template "${name}" — use it via "start from template ${name}".`);
+  } catch (e) {
+    alert(`Could not save template: ${e.message}`);
   }
 }
 
@@ -3023,6 +3109,11 @@ function initReportCanvasResize() {
       class="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 text-xs font-semibold transition-colors"
       title="Download this plan as a markdown file">
       ⤓ Export
+    </button>
+    <button onclick="openSaveAsTemplateModal(_ped.doc_id)"
+      class="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 text-xs font-semibold transition-colors"
+      title="Save this plan as a reusable, non-executable template">
+      Save as Template
     </button>
     <button onclick="closePlanEditor()"
       class="ml-2 px-2 py-1 rounded hover:bg-slate-700 text-slate-400 hover:text-slate-100 text-sm transition-colors">

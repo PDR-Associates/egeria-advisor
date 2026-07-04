@@ -1,7 +1,7 @@
 ___
 
-## Create DataHub
-> Create a DataHub entity - a collection of data assets that are availble for sharing, as long as the requester satisfies the requirements laid down by the data owner.
+## Create Governance Action Type
+> A description of a call to a governance engine that acts as a template when creating the appropriate engine action instance.
 
 ### Display Name
 >	**Input Required**: True
@@ -11,6 +11,76 @@ ___
 >	**Description**: The common name of an element.
 
 >	**Alternative Labels**: "Term Name"
+
+
+### Domain Identifier
+>	**Input Required**: False
+
+>	**Attribute Type**: Enum
+
+>	**Description**: String representing the governance domain. All domains is ALL
+
+>	**Valid Values**: ALL,DATA,PRIVACY,SECURITY,IT_INFRASTRUCTURE,SOFTWARE_DEVELOPMENT,CORPORATE,ASSET_MANAGEMENT,OTHER
+
+>	**Default Value**: ALL
+
+
+### Implications
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple List
+
+>	**Description**: List of implications.
+
+
+### Importance
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple
+
+>	**Description**: Importance of the definition.
+
+
+### Outcomes
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple List
+
+>	**Description**: List of desired outcomes.
+
+
+### Results
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple List
+
+>	**Description**: A list of expected results.
+
+
+### Summary
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple
+
+>	**Description**: A short summary of the element's meaning or purpose.
+
+
+### Usage
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple
+
+>	**Description**: The usage guidance for this element — how it is intended to be used in context.
+
+
+### Implementation Description
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple
+
+>	**Description**: Describes how this governance control is implemented.
+
+>	**Alternative Labels**: Implementation
 
 
 ### Journal Entry
@@ -67,12 +137,12 @@ ___
 >	**Default Value**: ACTIVE
 
 
-### Purpose
+### Scope
 >	**Input Required**: False
 
 >	**Attribute Type**: Simple
 
->	**Description**: The purpose of this collection — a short description of why it exists or what it is used for.
+>	**Description**: Scope of the definition or element.
 
 
 ### Search Keywords
@@ -119,6 +189,26 @@ ___
 >	**Attribute Type**: Simple List
 
 >	**Description**: The authors.
+
+
+### Produced Guards
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple List
+
+>	**Description**: List of guards that this action type produces.
+
+>	**Alternative Labels**: Guards
+
+
+### Wait Time
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple Int
+
+>	**Description**: Minutes to wait before executing this action.
+
+>	**Default Value**: 0
 
 
 ### Effective From

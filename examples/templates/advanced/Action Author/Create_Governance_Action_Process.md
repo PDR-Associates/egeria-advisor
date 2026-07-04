@@ -1,7 +1,7 @@
 ___
 
-## Create DataSharingRequest
-> The DataSharingRequest entity describes a request for data sharing. It is used to track the status of the request and gather the details of the request (such as the requested data specification) and the data sharing agreement and related resources.
+## Create Governance Action Process
+> A process implemented by chained engine actions that call governance services.
 
 ### Display Name
 >	**Input Required**: True
@@ -11,6 +11,76 @@ ___
 >	**Description**: The common name of an element.
 
 >	**Alternative Labels**: "Term Name"
+
+
+### Domain Identifier
+>	**Input Required**: False
+
+>	**Attribute Type**: Enum
+
+>	**Description**: String representing the governance domain. All domains is ALL
+
+>	**Valid Values**: ALL,DATA,PRIVACY,SECURITY,IT_INFRASTRUCTURE,SOFTWARE_DEVELOPMENT,CORPORATE,ASSET_MANAGEMENT,OTHER
+
+>	**Default Value**: ALL
+
+
+### Implications
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple List
+
+>	**Description**: List of implications.
+
+
+### Importance
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple
+
+>	**Description**: Importance of the definition.
+
+
+### Outcomes
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple List
+
+>	**Description**: List of desired outcomes.
+
+
+### Results
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple List
+
+>	**Description**: A list of expected results.
+
+
+### Summary
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple
+
+>	**Description**: A short summary of the element's meaning or purpose.
+
+
+### Usage
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple
+
+>	**Description**: The usage guidance for this element — how it is intended to be used in context.
+
+
+### Implementation Description
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple
+
+>	**Description**: Describes how this governance control is implemented.
+
+>	**Alternative Labels**: Implementation
 
 
 ### Journal Entry
@@ -67,12 +137,12 @@ ___
 >	**Default Value**: ACTIVE
 
 
-### Purpose
+### Scope
 >	**Input Required**: False
 
 >	**Attribute Type**: Simple
 
->	**Description**: The purpose of this collection — a short description of why it exists or what it is used for.
+>	**Description**: Scope of the definition or element.
 
 
 ### Search Keywords

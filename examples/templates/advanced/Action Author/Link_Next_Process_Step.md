@@ -1,22 +1,22 @@
 ___
 
-## Detach Regulator
-> Detaches a regulator (usually an organization) from a regulation.
+## Link Next Process Step
+> Links two governance action process steps together, defining the flow from one step to the next.
 
-### Regulation
+### Governance Action Process Step
 >	**Input Required**: True
 
 >	**Attribute Type**: Reference Name
 
->	**Description**: The Regulation entity to link to the certification type.
+>	**Description**: The governance action process step to link.
 
 
-### Regulator
+### Next Governance Action Process Step
 >	**Input Required**: True
 
 >	**Attribute Type**: Reference Name
 
->	**Description**: The Regulator (usually an organization) to link to the regulation.
+>	**Description**: The next governance action process step in the flow.
 
 
 ### Label
@@ -43,6 +43,24 @@ ___
 >	**Attribute Type**: Simple
 
 >	**Description**: A description.
+
+
+### Mandatory Guard
+>	**Input Required**: False
+
+>	**Attribute Type**: Bool
+
+>	**Description**: Whether this guard must be present for the step to be actioned.
+
+>	**Default Value**: false
+
+
+### Guard
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple
+
+>	**Description**: Informational value passed to the process step; the step's behaviour may vary depending on the guard it receives.
 
 
 ### Effective From

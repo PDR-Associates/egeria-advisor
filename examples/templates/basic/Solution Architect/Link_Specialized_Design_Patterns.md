@@ -1,22 +1,22 @@
 ___
 
-## Detach Regulator
-> Detaches a regulator (usually an organization) from a regulation.
+## Link Specialized Design Patterns
+> Nest specialized design patterns.
 
-### Regulation
+### General Design Pattern
 >	**Input Required**: True
 
 >	**Attribute Type**: Reference Name
 
->	**Description**: The Regulation entity to link to the certification type.
+>	**Description**: General  Design Pattern for linking.
 
 
-### Regulator
+### Specialized Design Pattern
 >	**Input Required**: True
 
 >	**Attribute Type**: Reference Name
 
->	**Description**: The Regulator (usually an organization) to link to the regulation.
+>	**Description**: Specialized Design Pattern for linking.
 
 
 ### Label

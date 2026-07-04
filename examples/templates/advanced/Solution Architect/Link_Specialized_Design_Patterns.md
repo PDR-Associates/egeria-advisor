@@ -1,22 +1,22 @@
 ___
 
-## Link Regulator
-> Links a regulator (usually an organization) to a regulation using the Regulator relationship.
+## Link Specialized Design Patterns
+> Nest specialized design patterns.
 
-### Regulation
+### General Design Pattern
 >	**Input Required**: True
 
 >	**Attribute Type**: Reference Name
 
->	**Description**: The Regulation entity to link to the certification type.
+>	**Description**: General  Design Pattern for linking.
 
 
-### Regulator
+### Specialized Design Pattern
 >	**Input Required**: True
 
 >	**Attribute Type**: Reference Name
 
->	**Description**: The Regulator (usually an organization) to link to the regulation.
+>	**Description**: Specialized Design Pattern for linking.
 
 
 ### Label
@@ -43,22 +43,6 @@ ___
 >	**Attribute Type**: Simple
 
 >	**Description**: A description.
-
-
-### Description
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: A description.
-
-
-### Scope
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: Scope of the definition or element.
 
 
 ### Effective From
@@ -141,22 +125,6 @@ ___
 >	**Description**: Is the element at end2 an anchor to end1?
 
 >	**Default Value**: false
-
-
-### Effective From
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: The beginning of when an element is viewable.
-
-
-### Effective To
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: The ending time at which an element is visible.
 
 
 ___

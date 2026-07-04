@@ -5,6 +5,14 @@ This module provides GPU-accelerated embedding generation using sentence-transfo
 Supports batch processing and caching for efficient vector generation.
 """
 
+from dotenv import load_dotenv
+
+# Must run before `sentence_transformers` (and the `huggingface_hub` it pulls in)
+# is imported below — huggingface_hub reads HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE/
+# HF_HUB_DOWNLOAD_TIMEOUT from os.environ once, at import time, so .env values
+# have to already be real process env vars by then.
+load_dotenv()
+
 import torch
 from sentence_transformers import SentenceTransformer
 from typing import List, Union, Optional

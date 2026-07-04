@@ -66,6 +66,7 @@ class OutcomeReporter:
         validation_errors: list | None = None,
         execution_errors: list | None = None,
         commands_detail: list | None = None,
+        materialized_display: str = "",
     ) -> str:
         """
         Generate a markdown Outcome section for the plan document.
@@ -81,6 +82,11 @@ class OutcomeReporter:
             execution_errors:       Per-command runtime failures [{step,command,message}].
             commands_detail:        Per-command detail from MCP [{step,command,status,guid,
                                     qualified_name,display_name,message}].
+            materialized_display:   Report/diagram output already split out per-step by
+                                    GovernancePlanAgent's augmented-output parser (preferred
+                                    over the regex-heuristic extraction below when given —
+                                    it's precise about which content is display-only vs.
+                                    part of a command's own field definitions).
 
         Returns:
             Markdown string for the Outcome section (ready to append to the plan).
@@ -137,6 +143,7 @@ class OutcomeReporter:
             commands_failed=commands_failed,
             validation_errors=validation_errors or [],
             execution_errors=execution_errors or [],
+            materialized_display=materialized_display,
         )
 
     # ---------------------------------------------------------------------- #
@@ -277,8 +284,8 @@ class OutcomeReporter:
                     search_string=search_filter,
                     page_size=50,
                 )
-                if result and result.get("response"):
-                    results[spec] = result["response"]
+                if result:
+                    results[spec] = result
                     logger.info(f"OutcomeReporter: ran report {spec!r}")
                 else:
                     logger.debug(f"OutcomeReporter: report {spec!r} returned no content")
@@ -480,6 +487,7 @@ class OutcomeReporter:
         commands_failed: int | None = None,
         validation_errors: list | None = None,
         execution_errors: list | None = None,
+        materialized_display: str = "",
     ) -> str:
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -556,17 +564,21 @@ class OutcomeReporter:
                 lines += rows
                 lines.append("")
 
-        # Extract the meaningful parts of Dr.Egeria output (Mermaid diagrams, report
-        # tables) for inline display. The full raw output is stored separately in the
-        # plan document as a collapsible "## Dr.Egeria Execution Output" section.
-        dr_output = _extract_report_sections(execution_output)
+        # Materialized report/diagram output (Mermaid diagrams, report tables) for
+        # inline display. Prefer the precise per-step split from
+        # GovernancePlanAgent._rebuild_command_sequence() when available; fall back
+        # to the regex-heuristic extraction over the whole raw blob otherwise (e.g.
+        # older callers, or a step whose command echo didn't parse). The full raw
+        # output is stored separately in the plan document as a collapsible
+        # "## Dr.Egeria Execution Output" section.
+        dr_output = materialized_display or _extract_report_sections(execution_output)
         if dr_output:
             lines += ["### Execution Results", "", dr_output, ""]
 
         if report_results:
             lines += ["### Verification Reports", ""]
             for spec, content in report_results.items():
-                lines += [f"#### {spec}", "", content.strip()[:1500], ""]
+                lines += [f"#### {spec}", "", _safe_truncate(content.strip(), 3000), ""]
 
         return "\n".join(lines)
 
@@ -586,6 +598,31 @@ _FIELD_HEADER_RE = re.compile(
 
 _MERMAID_BLOCK_RE = re.compile(r'```mermaid.*?```', re.DOTALL)
 _TABLE_LINE_RE = re.compile(r'^\|.+\|', re.MULTILINE)
+
+
+def _safe_truncate(content: str, limit: int) -> str:
+    """
+    Truncate `content` to at most `limit` characters without cutting a fenced
+    code block (```mermaid, ```json, etc.) in half — a naive [:limit] slice can
+    leave an unclosed fence, which breaks Mermaid rendering and swallows the
+    rest of the document as literal code in most markdown renderers.
+    """
+    if len(content) <= limit:
+        return content
+
+    truncated = content[:limit]
+    if truncated.count("```") % 2 == 1:
+        # We cut inside an open fence. Prefer extending to the fence's actual
+        # close; if the fence never closes in the source, back off to before
+        # it started instead.
+        close_idx = content.find("```", limit)
+        if close_idx != -1:
+            end = content.find("\n", close_idx)
+            truncated = content[: (end if end != -1 else close_idx + 3) + 1]
+        else:
+            truncated = truncated[: truncated.rfind("```")]
+
+    return truncated.rstrip() + "\n\n*(truncated)*"
 
 
 def _extract_report_sections(execution_output: str) -> str:

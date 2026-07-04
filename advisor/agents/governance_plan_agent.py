@@ -1910,6 +1910,20 @@ def _parse_dr_egeria_response(raw: str) -> "tuple[bool, str, list[dict], list[di
     return True, raw, [], [], {}
 
 
+def _strip_trailing_separators(text: str) -> str:
+    """
+    Strip one or more trailing "---" block separators (with surrounding blank
+    lines). Loops a simple, anchored, non-ambiguous regex rather than using a
+    single quantified group of overlapping character classes (e.g.
+    `(?:\\n+-{3,}\\s*)+`) — that shape causes catastrophic backtracking on
+    inputs with several separators in a row, hanging for many seconds or more.
+    """
+    text = text.rstrip()
+    while re.search(r'\n-{3,}\Z', text) or re.match(r'^-{3,}\Z', text):
+        text = re.sub(r'\n?-{3,}\Z', '', text).rstrip()
+    return text
+
+
 def _split_augmented_output(ex_output: str) -> Tuple[List[Dict[str, Any]], str]:
     """
     Split Dr.Egeria's augmented execution output into per-command echo blocks
@@ -1951,11 +1965,10 @@ def _split_augmented_output(ex_output: str) -> Tuple[List[Dict[str, Any]], str]:
             fields_text = rest
             display_text = ""
 
-        # Trim trailing "---" block separator(s) from the fields text.
-        fields_text = re.sub(r'(?:\n+-{3,}\s*)+\Z', '', fields_text).strip()
-        # ...and any trailing separator(s) left at the end of the display text
-        # (pyegeria sometimes emits more than one in a row before the next block).
-        display_text = re.sub(r'(?:\n+-{3,}\s*)+$', '', display_text).strip()
+        # Trim trailing "---" block separator(s) — pyegeria sometimes emits more
+        # than one in a row before the next block.
+        fields_text = _strip_trailing_separators(fields_text)
+        display_text = _strip_trailing_separators(display_text)
 
         fields: Dict[str, str] = {}
         for fp in re.split(r'(?m)^###\s+', fields_text)[1:]:

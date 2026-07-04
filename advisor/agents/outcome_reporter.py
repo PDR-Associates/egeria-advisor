@@ -566,7 +566,7 @@ class OutcomeReporter:
         if report_results:
             lines += ["### Verification Reports", ""]
             for spec, content in report_results.items():
-                lines += [f"#### {spec}", "", content.strip()[:1500], ""]
+                lines += [f"#### {spec}", "", _safe_truncate(content.strip(), 3000), ""]
 
         return "\n".join(lines)
 
@@ -586,6 +586,31 @@ _FIELD_HEADER_RE = re.compile(
 
 _MERMAID_BLOCK_RE = re.compile(r'```mermaid.*?```', re.DOTALL)
 _TABLE_LINE_RE = re.compile(r'^\|.+\|', re.MULTILINE)
+
+
+def _safe_truncate(content: str, limit: int) -> str:
+    """
+    Truncate `content` to at most `limit` characters without cutting a fenced
+    code block (```mermaid, ```json, etc.) in half — a naive [:limit] slice can
+    leave an unclosed fence, which breaks Mermaid rendering and swallows the
+    rest of the document as literal code in most markdown renderers.
+    """
+    if len(content) <= limit:
+        return content
+
+    truncated = content[:limit]
+    if truncated.count("```") % 2 == 1:
+        # We cut inside an open fence. Prefer extending to the fence's actual
+        # close; if the fence never closes in the source, back off to before
+        # it started instead.
+        close_idx = content.find("```", limit)
+        if close_idx != -1:
+            end = content.find("\n", close_idx)
+            truncated = content[: (end if end != -1 else close_idx + 3) + 1]
+        else:
+            truncated = truncated[: truncated.rfind("```")]
+
+    return truncated.rstrip() + "\n\n*(truncated)*"
 
 
 def _extract_report_sections(execution_output: str) -> str:

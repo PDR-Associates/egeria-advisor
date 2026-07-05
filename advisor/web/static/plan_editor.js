@@ -74,7 +74,13 @@ function _parsePlanMarkdown(md) {
   let outcome   = '';
 
   if (cmdSeqMatch) {
+    // Strip the "---" separator(s) the composer places right before "##
+    // Command Sequence" — _synthesizePlanMarkdownFrom() re-adds its own, so
+    // leaving one here would duplicate it (and duplicate again on every
+    // subsequent parse→save round-trip). Loops in case a document already
+    // accumulated more than one from before this fix.
     narrative = md.slice(0, cmdSeqMatch.index).trimEnd();
+    while (/\n-{3,}$/.test(narrative)) narrative = narrative.replace(/\n-{3,}$/, '').trimEnd();
     let rest  = md.slice(cmdSeqMatch.index + cmdSeqMatch[0].length).trimStart();
 
     const outcomeRe = /^##\s+Outcome\s*$/m;
@@ -127,14 +133,14 @@ function _parsePlanMarkdown(md) {
 }
 
 // ── Markdown synthesis ─────────────────────────────────────────────────────────
+// _synthesizePlanMarkdownFrom is pure (no _ped/DOM access) so PlanCanvas can
+// reuse it to write the same document format once a plan has been generated,
+// instead of maintaining a second markdown serializer. See BACKLOG.md.
 
-function _synthesizePlanMarkdown() {
-  const narrativeEl = document.getElementById('ped-narrative');
-  const narrative   = narrativeEl ? narrativeEl.value : _ped.narrative;
-
+function _synthesizePlanMarkdownFrom(narrative, commands, mode, outcome) {
   let md = narrative + '\n\n---\n\n## Command Sequence\n\n';
 
-  for (const cmd of _ped.commands) {
+  for (const cmd of commands) {
     const commentLines = [cmd.action];
     if (cmd.rationale) commentLines.push('     ' + cmd.rationale);
     md += `<!-- Step ${cmd.stepNum}: ${commentLines.join('\n')} -->\n`;
@@ -142,25 +148,25 @@ function _synthesizePlanMarkdown() {
 
     for (const f of cmd.fields) {
       // In basic mode, skip empty optional fields to keep the document clean
-      if (_ped.mode === 'basic' && !f.required && !f.value.trim()) continue;
-      const val = f.value.trim() || '<!-- TODO: fill in -->';
+      if (mode === 'basic' && !f.required && !(f.value || '').trim()) continue;
+      const val = (f.value || '').trim() || '<!-- TODO: fill in -->';
       md += `### ${f.name}\n${val}\n\n`;
     }
     md += '---\n\n';
 
     // Inter-command narrative (postNotes) — free text between commands
-    const notes = _getPostNotes(cmd);
-    if (notes.trim()) md += notes.trim() + '\n\n';
+    const notes = (cmd.postNotes || '').trim();
+    if (notes) md += notes + '\n\n';
   }
 
-  if (_ped.outcome) md += '\n' + _ped.outcome;
+  if (outcome) md += '\n' + outcome;
   return md;
 }
 
-// Read postNotes from DOM (textarea) if rendered, else from state
-function _getPostNotes(cmd) {
-  const ta = document.querySelector(`[data-notes-for="${cmd.stepNum}"]`);
-  return ta ? ta.value : (cmd.postNotes || '');
+function _synthesizePlanMarkdown() {
+  const narrativeEl = document.getElementById('ped-narrative');
+  const narrative   = narrativeEl ? narrativeEl.value : _ped.narrative;
+  return _synthesizePlanMarkdownFrom(narrative, _ped.commands, _ped.mode, _ped.outcome);
 }
 
 // ── Template field loading ─────────────────────────────────────────────────────

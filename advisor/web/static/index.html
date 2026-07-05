@@ -322,6 +322,10 @@
       <button id="pcanvas-generate-btn"
         class="px-2 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition-colors"
         title="Generate full Plan Document">Generate Plan</button>
+      <button id="pcanvas-save-btn"
+        class="hidden px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 text-xs font-semibold transition-colors disabled:opacity-40"
+        title="Save changes to the plan document" disabled
+        onclick="PlanCanvas.save()">Save</button>
       <button id="pcanvas-validate-btn"
         class="hidden px-2 py-1 rounded bg-sky-800 hover:bg-sky-700 text-white text-xs font-semibold transition-colors"
         title="Validate the plan without executing it">✓ Validate</button>

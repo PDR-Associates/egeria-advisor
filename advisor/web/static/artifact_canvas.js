@@ -87,7 +87,10 @@ class ArtifactCanvas {
     try {
       this._data  = await this._opts.adapter.fetch(id);
       this._items = this._data.items || [];
-    } catch { return; }
+    } catch (e) {
+      console.error('ArtifactCanvas: refresh failed for', id, e);
+      return;
+    }
     this._render();
   }
 

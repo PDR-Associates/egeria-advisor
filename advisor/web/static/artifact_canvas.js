@@ -45,13 +45,19 @@ class ArtifactCanvas {
     this._items       = [];     // adapter-normalised item list
     this._dragSrcIdx  = null;
     this._mode        = localStorage.getItem('ea_canvas_mode') || 'basic';
+    // When opts.autoSync === false, edits mark the canvas dirty instead of
+    // persisting immediately — the caller must call flush() explicitly
+    // (e.g. from a Save button). Used for document-backed artifacts where
+    // every "sync" is a full-document PUT, not a cheap incremental PATCH.
+    this._dirty       = false;
   }
 
   // ── Public API ─────────────────────────────────────────────────────────────
 
   async open(id) {
     if (!id) return;
-    this._id = id;
+    this._id    = id;
+    this._dirty = false;
     this._fieldsCache = {}; // Clear cache on opening new draft
     const { panelId, handleId } = this._opts;
     const panel  = document.getElementById(panelId);
@@ -420,11 +426,24 @@ class ArtifactCanvas {
 
   async _sync() {
     if (!this._id) return;
+    if (this._opts.autoSync === false) {
+      this._dirty = true;
+      if (this._opts.onDirtyChange) this._opts.onDirtyChange(true);
+      return;
+    }
     try {
       await this._opts.adapter.patch(this._id, this._items);
     } catch (e) {
       console.warn('ArtifactCanvas: sync failed', e);
     }
+  }
+
+  /** Explicitly persist pending edits — for autoSync: false canvases (e.g. a Save button). */
+  async flush() {
+    if (!this._id || !this._dirty) return;
+    await this._opts.adapter.patch(this._id, this._items);
+    this._dirty = false;
+    if (this._opts.onDirtyChange) this._opts.onDirtyChange(false);
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────

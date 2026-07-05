@@ -1865,6 +1865,19 @@ def _extract_balanced_json(raw: str) -> str:
 _agent: Optional[GovernancePlanAgent] = None
 
 
+# Signals that a plain-text (non-JSON-envelope) Dr.Egeria response is actually
+# a failure — an unhandled exception/crash on Dr.Egeria's side (e.g. a
+# database error) comes back as plain text too, not the expected envelope, and
+# must never be reported as a successful execution just because it didn't
+# parse as JSON. See BACKLOG.md.
+_PLAIN_TEXT_FAILURE_RE = re.compile(
+    r'\b(traceback|exception|error|failed|failure|no space left|'
+    r'connection refused|could not connect|permission denied|'
+    r'internal server error|out of memory)\b',
+    re.IGNORECASE,
+)
+
+
 def _parse_dr_egeria_response(raw: str) -> "tuple[bool, str, list[dict], list[dict], dict]":
     """
     Parse Dr.Egeria's output from validate/process directives.
@@ -1874,7 +1887,8 @@ def _parse_dr_egeria_response(raw: str) -> "tuple[bool, str, list[dict], list[di
 
     Handles two formats:
     1. JSON envelope: {"success": bool, "output": "...", "validation_errors": [...], ...}
-    2. Plain text: treat as success with no structured errors.
+    2. Plain text: scanned for common failure signals before being trusted as
+       success — see _PLAIN_TEXT_FAILURE_RE.
     """
     if not raw or not raw.strip():
         return False, "(no output returned by Dr.Egeria)", [], [], {}
@@ -1907,7 +1921,16 @@ def _parse_dr_egeria_response(raw: str) -> "tuple[bool, str, list[dict], list[di
             }
             return success, output, val_errs, exe_errs, counts
 
-    # Plain text — Dr.Egeria ran but didn't return structured output yet
+    # Plain text — no structured envelope. Don't blindly assume success: an
+    # unhandled crash on Dr.Egeria's side (e.g. the Postgres "no space left on
+    # device" case) also comes back as plain text, not JSON, and reporting
+    # that as a successful execution would be actively misleading.
+    if _PLAIN_TEXT_FAILURE_RE.search(raw):
+        return (
+            False, raw, [],
+            [{"step": "?", "command": "?", "message": raw.strip()[:500]}],
+            {},
+        )
     return True, raw, [], [], {}
 
 

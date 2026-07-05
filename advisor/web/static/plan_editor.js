@@ -320,6 +320,44 @@ function _renderCommandCards() {
   _ped.commands.forEach((cmd, idx) => container.appendChild(_buildCommandCard(cmd, idx)));
 }
 
+// ── Drag-and-drop reorder ────────────────────────────────────────────────────
+let _pedDragSrcIdx = null;
+
+function _renumberCommands() {
+  _ped.commands.forEach((cmd, i) => { cmd.stepNum = i + 1; });
+}
+
+function _attachCommandDragHandlers(card, idx) {
+  card.addEventListener('dragstart', e => {
+    _pedDragSrcIdx = idx;
+    card.classList.add('opacity-40');
+    e.dataTransfer.effectAllowed = 'move';
+  });
+  card.addEventListener('dragend', () => {
+    card.classList.remove('opacity-40');
+    document.querySelectorAll('.ped-cmd-card').forEach(c => c.classList.remove('ped-dragging-over'));
+  });
+  card.addEventListener('dragover', e => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    document.querySelectorAll('.ped-cmd-card').forEach(c => c.classList.remove('ped-dragging-over'));
+    if (_pedDragSrcIdx !== idx) card.classList.add('ped-dragging-over');
+  });
+  card.addEventListener('dragleave', () => card.classList.remove('ped-dragging-over'));
+  card.addEventListener('drop', e => {
+    e.preventDefault();
+    card.classList.remove('ped-dragging-over');
+    if (_pedDragSrcIdx === null || _pedDragSrcIdx === idx) return;
+    const [moved] = _ped.commands.splice(_pedDragSrcIdx, 1);
+    _ped.commands.splice(idx, 0, moved);
+    _pedDragSrcIdx = null;
+    _renumberCommands();
+    _ped.dirty = true;
+    _renderCommandCards();
+    _updateStatusBar();
+  });
+}
+
 function _buildCommandCard(cmd, idx) {
   const card = document.createElement('div');
   card.className = 'ped-cmd-card bg-slate-800 rounded-lg border border-slate-700 overflow-hidden';
@@ -330,11 +368,17 @@ function _buildCommandCard(cmd, idx) {
   hdr.className = 'flex items-center gap-2 px-4 py-2 cursor-pointer select-none border-b border-slate-700';
   hdr.style.background = '#1e293b';
   hdr.innerHTML =
+    (_ped.isInbox ? `<span class="text-slate-600 cursor-grab shrink-0" title="Drag to reorder">⠿</span>` : '') +
     `<span class="text-xs font-semibold text-violet-400 shrink-0">Step ${cmd.stepNum}</span>` +
     `<span class="text-sm font-semibold text-slate-100 flex-1">${_esc(cmd.action)}</span>` +
     `<span class="ped-cmd-status text-xs"></span>` +
     `<span class="ped-cmd-toggle text-slate-500 text-xs ml-1">▼</span>`;
   card.appendChild(hdr);
+
+  if (_ped.isInbox) {
+    card.draggable = true;
+    _attachCommandDragHandlers(card, idx);
+  }
 
   // ── Rationale subtitle ───────────────────────────────────────────────
   if (cmd.rationale) {

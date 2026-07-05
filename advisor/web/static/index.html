@@ -2207,7 +2207,11 @@ function initCanvasButtons() {
   });
   document.getElementById('pcanvas-execute-btn').addEventListener('click', async () => {
     const docId = document.getElementById('pcanvas-title')?.dataset?.docId;
-    if (!docId) return;
+    if (!docId) {
+      console.warn('Execute clicked but pcanvas-title has no doc_id — canvas may not have finished loading, or refresh() failed silently (check console above for "ArtifactCanvas: refresh failed").');
+      alert('No plan document is loaded in the canvas yet — try closing and reopening it.');
+      return;
+    }
     // Direct REST call (not a faked chat message) — "execute the plan X" sent
     // as chat text can be intercepted by context-based routing (e.g. this
     // very Canvas session) and mistaken for a plan-modification instruction

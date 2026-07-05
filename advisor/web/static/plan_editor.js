@@ -802,6 +802,7 @@ async function _executePlanDoc() {
   if (!confirm(`Execute plan ${_ped.doc_id}?\nThis will submit all commands to Dr.Egeria.`)) return;
   if (_ped.dirty) await _savePlanEdits();
   const docId = _ped.doc_id;
+  const draftId = _ped.draft_id;
   closePlanEditor();
   // Direct REST call (not a faked chat message) — "execute the plan X" sent
   // as chat text can be intercepted by context-based routing (e.g. an open
@@ -811,7 +812,8 @@ async function _executePlanDoc() {
   try {
     const r = await fetch(`/api/plans/${encodeURIComponent(docId)}/execute`, {
       method: 'POST',
-      headers: Auth.getHeaders(),
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      body: JSON.stringify({ draft_id: draftId || null }),
     });
     const result = await r.json();
     if (typeof appendMessage === 'function') {

@@ -928,10 +928,24 @@ async function loadPlans() {
       execBtn.className = 'shrink-0 px-1.5 py-0.5 rounded bg-violet-800 hover:bg-violet-700 text-white text-xs transition-colors';
       execBtn.title = 'Execute this plan';
       execBtn.textContent = '▶';
-      execBtn.onclick = e => {
+      execBtn.onclick = async e => {
         e.stopPropagation();
-        appendMessage('you', `execute the plan ${plan.doc_id}`);
-        submitQuery(`execute the plan ${plan.doc_id}`, {});
+        // Direct REST call (not a faked chat message) — see BACKLOG.md.
+        execBtn.disabled = true; execBtn.textContent = '…';
+        appendMessage('you', `Execute plan ${plan.doc_id}`);
+        try {
+          const r = await fetch(`/api/plans/${encodeURIComponent(plan.doc_id)}/execute`, {
+            method: 'POST',
+            headers: Auth.getHeaders(),
+          });
+          const result = await r.json();
+          const wrap = appendMessage('assistant', result.response || '', {});
+          _applyQueryResult(`execute the plan ${plan.doc_id}`, result, wrap);
+        } catch (err) {
+          appendMessage('assistant', `**Error:** ${err.message}`);
+        } finally {
+          execBtn.disabled = false; execBtn.textContent = '▶';
+        }
       };
       row.appendChild(execBtn);
     } else if (folder === 'outbox') {
@@ -2191,11 +2205,29 @@ function initCanvasButtons() {
       btn.textContent = '✓ Validate';
     }
   });
-  document.getElementById('pcanvas-execute-btn').addEventListener('click', () => {
+  document.getElementById('pcanvas-execute-btn').addEventListener('click', async () => {
     const docId = document.getElementById('pcanvas-title')?.dataset?.docId;
     if (!docId) return;
-    appendMessage('you', `execute the plan ${docId}`);
-    submitQuery(`execute the plan ${docId}`, {});
+    // Direct REST call (not a faked chat message) — "execute the plan X" sent
+    // as chat text can be intercepted by context-based routing (e.g. this
+    // very Canvas session) and mistaken for a plan-modification instruction
+    // instead of an execute command. See BACKLOG.md.
+    const btn = document.getElementById('pcanvas-execute-btn');
+    btn.disabled = true; btn.textContent = '⏳ Executing…';
+    appendMessage('you', `Execute plan ${docId}`);
+    try {
+      const r = await fetch(`/api/plans/${encodeURIComponent(docId)}/execute`, {
+        method: 'POST',
+        headers: Auth.getHeaders(),
+      });
+      const result = await r.json();
+      const wrap = appendMessage('assistant', result.response || '', {});
+      _applyQueryResult(`execute the plan ${docId}`, result, wrap);
+    } catch (e) {
+      appendMessage('assistant', `**Error:** ${e.message}`);
+    } finally {
+      btn.disabled = false; btn.textContent = '▶ Execute';
+    }
   });
 }
 

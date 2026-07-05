@@ -801,9 +801,26 @@ async function _validatePlanDoc() {
 async function _executePlanDoc() {
   if (!confirm(`Execute plan ${_ped.doc_id}?\nThis will submit all commands to Dr.Egeria.`)) return;
   if (_ped.dirty) await _savePlanEdits();
+  const docId = _ped.doc_id;
   closePlanEditor();
-  if (typeof appendMessage === 'function') appendMessage('you', `execute the plan ${_ped.doc_id}`);
-  if (typeof submitQuery   === 'function') submitQuery(`execute the plan ${_ped.doc_id}`, { intent_override: 'command' });
+  // Direct REST call (not a faked chat message) — "execute the plan X" sent
+  // as chat text can be intercepted by context-based routing (e.g. an open
+  // Plan Canvas session for the same plan) and mistaken for a plan-
+  // modification instruction instead of an execute command. See BACKLOG.md.
+  if (typeof appendMessage === 'function') appendMessage('you', `Execute plan ${docId}`);
+  try {
+    const r = await fetch(`/api/plans/${encodeURIComponent(docId)}/execute`, {
+      method: 'POST',
+      headers: Auth.getHeaders(),
+    });
+    const result = await r.json();
+    if (typeof appendMessage === 'function') {
+      const wrap = appendMessage('assistant', result.response || '', {});
+      if (typeof _applyQueryResult === 'function') _applyQueryResult(`execute the plan ${docId}`, result, wrap);
+    }
+  } catch (e) {
+    if (typeof appendMessage === 'function') appendMessage('assistant', `**Error:** ${e.message}`);
+  }
 }
 
 // Kept for sidebar retry button compatibility (plan_editor.js is not the caller there)

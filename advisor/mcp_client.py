@@ -350,11 +350,26 @@ class MCPClient:
             "method": method,
             "params": params
         }
-        
+
+        # subprocess.Popen's stdin/stdout are plain blocking streams — run the
+        # write and each readline() in a thread executor rather than calling
+        # them directly here. Calling blocking I/O straight from an async def
+        # freezes the event loop thread itself, which silently defeats
+        # invoke_tool()'s asyncio.wait_for() timeout: wait_for can only act at
+        # an actual await/cancellation point, and there isn't one while the
+        # thread is stuck inside readline(). Without this, an MCP server that
+        # never writes a response hangs this call forever regardless of the
+        # configured timeout.
+        loop = asyncio.get_event_loop()
+
         # Send request
         request_json = json.dumps(request) + "\n"
-        self.process.stdin.write(request_json)
-        self.process.stdin.flush()
+
+        def _write() -> None:
+            self.process.stdin.write(request_json)
+            self.process.stdin.flush()
+
+        await loop.run_in_executor(None, _write)
 
         # Read response — the MCP server may emit non-JSON lines to stdout
         # (startup messages, warnings, debug output) before the JSON-RPC response.
@@ -362,7 +377,7 @@ class MCPClient:
         accumulated = ""
         max_bytes = 4 * 1024 * 1024  # 4 MB safety cap
         while True:
-            line = self.process.stdout.readline()
+            line = await loop.run_in_executor(None, self.process.stdout.readline)
             if not line:
                 raise MCPConnectionError("No response from MCP server")
             accumulated += line

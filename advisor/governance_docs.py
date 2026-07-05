@@ -121,6 +121,74 @@ def _replace_title(content: str, new_title: str) -> str:
     return f"# {new_title}\n\n" + content
 
 
+_VERSION_NOTE_RE = re.compile(r'^<!--\s*version_note:\s*(.*?)\s*-->\n')
+
+
+def describe_changes(old_content: str, new_content: str) -> str:
+    """
+    Best-effort, non-specific summary of what changed between two versions of
+    a plan document — good enough to show next to a version snapshot, not a
+    real diff. Compares H2 ("## ...") blocks positionally and names which ones
+    differ, drilling into the single differing H3 ("### ...") field when
+    there's exactly one changed field in an otherwise-identical block.
+    """
+    if old_content.strip() == new_content.strip():
+        return "No changes"
+
+    old_blocks = re.split(r'(?m)^##\s+', old_content)
+    new_blocks = re.split(r'(?m)^##\s+', new_content)
+
+    changes: List[str] = []
+    if old_blocks[0].strip() != new_blocks[0].strip():
+        changes.append("title/purpose changed")
+
+    for i in range(1, max(len(old_blocks), len(new_blocks))):
+        ob = old_blocks[i] if i < len(old_blocks) else None
+        nb = new_blocks[i] if i < len(new_blocks) else None
+        if ob is None:
+            changes.append(f"{nb.splitlines()[0].strip()} added")
+            continue
+        if nb is None:
+            changes.append(f"{ob.splitlines()[0].strip()} removed")
+            continue
+        if ob.strip() == nb.strip():
+            continue
+        name = ob.splitlines()[0].strip()
+        of = re.split(r'(?m)^###\s+', ob)
+        nf = re.split(r'(?m)^###\s+', nb)
+        changed_fields = []
+        for j in range(1, max(len(of), len(nf))):
+            ofj = of[j] if j < len(of) else ""
+            nfj = nf[j] if j < len(nf) else ""
+            if ofj.strip() != nfj.strip():
+                changed_fields.append((nfj or ofj).splitlines()[0].strip())
+        if len(changed_fields) == 1:
+            changes.append(f"{name}: {changed_fields[0]} changed")
+        else:
+            changes.append(f"{name} changed")
+
+    if not changes:
+        return "Minor formatting changes"
+    if len(changes) > 3:
+        return f"{len(changes)} sections changed"
+    return "; ".join(changes)
+
+
+def strip_outcome_sections(content: str) -> str:
+    """
+    Return content with the Outcome/Execution-Output sections (and any
+    "Outcome (Run N)" re-run sections) removed — just the narrative +
+    Command Sequence. Shared by fork(), save_as(), and "mark as template",
+    since none of those should carry execution history forward.
+    """
+    return re.sub(
+        r'\n\n---\n\n## Outcome\b.*',
+        '',
+        content,
+        flags=re.DOTALL,
+    ).rstrip()
+
+
 # ---------------------------------------------------------------------------
 # DocumentManager
 # ---------------------------------------------------------------------------
@@ -262,18 +330,30 @@ class DocumentManager:
         if not path.exists():
             logger.warning(f"DocumentManager.update: {doc_id!r} not in inbox")
             return False
-        self._save_version(doc_id, path.read_text(encoding="utf-8"))
+        self._save_version(doc_id, path.read_text(encoding="utf-8"), new_content=content)
         path.write_text(content, encoding="utf-8")
         logger.info(f"DocumentManager: updated {path}")
         return True
 
-    def _save_version(self, doc_id: str, content: str) -> None:
-        """Write a timestamped backup of doc_id to versions/."""
+    def _save_version(self, doc_id: str, content: str, new_content: Optional[str] = None) -> None:
+        """
+        Write a timestamped backup of doc_id to versions/.
+
+        new_content, when given, is what content is about to be replaced
+        with — used to compute a short, best-effort "what changed" note
+        (describe_changes()) stored as a leading HTML comment in the version
+        file. Omit it when there's nothing meaningful to diff against (e.g.
+        backing up before a delete).
+        """
         original_doc_id = re.sub(r'_executed_\d{8}_\d{6}$', '', doc_id)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         ver_path = self._paths["versions"] / f"{original_doc_id}_v{ts}.md"
         try:
-            ver_path.write_text(content, encoding="utf-8")
+            final = content
+            if new_content is not None:
+                note = describe_changes(content, new_content)
+                final = f"<!-- version_note: {note} -->\n{content}"
+            ver_path.write_text(final, encoding="utf-8")
             logger.debug(f"DocumentManager: saved version {ver_path.name}")
         except Exception as exc:
             logger.warning(f"DocumentManager: version save failed: {exc}")
@@ -287,19 +367,28 @@ class DocumentManager:
             # Extract the timestamp portion from the filename stem
             stem = md.stem  # e.g. "20260614_165841_..._v20260614_170122"
             ts_part = stem.rsplit("_v", 1)[-1] if "_v" in stem else ""
+            description = ""
+            try:
+                m = _VERSION_NOTE_RE.match(md.read_text(encoding="utf-8"))
+                if m:
+                    description = m.group(1)
+            except Exception:
+                pass
             entries.append({
                 "version_file": md.name,
                 "timestamp": ts_part,
                 "path": str(md),
+                "description": description,
             })
         return entries
 
     def load_version(self, doc_id: str, version_file: str) -> Optional[str]:
-        """Load content from a specific version file."""
+        """Load content from a specific version file (the version_note comment, if any, stripped)."""
         original_doc_id = re.sub(r'_executed_\d{8}_\d{6}$', '', doc_id)
         ver_path = self._paths["versions"] / version_file
         if ver_path.exists() and ver_path.stem.startswith(original_doc_id):
-            return ver_path.read_text(encoding="utf-8")
+            content = ver_path.read_text(encoding="utf-8")
+            return _VERSION_NOTE_RE.sub('', content, count=1)
         logger.warning(f"DocumentManager.load_version: {version_file!r} not found or wrong doc_id")
         return None
 
@@ -324,7 +413,7 @@ class DocumentManager:
             for name in (doc_id, original_doc_id):
                 existing = self._paths[folder] / f"{name}.md"
                 if existing.exists():
-                    self._save_version(name, existing.read_text(encoding="utf-8"))
+                    self._save_version(name, existing.read_text(encoding="utf-8"), new_content=content)
                     existing.unlink()
 
         inbox_path.write_text(content, encoding="utf-8")
@@ -362,12 +451,7 @@ class DocumentManager:
         known_objects = _parse_known_objects(source_content)
 
         # Keep narrative + Command Sequence; drop everything from the Outcome separator onward
-        stripped = re.sub(
-            r'\n\n---\n\n## Outcome\b.*',
-            '',
-            source_content,
-            flags=re.DOTALL,
-        ).rstrip()
+        stripped = strip_outcome_sections(source_content)
 
         appendix = f"\n\n**Forked from:** `{doc_id}` @ {lineage_ts}\n"
         if known_objects:
@@ -388,6 +472,34 @@ class DocumentManager:
             f"DocumentManager: forked {doc_id!r} (version={version_file}) -> {new_doc_id!r} "
             f"({len(known_objects)} known object(s) carried forward)"
         )
+        return new_doc_id
+
+    def save_as(self, doc_id: str, new_title: str, version_file: Optional[str] = None) -> str:
+        """
+        Save doc_id's current content (or a specific prior version) as a new,
+        independent plan under new_title — the specification only, with no
+        history: no Outcome/Execution-Output sections, no Known Objects
+        appendix, no "Forked from" lineage note. Unlike fork(), the result
+        looks exactly like a freshly-authored plan.
+
+        Returns the new doc_id.
+        """
+        if version_file:
+            source_content = self.load_version(doc_id, version_file)
+        else:
+            source_content = self.load(doc_id, include_trash=True)
+
+        if source_content is None:
+            raise ValueError(
+                f"Could not load source content for save_as "
+                f"(doc_id={doc_id!r}, version_file={version_file!r})"
+            )
+
+        stripped = strip_outcome_sections(source_content)
+
+        new_content = _replace_title(stripped, new_title)
+        new_doc_id = self.create(new_title, new_content)
+        logger.info(f"DocumentManager: saved {doc_id!r} as new plan {new_doc_id!r} (no history carried)")
         return new_doc_id
 
     def move_to_outbox(self, doc_id: str, outcome_content: str) -> Optional[str]:
@@ -427,7 +539,6 @@ class DocumentManager:
             return False
 
         original = outbox_path.read_text(encoding="utf-8")
-        self._save_version(doc_id, original)
 
         run_number = len(re.findall(r'^##\s+Outcome\b', original, re.MULTILINE)) + 1
         section = outcome_content.strip()
@@ -441,6 +552,7 @@ class DocumentManager:
             )
 
         final = original.rstrip() + "\n\n---\n\n" + section + "\n"
+        self._save_version(doc_id, original, new_content=final)
         outbox_path.write_text(final, encoding="utf-8")
         logger.info(f"DocumentManager: appended re-run outcome (run {run_number}) to {doc_id}")
         return True
@@ -463,14 +575,9 @@ class DocumentManager:
             return None
         content = outbox_path.read_text(encoding="utf-8")
         # Strip the outcome section (everything from the separator before ## Outcome onward)
-        stripped = re.sub(
-            r'\n\n---\n\n## Outcome\b.*',
-            '',
-            content,
-            flags=re.DOTALL,
-        )
-        self._save_version(original_doc_id, content)
-        inbox_path.write_text(stripped.rstrip() + "\n", encoding="utf-8")
+        stripped = strip_outcome_sections(content)
+        self._save_version(original_doc_id, content, new_content=stripped + "\n")
+        inbox_path.write_text(stripped + "\n", encoding="utf-8")
         outbox_path.unlink()
         logger.info(f"DocumentManager: moved {doc_id} from outbox back to inbox as {original_doc_id}")
         return original_doc_id

@@ -74,7 +74,13 @@ function _parsePlanMarkdown(md) {
   let outcome   = '';
 
   if (cmdSeqMatch) {
+    // Strip the "---" separator(s) the composer places right before "##
+    // Command Sequence" — _synthesizePlanMarkdownFrom() re-adds its own, so
+    // leaving one here would duplicate it (and duplicate again on every
+    // subsequent parse→save round-trip). Loops in case a document already
+    // accumulated more than one from before this fix.
     narrative = md.slice(0, cmdSeqMatch.index).trimEnd();
+    while (/\n-{3,}$/.test(narrative)) narrative = narrative.replace(/\n-{3,}$/, '').trimEnd();
     let rest  = md.slice(cmdSeqMatch.index + cmdSeqMatch[0].length).trimStart();
 
     const outcomeRe = /^##\s+Outcome\s*$/m;
@@ -127,14 +133,14 @@ function _parsePlanMarkdown(md) {
 }
 
 // ── Markdown synthesis ─────────────────────────────────────────────────────────
+// _synthesizePlanMarkdownFrom is pure (no _ped/DOM access) so PlanCanvas can
+// reuse it to write the same document format once a plan has been generated,
+// instead of maintaining a second markdown serializer. See BACKLOG.md.
 
-function _synthesizePlanMarkdown() {
-  const narrativeEl = document.getElementById('ped-narrative');
-  const narrative   = narrativeEl ? narrativeEl.value : _ped.narrative;
-
+function _synthesizePlanMarkdownFrom(narrative, commands, mode, outcome) {
   let md = narrative + '\n\n---\n\n## Command Sequence\n\n';
 
-  for (const cmd of _ped.commands) {
+  for (const cmd of commands) {
     const commentLines = [cmd.action];
     if (cmd.rationale) commentLines.push('     ' + cmd.rationale);
     md += `<!-- Step ${cmd.stepNum}: ${commentLines.join('\n')} -->\n`;
@@ -142,25 +148,25 @@ function _synthesizePlanMarkdown() {
 
     for (const f of cmd.fields) {
       // In basic mode, skip empty optional fields to keep the document clean
-      if (_ped.mode === 'basic' && !f.required && !f.value.trim()) continue;
-      const val = f.value.trim() || '<!-- TODO: fill in -->';
+      if (mode === 'basic' && !f.required && !(f.value || '').trim()) continue;
+      const val = (f.value || '').trim() || '<!-- TODO: fill in -->';
       md += `### ${f.name}\n${val}\n\n`;
     }
     md += '---\n\n';
 
     // Inter-command narrative (postNotes) — free text between commands
-    const notes = _getPostNotes(cmd);
-    if (notes.trim()) md += notes.trim() + '\n\n';
+    const notes = (cmd.postNotes || '').trim();
+    if (notes) md += notes + '\n\n';
   }
 
-  if (_ped.outcome) md += '\n' + _ped.outcome;
+  if (outcome) md += '\n' + outcome;
   return md;
 }
 
-// Read postNotes from DOM (textarea) if rendered, else from state
-function _getPostNotes(cmd) {
-  const ta = document.querySelector(`[data-notes-for="${cmd.stepNum}"]`);
-  return ta ? ta.value : (cmd.postNotes || '');
+function _synthesizePlanMarkdown() {
+  const narrativeEl = document.getElementById('ped-narrative');
+  const narrative   = narrativeEl ? narrativeEl.value : _ped.narrative;
+  return _synthesizePlanMarkdownFrom(narrative, _ped.commands, _ped.mode, _ped.outcome);
 }
 
 // ── Template field loading ─────────────────────────────────────────────────────
@@ -320,6 +326,44 @@ function _renderCommandCards() {
   _ped.commands.forEach((cmd, idx) => container.appendChild(_buildCommandCard(cmd, idx)));
 }
 
+// ── Drag-and-drop reorder ────────────────────────────────────────────────────
+let _pedDragSrcIdx = null;
+
+function _renumberCommands() {
+  _ped.commands.forEach((cmd, i) => { cmd.stepNum = i + 1; });
+}
+
+function _attachCommandDragHandlers(card, idx) {
+  card.addEventListener('dragstart', e => {
+    _pedDragSrcIdx = idx;
+    card.classList.add('opacity-40');
+    e.dataTransfer.effectAllowed = 'move';
+  });
+  card.addEventListener('dragend', () => {
+    card.classList.remove('opacity-40');
+    document.querySelectorAll('.ped-cmd-card').forEach(c => c.classList.remove('ped-dragging-over'));
+  });
+  card.addEventListener('dragover', e => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    document.querySelectorAll('.ped-cmd-card').forEach(c => c.classList.remove('ped-dragging-over'));
+    if (_pedDragSrcIdx !== idx) card.classList.add('ped-dragging-over');
+  });
+  card.addEventListener('dragleave', () => card.classList.remove('ped-dragging-over'));
+  card.addEventListener('drop', e => {
+    e.preventDefault();
+    card.classList.remove('ped-dragging-over');
+    if (_pedDragSrcIdx === null || _pedDragSrcIdx === idx) return;
+    const [moved] = _ped.commands.splice(_pedDragSrcIdx, 1);
+    _ped.commands.splice(idx, 0, moved);
+    _pedDragSrcIdx = null;
+    _renumberCommands();
+    _ped.dirty = true;
+    _renderCommandCards();
+    _updateStatusBar();
+  });
+}
+
 function _buildCommandCard(cmd, idx) {
   const card = document.createElement('div');
   card.className = 'ped-cmd-card bg-slate-800 rounded-lg border border-slate-700 overflow-hidden';
@@ -330,11 +374,17 @@ function _buildCommandCard(cmd, idx) {
   hdr.className = 'flex items-center gap-2 px-4 py-2 cursor-pointer select-none border-b border-slate-700';
   hdr.style.background = '#1e293b';
   hdr.innerHTML =
+    (_ped.isInbox ? `<span class="text-slate-600 cursor-grab shrink-0" title="Drag to reorder">⠿</span>` : '') +
     `<span class="text-xs font-semibold text-violet-400 shrink-0">Step ${cmd.stepNum}</span>` +
     `<span class="text-sm font-semibold text-slate-100 flex-1">${_esc(cmd.action)}</span>` +
     `<span class="ped-cmd-status text-xs"></span>` +
     `<span class="ped-cmd-toggle text-slate-500 text-xs ml-1">▼</span>`;
   card.appendChild(hdr);
+
+  if (_ped.isInbox) {
+    card.draggable = true;
+    _attachCommandDragHandlers(card, idx);
+  }
 
   // ── Rationale subtitle ───────────────────────────────────────────────
   if (cmd.rationale) {
@@ -810,10 +860,15 @@ async function pedShowVersionHistory() {
   const list  = document.getElementById('ped-version-list');
   panel.classList.remove('hidden');
   list.innerHTML =
-    `<div class="flex items-center justify-between mb-2 pb-1 border-b border-slate-700">` +
-    `<span class="text-slate-500">Fork from the current content:</span>` +
+    `<div class="flex items-center justify-between mb-2 pb-1 border-b border-slate-700 gap-2">` +
+    `<span class="text-slate-500">From the current content:</span>` +
+    `<span class="flex gap-1 shrink-0">` +
+    `<button class="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 transition-colors" ` +
+    `title="Save the specification only — no history, no reference data" ` +
+    `onclick="openSaveAsModal('${_esc(_ped.doc_id)}', null, '${_esc(_pedTitle())}')">Save As</button>` +
     `<button class="px-2 py-0.5 rounded bg-violet-700 hover:bg-violet-600 text-white transition-colors" ` +
-    `onclick="openForkModal('${_esc(_ped.doc_id)}', null, '${_esc(_pedTitle())}')">Fork Current</button></div>` +
+    `onclick="openForkModal('${_esc(_ped.doc_id)}', null, '${_esc(_pedTitle())}')">Fork Current</button>` +
+    `</span></div>` +
     `<div id="ped-version-list-items">Loading…</div>`;
   const itemsEl = document.getElementById('ped-version-list-items');
   try {
@@ -827,8 +882,9 @@ async function pedShowVersionHistory() {
       row.className = 'flex items-center gap-2 py-0.5';
       // Format timestamp "20260614_170122" → "2026-06-14 17:01:22"
       const ts = v.timestamp.replace(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$/, '$1-$2-$3 $4:$5:$6');
+      const desc = v.description ? `<span class="text-slate-500 italic ml-1">— ${_esc(v.description)}</span>` : '';
       row.innerHTML =
-        `<span class="flex-1 text-slate-300">${ts || v.version_file}</span>` +
+        `<span class="flex-1 text-slate-300">${ts || v.version_file}${desc}</span>` +
         `<button class="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 transition-colors" ` +
         `onclick="pedRestoreVersion('${_esc(v.version_file)}')">Restore</button>` +
         `<button class="px-2 py-0.5 rounded bg-violet-800 hover:bg-violet-700 text-white transition-colors" ` +

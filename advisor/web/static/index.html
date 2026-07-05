@@ -936,7 +936,8 @@ async function loadPlans() {
         try {
           const r = await fetch(`/api/plans/${encodeURIComponent(plan.doc_id)}/execute`, {
             method: 'POST',
-            headers: Auth.getHeaders(),
+            headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+            body: JSON.stringify({ draft_id: plan.draft_id || null }),
           });
           const result = await r.json();
           const wrap = appendMessage('assistant', result.response || '', {});
@@ -2222,7 +2223,8 @@ function initCanvasButtons() {
     try {
       const r = await fetch(`/api/plans/${encodeURIComponent(docId)}/execute`, {
         method: 'POST',
-        headers: Auth.getHeaders(),
+        headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+        body: JSON.stringify({ draft_id: _ctx?.draft_id || null }),
       });
       const result = await r.json();
       const wrap = appendMessage('assistant', result.response || '', {});

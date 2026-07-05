@@ -546,7 +546,9 @@ class RAGSystem:
                     _spec_d = get_draft_manager().load(_ctx_draft_id)
                 if _spec_d and _spec_d.get("doc_id"):
                     try:
-                        result = get_governance_plan_agent().execute(_spec_d["doc_id"], perspective=perspective)
+                        result = get_governance_plan_agent().execute(
+                            _spec_d["doc_id"], perspective=perspective, draft_id=_ctx_draft_id,
+                        )
                         result.setdefault("routing_agent", "governance_plan_agent")
                         result["next_context"] = None
                         return result

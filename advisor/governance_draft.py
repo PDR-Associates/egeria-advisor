@@ -133,6 +133,23 @@ class DraftManager:
         spec["updated_at"] = time.time()
         self._write(spec)
 
+    def update_doc_id(self, draft_id: str, new_doc_id: str) -> bool:
+        """
+        Update a draft's doc_id — e.g. after execution moves the plan from
+        inbox to outbox under a new, timestamp-suffixed id. Without this,
+        resuming a draft whose plan has since been executed hands back a
+        doc_id that no longer exists anywhere. See BACKLOG.md.
+
+        Returns True if the draft was found and updated.
+        """
+        spec = self.load(draft_id)
+        if spec is None:
+            return False
+        spec["doc_id"] = new_doc_id
+        self.save(spec)
+        logger.info(f"DraftManager: updated {draft_id!r}.doc_id -> {new_doc_id!r}")
+        return True
+
     def delete(self, draft_id: str) -> bool:
         """Delete a draft. Returns True if found and deleted."""
         p = self._path(draft_id)

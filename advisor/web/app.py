@@ -638,7 +638,7 @@ async def save_plan(doc_id: str, body: Dict[str, Any]) -> Dict[str, str]:
 
 
 @app.post("/api/plans/{doc_id}/execute")
-async def execute_plan(doc_id: str) -> Dict[str, Any]:
+async def execute_plan(doc_id: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Execute an inbox plan directly (first execution). Direct REST call —
     deliberately not routed through chat text — since "execute the plan X"
@@ -646,11 +646,16 @@ async def execute_plan(doc_id: str) -> Dict[str, Any]:
     (e.g. an open Plan Canvas session) and mistakenly treated as a plan-
     modification instruction instead of an execute command. See BACKLOG.md.
     For outbox (already-executed) plans, use retry/rerun instead.
+
+    Optional body.draft_id: if this plan originated from a draft, its doc_id
+    gets updated to the new outbox id after execution — otherwise a later
+    "resume draft" hands back a doc_id that no longer exists anywhere.
     """
     from advisor.agents.governance_plan_agent import get_governance_plan_agent
     agent = get_governance_plan_agent()
+    draft_id = (body or {}).get("draft_id") or None
     result = await asyncio.get_event_loop().run_in_executor(
-        None, agent.execute, doc_id
+        None, partial(agent.execute, doc_id, draft_id=draft_id)
     )
     return result
 

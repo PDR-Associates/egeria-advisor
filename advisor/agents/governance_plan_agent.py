@@ -366,6 +366,7 @@ class GovernancePlanAgent:
         perspective: str | None = None,
         dry_run: bool = False,
         source_folder: str = "inbox",
+        draft_id: str | None = None,
     ) -> Dict[str, Any]:
         """
         Execute an approved plan document and append the outcome section.
@@ -378,6 +379,11 @@ class GovernancePlanAgent:
           4. Run OutcomeReporter to produce outcome section
           5. inbox source: move document to outbox with outcome appended
              outbox source: append a new "## Outcome (Run N)" section in place
+
+        draft_id: when given and this is a first execution (inbox -> outbox),
+        the originating draft's doc_id is updated to the new outbox id, so a
+        later "resume draft" doesn't hand back a doc_id that no longer exists
+        anywhere. See BACKLOG.md.
 
         Returns a standard result dict with query_type="plan_executed".
         """
@@ -514,6 +520,13 @@ class GovernancePlanAgent:
             if moved_doc_id:
                 outbox_doc_id = moved_doc_id
                 logger.info(f"GovernancePlanAgent.execute: moved {doc_id} to outbox as {outbox_doc_id}")
+                if draft_id:
+                    from advisor.governance_draft import get_draft_manager
+                    if not get_draft_manager().update_doc_id(draft_id, outbox_doc_id):
+                        logger.warning(
+                            f"GovernancePlanAgent.execute: could not update draft "
+                            f"{draft_id!r}.doc_id to {outbox_doc_id!r}"
+                        )
             else:
                 logger.warning(
                     f"GovernancePlanAgent.execute: could not move {doc_id} to outbox"

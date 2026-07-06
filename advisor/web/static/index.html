@@ -217,12 +217,19 @@
         <div class="flex items-center gap-2">
           <button onclick="openBuilderModal()" class="text-xs text-violet-400 hover:text-violet-200 transition-colors font-medium" title="New Plan (Builder) — browse and select Dr.Egeria commands directly">+ Builder</button>
           <button onclick="openImportModal()" class="text-xs text-slate-400 hover:text-slate-200 transition-colors font-medium" title="Import a Dr.Egeria markdown file (paste or upload)">⇧ Import</button>
-          <button onclick="loadPlans();loadDrafts();" class="text-xs text-slate-600 hover:text-slate-400 transition-colors" title="Refresh plans and drafts">↺</button>
+          <button onclick="loadPlans();loadDrafts();loadTemplates();" class="text-xs text-slate-600 hover:text-slate-400 transition-colors" title="Refresh plans, drafts, and templates">↺</button>
         </div>
       </div>
       <!-- Active drafts sub-section -->
-      <div id="draft-list-section" class="px-2 pb-1 flex flex-col gap-0.5 text-xs"></div>
-      <div id="plan-list" class="px-2 pb-2 flex flex-col gap-0.5 text-xs overflow-y-auto"></div>
+      <div id="draft-list-section" class="px-2 pb-1 flex flex-col gap-0.5 text-xs shrink-0"></div>
+      <div id="plan-list" class="px-2 pb-2 flex flex-col gap-0.5 text-xs overflow-y-auto border-b border-slate-700/60" style="max-height:45%;"></div>
+
+      <!-- Plan Templates sub-section -->
+      <div class="px-3 pt-2 pb-1 shrink-0 flex items-center justify-between">
+        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Plan Templates</span>
+        <button onclick="loadTemplates()" class="text-xs text-slate-600 hover:text-slate-400 transition-colors" title="Refresh plan templates">↺</button>
+      </div>
+      <div id="template-list" class="px-2 pb-2 flex flex-col gap-0.5 text-xs overflow-y-auto flex-1"></div>
     </div>
 
     <!-- Recent Queries panel -->
@@ -703,6 +710,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadReportDocs();
     loadPlans();
     loadDrafts();
+    loadTemplates();
     loadPerspectives();
     renderRecent();
     if (_activeDraftId) {
@@ -1132,6 +1140,64 @@ function discussPlanChanges() {
     '- *"Change the campaign name to Q4 Sales Forecast"*\n' +
     '- Or say **"looks good"** to proceed to generating the plan.'
   );
+}
+
+// ── Plan Templates sidebar ──────────────────────────────────────────────────────
+async function loadTemplates() {
+  let data;
+  try {
+    const r = await fetch('/api/plan-templates', { headers: Auth.getHeaders() });
+    data = await r.json();
+  } catch { return; }
+  const el = document.getElementById('template-list');
+  el.innerHTML = '';
+  const templates = data.templates || [];
+  if (!templates.length) {
+    el.innerHTML = '<div class="px-2 text-slate-600 italic">No saved templates yet — use "Save as Template" from a plan to create one.</div>';
+    return;
+  }
+
+  templates.forEach(t => {
+    const row = document.createElement('div');
+    row.className = 'flex items-center gap-1';
+
+    const btn = document.createElement('button');
+    btn.className = 'flex-1 text-left px-2 py-0.5 rounded transition-colors truncate text-cyan-300 hover:bg-cyan-900/30';
+    const hints = [];
+    if (t.families) hints.push(`Families: ${t.families}`);
+    if (t.placeholders && t.placeholders.length) hints.push(`Placeholders: ${t.placeholders.join(', ')}`);
+    btn.title = hints.join('\n') || t.name;
+    btn.textContent = t.name;
+    btn.onclick = () => {
+      appendMessage('you', `Start from template ${t.name}`);
+      submitQuery(`start from template ${t.name}`, { intent_override: 'plan' });
+    };
+    row.appendChild(btn);
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'shrink-0 px-1 py-0.5 rounded text-slate-600 hover:text-red-400 hover:bg-red-950/40 text-xs transition-colors';
+    delBtn.title = 'Delete this template';
+    delBtn.textContent = '×';
+    delBtn.onclick = async e => {
+      e.stopPropagation();
+      if (!confirm(`Delete template "${t.name}"? This cannot be undone.`)) return;
+      delBtn.disabled = true;
+      try {
+        const r = await fetch(`/api/plan-templates/${encodeURIComponent(t.filename)}`, { method: 'DELETE', headers: Auth.getHeaders() });
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          throw new Error(err.detail || `Server error ${r.status}`);
+        }
+        loadTemplates();
+      } catch (err) {
+        alert(`Could not delete template: ${err.message}`);
+        delBtn.disabled = false;
+      }
+    };
+    row.appendChild(delBtn);
+
+    el.appendChild(row);
+  });
 }
 
 // ── Drafts sidebar ─────────────────────────────────────────────────────────────
@@ -2512,10 +2578,31 @@ function closeSaveAsTemplateModal() {
   document.getElementById('save-as-template-modal').classList.add('hidden');
   _saveAsTemplateDocId = null;
 }
+// Mirrors PlanTemplateManager._safe_name() in advisor/plan_templates.py so we can
+// detect a filename collision before saving overwrites an existing template.
+function _safeTemplateFilename(name) {
+  let s = name.toLowerCase().trim();
+  s = s.replace(/[^\w\s-]/g, '');
+  s = s.replace(/[\s_-]+/g, '_');
+  s = s.slice(0, 60).replace(/^_+|_+$/g, '');
+  return s || 'template';
+}
 async function confirmSaveAsTemplate() {
   const name = document.getElementById('save-as-template-name-input').value.trim();
   if (!name) return;
   const doc_id = _saveAsTemplateDocId;
+
+  try {
+    const r0 = await fetch('/api/plan-templates', { headers: Auth.getHeaders() });
+    const existing = (await r0.json()).templates || [];
+    const targetFile = _safeTemplateFilename(name);
+    const collision = existing.find(t => t.filename === targetFile);
+    if (collision) {
+      const proceed = confirm(`A template named "${collision.name}" already exists.\n\nSave will overwrite it — this cannot be undone. Continue?`);
+      if (!proceed) return;
+    }
+  } catch { /* if the lookup fails, fall through and let the save attempt proceed */ }
+
   closeSaveAsTemplateModal();
   try {
     const r = await fetch(`/api/plans/${encodeURIComponent(doc_id)}/save-as-template`, {
@@ -2524,7 +2611,8 @@ async function confirmSaveAsTemplate() {
       body: JSON.stringify({ name }),
     });
     if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
-    _showToast(`Saved as template "${name}" — use it via "start from template ${name}".`);
+    _showToast(`Saved as template "${name}" — see Plan Templates in the Plans tab, or say "start from template ${name}".`);
+    loadTemplates();
   } catch (e) {
     alert(`Could not save template: ${e.message}`);
   }

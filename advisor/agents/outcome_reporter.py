@@ -319,18 +319,29 @@ class OutcomeReporter:
         """
         Build per-command status by combining plan command names with structured
         MCP error lists.  The MCP only reports failures; all unlisted commands
-        are assumed to have succeeded.
+        are assumed to have succeeded — EXCEPT when an error can't be attributed
+        to any specific command at all (e.g. a systemic failure like an MCP call
+        timeout, surfaced as a synthetic {"step": "?", "command": "?", ...}
+        entry rather than real per-command Dr.Egeria output). In that case we
+        have zero evidence about what actually happened to each command, so
+        fabricating an "all succeeded" table would be actively misleading —
+        return [] instead and let the caller fall back to a raw-output scan.
         """
         section = self._extract_command_section(plan_content)
         cmd_names = [m.group(1).strip() for m in re.finditer(r'^##\s+(.+)$', section, re.MULTILINE)]
         if not cmd_names:
             return []
 
+        all_errors = validation_errors + execution_errors
+        unattributed = [e for e in all_errors if (e.get("command") or "").strip() in ("", "?")]
+        if unattributed and len(unattributed) == len(all_errors):
+            return []
+
         # Index errors by command name (case-insensitive)
         failed: dict[str, str] = {}
-        for e in validation_errors + execution_errors:
+        for e in all_errors:
             key = (e.get("command") or "").strip().lower()
-            if key:
+            if key and key != "?":
                 failed[key] = e.get("message", "")
 
         results: List[Dict[str, str]] = []

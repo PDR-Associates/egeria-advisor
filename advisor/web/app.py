@@ -871,7 +871,6 @@ async def patch_draft_commands(draft_id: str, body: Dict[str, Any]) -> Dict[str,
         try:
             from advisor.governance_docs import get_doc_manager
             from advisor.agents.plan_elicitor import get_plan_elicitor
-            from advisor.agents.governance_plan_agent import GovernancePlanAgent
 
             doc_manager = get_doc_manager()
             current_content = doc_manager.load(doc_id)
@@ -884,30 +883,7 @@ async def patch_draft_commands(draft_id: str, body: Dict[str, Any]) -> Dict[str,
                 dm.save(spec)
 
                 elicitor = get_plan_elicitor()
-                commands_with_params = elicitor._merge_answers_into_commands(spec)
-
-                # Keep the narrative header (everything before "## Command Sequence")
-                idx = current_content.find("## Command Sequence")
-                if idx != -1:
-                    narrative = current_content[:idx].strip()
-                else:
-                    narrative = current_content.strip()
-
-                # Extract outcome section if already present
-                outcome = ""
-                out_idx = current_content.find("## Outcome")
-                if out_idx != -1:
-                    outcome = current_content[out_idx:].strip()
-
-                agent = GovernancePlanAgent()
-                cmd_blocks = []
-                for i, cmd in enumerate(commands_with_params):
-                    cmd_blocks.append(agent._compose_command_block(cmd, i + 1))
-
-                new_content = narrative + "\n\n## Command Sequence\n\n" + "\n".join(cmd_blocks)
-                if outcome:
-                    new_content += "\n\n" + outcome
-
+                new_content = elicitor._rebuild_command_sequence(spec, current_content)
                 doc_manager.update(doc_id, new_content)
                 logger.info(f"Regenerated and updated plan document {doc_id} to match canvas edits")
         except Exception as exc:

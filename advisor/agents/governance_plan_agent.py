@@ -1373,7 +1373,11 @@ JSON:"""
             # __create_qualified_name__(type_name, display_name) → "Type::display-name"
             egeria_type = _ACTION_TO_EGERIA_TYPE.get(action)
             if egeria_type and display_name and "Qualified Name" not in pf:
-                dn_slug = re.sub(r'\s+', '-', display_name.strip())
+                # Strip anything that isn't a word char/space/hyphen first (quotes,
+                # colons, slashes, pipes, parens, …) so the result is always a
+                # valid identifier, then collapse whitespace to hyphens.
+                dn_slug = re.sub(r'[^\w\s-]', '', display_name.strip())
+                dn_slug = re.sub(r'\s+', '-', dn_slug).strip('-') or 'unnamed'
                 pf["Qualified Name"] = f"{egeria_type}::{dn_slug}"
             return {
                 "action":       action,

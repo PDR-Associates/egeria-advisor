@@ -714,6 +714,69 @@ docs/
 
 ## Recent work (Jun 2026)
 
+### Live bug-hunt session against a real Egeria/Dr.Egeria backend (Jul 6, 2026)
+
+User began exercising Plan execution end-to-end against a live Dr.Egeria MCP
+server, Egeria REST backend, and Postgres — first time these code paths ran
+outside synthetic testing. Found and fixed, in order (all detailed in
+`BACKLOG.md` as SS-6 through SS-11, all `done`):
+
+- **SS-6** — Plan Canvas was editing a stale draft copy once a document
+  already existed (draft endpoint vs. document endpoint were two disconnected
+  representations); rewrote Canvas around document mode, added drag-reorder
+  to the full-screen Plan Editor (it had none), explicit Save (no more
+  silent auto-sync).
+- **SS-7** — "Execute" faked a chat message instead of calling a direct
+  endpoint; if context-based routing misfired, it silently fell into an
+  LLM refinement call with zero console output, looking like a hang. Added
+  `POST /api/plans/{doc_id}/execute`, switched all three execute call sites
+  (Canvas, full-screen editor, sidebar ▶) to it.
+- **SS-8** — the real hang, root-caused live via `py-spy dump` on the user's
+  machine: `MCPClient._send_request()` called blocking `stdout.readline()`
+  directly inside an `async def`, freezing the event loop thread so
+  `asyncio.wait_for()`'s 30s timeout could never fire. Fixed with
+  `loop.run_in_executor()`.
+- **SS-9** — a crashed Dr.Egeria execution (Postgres ran out of shared
+  memory) was reported as full success with all-green commands. The
+  plain-text response fallback in `_parse_dr_egeria_response()`
+  unconditionally returned `success=True`; added keyword-based failure
+  detection (`_PLAIN_TEXT_FAILURE_RE`).
+- **SS-10** — resuming a plan from Active Drafts after it had already
+  executed produced "Plan document `<id>` not found in inbox" — a draft's
+  `doc_id` is set once at generation and never updated when the plan later
+  moves to outbox under a new `_executed_<ts>` filename. Added
+  `DraftManager.update_doc_id()`, threaded `draft_id` through `execute()`
+  and all three frontend execute call sites so the draft stays in sync.
+- **SS-11** — "Save as Template" / "Save As" from inside the full-screen
+  Plan Editor appeared to do nothing; the confirmation modal was actually
+  open and functional but rendered *behind* the opaque, later-in-DOM
+  `#plan-editor-overlay` (both used `z-50`). Bumped both modals to `z-[60]`.
+
+Working session pattern established and worth repeating: user reports a
+live symptom (often just a hang or a wrong-looking result) → trace the
+actual code path rather than guessing → verify the fix with a targeted
+test (regex stress test, JS round-trip via `node`, `py_compile`) → sync
+with remote (this branch and `main` both had other pushes landing
+concurrently — always `git fetch` + check drift + stash/ff-merge/pop before
+committing) → push → report back precisely, distinguishing "pre-existing
+bug newly exposed by an earlier fix in this same session" from "regression
+I just introduced," since several fixes here surfaced previously-unreachable
+latent bugs one layer down (SS-6 exposed SS-7's reachability; SS-7 in turn
+made the stale-doc_id path in SS-10 reachable for the first time).
+
+Two design requests from this session were captured but only the backend
+groundwork exists so far — no dedicated UI:
+- "Save As" (no history) — done, uses `DocumentManager.save_as()` +
+  `builder-title-modal`.
+- "Mark as Template" (named storage) — done, `PlanTemplateManager` +
+  `save-as-template-modal`; retrieval is currently chat-only ("start from
+  template X"), no browsable template list in the sidebar yet.
+- Auto-generated version descriptions — done, `describe_changes()` produces
+  informal one-liners embedded as `<!-- version_note: ... -->` per version
+  snapshot.
+- Explicit Save button (not auto-save) in both chat-driven Canvas and
+  full-screen editor — done, `ArtifactCanvas.autoSync: false` + `flush()`.
+
 ### Phase 11d — Execution quality + Outcome reporting (Jun 15, 2026)
 
 **MCP execution chain debugging and diagnostics** ✓
@@ -850,7 +913,7 @@ docs/
 
 ---
 
-## Current state and next steps (Jun 2026)
+## Current state and next steps (Jul 2026)
 
 **Phases complete:**
 - Phase 1 ✓ — canvas, conversational planning, confirm→generate→refine flow
@@ -865,7 +928,10 @@ docs/
 - Phase 12 ✓ — report spec builder & parameter model (RSD lifecycle, parameter model, collapsible canvas panels, Create intent, Act verb split)
 - Phase 12b ✓ — composite examples agent (Show me composite response, related templates, related report specs with file:// links)
 
-**What's working end-to-end (Jun 28, 2026):**
+**What's working end-to-end (Jul 6, 2026):**
+- Full plan lifecycle exercised live against a real Dr.Egeria MCP server + Egeria REST backend + Postgres for the first time (not just synthetic testing) — surfaced and fixed six real bugs in one session (SS-6 through SS-11, see "Recent work" above and `BACKLOG.md`), including a genuine event-loop-freezing hang in the MCP client
+- Resuming a plan from Active Drafts and executing it now correctly updates the draft's `doc_id` when the plan moves to outbox, so repeated resume→execute cycles on the same draft no longer break
+- A crashed Dr.Egeria execution (e.g. Postgres out of resources) is now correctly reported as a failure instead of a false "all green" success
 - Plans generate via conversational Q&A or Plan Editor builder mode
 - Execution reaches Dr.Egeria MCP → Egeria REST API; objects created in Egeria confirmed by GUID in output
 - Outbox plan shows: structured Outcome with GUID/QN per command + filtered Execution Results (Mermaid diagrams) + collapsible raw Dr.Egeria output
@@ -882,7 +948,11 @@ docs/
 
 **Planned next (in priority order):**
 
-- **Plan re-execution as first-class workflow** — re-executing an outbox plan is *normal operation*, not error recovery. Current UX uses amber warning colour and "Recover for Editing" label. Changes needed: (1) neutral colour for outbox sidebar entries; (2) two action buttons per outbox entry — ✏ (edit first) and ▶ (re-execute directly); (3) `POST /api/plans/{doc_id}/rerun` endpoint that executes outbox plan without moving to inbox first, appending a new `## Outcome (Run N)` section; (4) Create→Update directive rewriting for idempotent re-execution (`update-if-exists` directive + validator rewrite). See backlog plan for full design.
+- **Continue live testing against the real backend** — this session's SS-6 through SS-11 fixes were all found through hands-on execution against a live Dr.Egeria MCP server / Egeria REST API / Postgres, the first time this had happened outside synthetic testing. Treat the next few real planning/execution sessions as still finding latent bugs; keep the same investigate-before-guessing, verify-with-a-test, sync-before-commit discipline established this session.
+
+- **Browsable template list in the sidebar** — "Save as Template" (SS-11-adjacent, done this session) writes to `~/egeria-plans/plan_templates/` via `PlanTemplateManager`, but there's no UI to browse saved templates; retrieval is chat-only ("start from template X"). Add a Templates tab/section to the sidebar listing `PlanTemplateManager.list_templates()` with a one-click "start from this template" action.
+
+- **Create→Update directive rewriting for idempotent re-execution** — `POST /api/plans/{doc_id}/rerun` (done) re-executes an outbox plan in place, appending a new `## Outcome (Run N)` section, but always resubmits the original `Create` commands. Still needed: an `update-if-exists` directive + validator rewrite so a second run of the same plan updates rather than re-creates already-materialized objects.
 
 - **Searchable dropdowns for Dr.Egeria attribute valid value sets** — Plan Canvas renders all attribute fields as free-text inputs. For fields with constrained valid values (`DeployedImplementationType`, `GlossaryTermStatus`, `ProjectStatus`, etc.), show a searchable dropdown with an "other / not listed" escape hatch. Three source types: open-metadata enum (static list in catalog), Egeria valid value set (live lookup via pyegeria), reference data from existing entities (glossary names, zone names — partially done). Design: extend `dr_egeria_actions.yaml` with `valid_values_source` per attribute; new `ValidValueRegistry`; `GET /api/valid-values/{source_key}`; Plan Canvas renders `<select>` with text filter instead of `<input type="text">`. See backlog plan for full design.
 

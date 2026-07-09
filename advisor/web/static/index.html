@@ -1497,6 +1497,7 @@ function _applyQueryResult(query, result, wrap) {
 
   const isReportQA = qtype === 'report_spec_clarification';
   const isCreateDisambig = qtype === 'create_disambiguation';
+  const isPlanStartChoice = qtype === 'plan_start_choice';
 
   // ── Update conversation context from next_context ──────────────────────
   // next_context is the authoritative signal from the backend. If present,
@@ -1622,7 +1623,7 @@ function _applyQueryResult(query, result, wrap) {
   }
 
   // Plan/Report Q&A navigation buttons
-  if ((isPlanQA || isReportQA || isCreateDisambig) && result.navigation && result.navigation.length) {
+  if ((isPlanQA || isReportQA || isCreateDisambig || isPlanStartChoice) && result.navigation && result.navigation.length) {
     const nav = document.createElement('div');
     nav.className = 'mt-2 flex gap-2 flex-wrap';
     const navDefs = {
@@ -1636,6 +1637,8 @@ function _applyQueryResult(query, result, wrap) {
       run_spec:           { label: '▶ Run Report',           cls: 'bg-emerald-700 hover:bg-emerald-600 text-white' },
       create_plan:        { label: '📋 Governance Plan',     cls: 'bg-violet-800 hover:bg-violet-700 text-white' },
       create_report_spec: { label: '📊 Report Spec',         cls: 'bg-orange-800 hover:bg-orange-700 text-white' },
+      plan_discuss:       { label: '💬 Discuss it with me',  cls: 'bg-violet-800 hover:bg-violet-700 text-white' },
+      plan_canvas:        { label: '🎨 Open the Canvas',     cls: 'bg-teal-800 hover:bg-teal-700 text-white' },
     };
     result.navigation.forEach(key => {
       const def = navDefs[key];
@@ -1646,6 +1649,26 @@ function _applyQueryResult(query, result, wrap) {
       btn.onclick = () => {
         if (key === 'run_spec') {
           triggerReportExecution(result.doc_id || result.draft_id);
+          return;
+        }
+        if (key === 'plan_canvas') {
+          appendMessage('you', def.label);
+          openBuilderModal();
+          return;
+        }
+        if (key === 'plan_discuss') {
+          appendMessage('you', def.label);
+          appendMessage('assistant',
+            "Great — describe what you'd like this plan to do (objects to create, " +
+            "who's involved, etc.) and I'll draft the steps."
+          );
+          // Force the next typed message straight to PlanElicitor rather than
+          // resubmitting the bare original query (which has nothing to
+          // decompose) or leaving routing to guess the intent.
+          selectedIntent = 'plan';
+          const hint = document.getElementById('chat-hint') || document.getElementById('input-hint');
+          if (hint) hint.textContent = "Describe the governance task you'd like this plan to accomplish…";
+          document.getElementById('chat-input')?.focus();
           return;
         }
         const commands = {

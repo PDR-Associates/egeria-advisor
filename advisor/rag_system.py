@@ -221,6 +221,20 @@ class RAGSystem:
         q = query.strip().lower()
         return any(q.startswith(p) for p in self._INTERROGATIVE_PREFIXES)
 
+    # A bare "create a plan" ask with no real content to decompose yet — offer
+    # a choice of how to build it (conversation vs. Plan Editor canvas) instead
+    # of starting PlanElicitor's decomposition on an empty/near-empty query.
+    # Anything with actual substance beyond naming the format skips this and
+    # goes straight to generation, per the generate-first principle.
+    _BARE_PLAN_RE = re.compile(
+        r'^\s*(?:create|make|start|build|new)\s+(?:a|an|the)?\s*'
+        r'(?:new\s+)?(?:dr\.?\s*egeria\s+)?(?:governance\s+)?plan\s*[.!]?\s*$',
+        re.IGNORECASE,
+    )
+
+    def _is_bare_plan_request(self, query: str) -> bool:
+        return bool(self._BARE_PLAN_RE.match(query.strip()))
+
     # Patterns that indicate "what dr.egeria commands/templates handle X" — answer from catalog.
     _COMMAND_DISCOVERY_RE = re.compile(
         r'(?:'
@@ -798,6 +812,35 @@ class RAGSystem:
             except Exception as exc:
                 logger.warning(f"Template start failed ({exc}), continuing normal routing")
 
+        # Bare "create a plan" request — offer a choice of how to build it
+        # (conversation vs. Plan Editor canvas) rather than starting
+        # PlanElicitor's decomposition on a query with nothing to decompose.
+        # Fires regardless of intent selector (Auto/Create/Plan) since the
+        # query content itself is unambiguous; an explicit unrelated
+        # selection (Report/Act/Explain/Troubleshoot) is left alone.
+        _override_ok = query_type_override in (None, '', 'create', 'plan')
+        if _override_ok and self._is_bare_plan_request(user_query):
+            logger.info("Bare plan request detected — offering discuss/canvas choice")
+            return {
+                "query": user_query,
+                "response": (
+                    "Sure — how would you like to build it?\n\n"
+                    "- **Discuss it with me** — describe what you need in plain language "
+                    "and I'll draft the steps\n"
+                    "- **Open the Canvas** — start from a blank plan and add Dr.Egeria "
+                    "commands directly"
+                ),
+                "query_type": "plan_start_choice",
+                "routing_agent": "create_router",
+                "navigation": ["plan_discuss", "plan_canvas"],
+                "draft_id": None,
+                "sources": [], "num_sources": 0,
+                "retrieval_time": 0.0, "generation_time": 0.0,
+                "avg_relevance_score": 0.0, "context_length": 0,
+                "session_id": session_id,
+                "user_id": user_id,
+            }
+
         # ------------------------------------------------------------------ #
         # Negative routing guard: interrogative forms bypass plan creation.  #
         # "What is X" / "How does Y" must never reach GovernancePlanAgent   #
@@ -969,6 +1012,9 @@ class RAGSystem:
                 "user_id": user_id,
             }
             if destination == 'plan':
+                # Bare-request case is already handled earlier (before intent
+                # classification narrowed things to 'create'); reaching here
+                # means there's real content for PlanElicitor to decompose.
                 logger.info("Create intent → PlanElicitor")
                 from advisor.agents.plan_elicitor import get_plan_elicitor
                 result = get_plan_elicitor().start(user_query, perspective=perspective)

@@ -3339,6 +3339,19 @@ function initReportCanvasResize() {
     <div>
       <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Command Sequence</div>
       <div id="ped-commands" class="flex flex-col gap-3"></div>
+      <div class="flex gap-2 mt-3">
+        <button onclick="_pedAddStep()"
+          class="flex-1 text-xs text-slate-500 hover:text-violet-300 border border-dashed border-slate-700
+                 hover:border-violet-500/50 rounded py-1.5 transition-colors">
+          + Add step
+        </button>
+        <button onclick="_pedAddNote()"
+          class="flex-1 text-xs text-slate-500 hover:text-amber-300 border border-dashed border-slate-700
+                 hover:border-amber-500/50 rounded py-1.5 transition-colors"
+          title="Insert a free-form text note between steps">
+          📝 Add note
+        </button>
+      </div>
     </div>
 
     <!-- Outcome (read-only, executed plans) -->

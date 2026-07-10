@@ -1331,13 +1331,16 @@ Rules:
 - For sub_project: include "parent" with the parent campaign/project name.
 - "name" must be copied EXACTLY from the request — never use the type word as the name.
 - If a list of names is given for the same type, create one object per name.
+- "title" must be a real 3-6 word summary of THIS request (e.g. "Finance Zone Setup") —
+  never copy the placeholder text below verbatim.
 
 {existing_hint}{perspective_hint}Request: "{query}"
 
-Return:
+Return (the field values below are placeholders showing the expected shape —
+replace every one of them with real content derived from the request):
 {{
-  "title": "short title",
-  "purpose": "one sentence",
+  "title": "<3-6 word summary of this request>",
+  "purpose": "<one sentence>",
   "objects": [{{"type": "...", "name": "exact name from request"}}],
   "roles": [{{"role": "role title", "person": "person name"}}]
 }}
@@ -1349,7 +1352,15 @@ JSON:"""
             m   = re.search(r"\{.*\}", raw, re.DOTALL)
             if not m:
                 raise ValueError("no JSON in LLM output")
-            return json.loads(_extract_balanced_json(m.group()))
+            result = json.loads(_extract_balanced_json(m.group()))
+            # Defense in depth: a weak model can still echo the placeholder
+            # verbatim (confirmed live 2026-07-09 — literally returned the
+            # string "short title"). Never trust a title that looks like the
+            # prompt's own placeholder text rather than real content.
+            bad_titles = {"short title", "<3-6 word summary of this request>", ""}
+            if str(result.get("title", "")).strip().lower() in bad_titles:
+                result["title"] = query[:50].strip()
+            return result
         except Exception as exc:
             logger.warning(f"GovernancePlanAgent: LLM extraction failed: {exc}")
             return {"objects": [], "roles": []}

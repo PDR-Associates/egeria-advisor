@@ -66,6 +66,16 @@ _DEPENDS_ON_RE = re.compile(
     r'^\s*(.+?)\s+depends?\s+on\s+(.+?)\s*$', re.IGNORECASE
 )
 
+# Rename the plan document itself — distinct from renaming a Dr.Egeria command's
+# Display Name. "rename the plan to X" / "rename it to X" / "call it X" /
+# "call the plan X" / "title it X" / "name it X" / "change the title to X".
+_RENAME_PLAN_RE = re.compile(
+    r'^\s*(?:rename\s+(?:the\s+)?plan\s+to|rename\s+(?:it|this)\s+to|'
+    r'call\s+(?:the\s+)?plan|call\s+it|title\s+it|name\s+it|'
+    r'change\s+the\s+title\s+to)\s+["\']?(.+?)["\']?\s*[.!]?\s*$',
+    re.IGNORECASE,
+)
+
 
 # ---------------------------------------------------------------------------
 # Public entry points (called from GovernancePlanAgent)
@@ -574,6 +584,14 @@ class PlanElicitor:
                 ),
             )
 
+        # --- Rename the plan itself ("rename the plan to X", "call it X") --
+        note = self._apply_rename_request(spec, user_response)
+        if note is not None:
+            dm.save(spec)
+            return self._build_confirm_commands_response(
+                spec, note=note + " Does the plan look right now?"
+            )
+
         # --- Project hierarchy request ("make Campaign the parent of...",  --
         # --- "link Project 1 as a sub-project of Campaign") ----------------
         note = self._apply_hierarchy_request(spec, user_response)
@@ -882,6 +900,26 @@ class PlanElicitor:
         if m:
             return m.group(1).strip(), m.group(2).strip()
         return None
+
+    def _apply_rename_request(self, spec: Dict, user_response: str) -> Optional[str]:
+        """
+        If user_response asks to rename the plan itself ("rename the plan to
+        X", "call it X"), mutate spec["title"] in place and return a status
+        note. Returns None if the text isn't a rename request at all. Caller
+        is responsible for persisting the draft (dm.save) and, in the refine
+        phase, also updating the document's H1 heading — this method only
+        touches spec["title"].
+        """
+        m = _RENAME_PLAN_RE.match(user_response.strip())
+        if not m:
+            return None
+        new_title = m.group(1).strip().strip('"\'')
+        if not new_title:
+            return None
+        old_title = spec.get("title", "")
+        get_draft_manager().push_history(spec)
+        spec["title"] = new_title
+        return f"Done — renamed the plan from \"{old_title}\" to **{new_title}**."
 
     def _apply_hierarchy_request(self, spec: Dict, user_response: str) -> Optional[str]:
         """
@@ -1216,6 +1254,25 @@ class PlanElicitor:
                 "I wasn't able to tell which step to move or where — could you be more "
                 "specific?\n\nFor example: *\"move step 3 to be the first step\"* or "
                 "*\"move Create Campaign to step 1\"*.",
+                can_go_back=False, nav=[],
+                extra={"doc_id": doc_id},
+            )
+
+        # Rename the plan itself ("rename the plan to X", "call it X"). Updates
+        # both spec["title"] and the document's H1 heading — DocumentManager
+        # derives the displayed title fresh from the H1 line on every listing
+        # (governance_docs._list_folder -> _extract_title), not from any
+        # separately-stored metadata, so both must change together.
+        note = self._apply_rename_request(spec, user_response)
+        if note is not None:
+            from advisor.governance_docs import _replace_title
+            new_content = _replace_title(current_content, spec["title"])
+            doc_manager.update(doc_id, new_content)
+            dm.save(spec)
+            return _clarification_result(
+                spec,
+                f"{note} The canvas has been updated. Describe another change, or use "
+                "**Validate** / **Execute** on the canvas when ready.",
                 can_go_back=False, nav=[],
                 extra={"doc_id": doc_id},
             )

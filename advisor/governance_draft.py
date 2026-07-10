@@ -226,3 +226,28 @@ def get_draft_manager() -> DraftManager:
     if _dm is None:
         _dm = DraftManager()
     return _dm
+
+
+def create_builder_draft(title: str, perspective: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Create a new blank draft in builder mode (Plan Editor entry point).
+    Shared by POST /api/drafts/builder and any chat-driven path (e.g. an
+    explicit "...using the canvas" request) that wants to open the canvas
+    directly without a separate modal round-trip.
+    """
+    title = (title or "Untitled Plan").strip() or "Untitled Plan"
+    dm = get_draft_manager()
+    spec = dm.create(
+        title=title,
+        original_query=f"[builder] {title}",
+        commands_identified=[],
+        pending_questions={"required": [], "optional": []},
+        pre_filled_answers={},
+        mode="basic",
+        perspective=perspective,
+    )
+    spec["phase"] = "confirm_commands"
+    spec["phase_label"] = "Building plan"
+    spec["builder_mode"] = True
+    dm.save(spec)
+    return spec

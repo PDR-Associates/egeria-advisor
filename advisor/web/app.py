@@ -1449,24 +1449,10 @@ async def create_builder_draft(body: Dict[str, Any]) -> Dict[str, Any]:
     Body: {title: str, perspective?: str}
     Returns the draft spec with builder_mode=true and an empty command list.
     """
-    from advisor.governance_draft import get_draft_manager
+    from advisor.governance_draft import create_builder_draft as _create_builder_draft
     title = (body.get("title") or "Untitled Plan").strip()
     perspective = body.get("perspective")
-    dm = get_draft_manager()
-    spec = dm.create(
-        title=title,
-        original_query=f"[builder] {title}",
-        commands_identified=[],
-        pending_questions={"required": [], "optional": []},
-        pre_filled_answers={},
-        mode="basic",
-        perspective=perspective,
-    )
-    spec["phase"] = "confirm_commands"
-    spec["phase_label"] = "Building plan"
-    spec["builder_mode"] = True
-    dm.save(spec)
-    return spec
+    return _create_builder_draft(title, perspective)
 
 
 @app.get("/api/plan-templates")

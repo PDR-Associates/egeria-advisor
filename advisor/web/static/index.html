@@ -1570,6 +1570,16 @@ function _applyQueryResult(query, result, wrap) {
   if (qtype === 'plan' || qtype === 'plan_executed' || qtype === 'plan_validated') loadPlans();
   if (isPlanQA) { loadDrafts(); if (_activeDraftId) PlanCanvas.refresh(_activeDraftId); }
 
+  // Bare "create a plan ... using the canvas" request — open the canvas
+  // immediately for the draft the backend already created, no modal needed.
+  if (qtype === 'plan_canvas_direct' && result.draft_id) {
+    _activeDraftId = result.draft_id;
+    sessionStorage.setItem('ea_active_draft', _activeDraftId);
+    PlanCanvas.open(_activeDraftId);
+    setSidebarTab('plans');
+    loadDrafts();
+  }
+
   if (qtype === 'report_executed' || qtype === 'report_recovered' || qtype === 'report_spec_clarification') loadReportDocs();
   if (isReportQA) { if (_activeDraftId) ReportSpecCanvas.refresh(_activeDraftId); }
 
@@ -1653,7 +1663,13 @@ function _applyQueryResult(query, result, wrap) {
         }
         if (key === 'plan_canvas') {
           appendMessage('you', def.label);
-          openBuilderModal();
+          if (result.extracted_title) {
+            // We already know the intended title (e.g. "...called Link-Test")
+            // — skip the modal and create it directly.
+            createBuilderPlan(result.extracted_title);
+          } else {
+            openBuilderModal();
+          }
           return;
         }
         if (key === 'plan_discuss') {
@@ -2494,7 +2510,7 @@ async function createBuilderPlan(title) {
     const r = await fetch('/api/drafts/builder', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
-      body: JSON.stringify({ title, perspective: _currentPerspective }),
+      body: JSON.stringify({ title, perspective: selectedPerspective || null }),
     });
     const spec = await r.json();
     _activeDraftId = spec.draft_id;

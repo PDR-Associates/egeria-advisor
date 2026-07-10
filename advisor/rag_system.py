@@ -223,17 +223,70 @@ class RAGSystem:
 
     # A bare "create a plan" ask with no real content to decompose yet — offer
     # a choice of how to build it (conversation vs. Plan Editor canvas) instead
-    # of starting PlanElicitor's decomposition on an empty/near-empty query.
-    # Anything with actual substance beyond naming the format skips this and
-    # goes straight to generation, per the generate-first principle.
-    _BARE_PLAN_RE = re.compile(
-        r'^\s*(?:create|make|start|build|new)\s+(?:a|an|the)?\s*'
-        r'(?:new\s+)?(?:dr\.?\s*egeria\s+)?(?:governance\s+)?plan\s*[.!]?\s*$',
+    # of starting PlanElicitor's decomposition on an empty/near-empty query,
+    # which otherwise hallucinates a plan from whatever stray nouns are left
+    # (e.g. "with the canvas" alone got decomposed into a "Create Solution
+    # Blueprint named Canvas" plan — confirmed live 2026-07-09).
+    #
+    # Rather than one anchored regex (too brittle — failed on "create an
+    # empty Dr.Egeria plan" and "...with the canvas"), strip every filler/
+    # scaffolding word a bare request could plausibly contain and check
+    # whether anything is left. Anything with actual substance (an object
+    # type, a name, a detail) survives stripping and proceeds to generation
+    # as before, per the generate-first principle.
+    _PLAN_FILLER_RE = re.compile(
+        r'\b(?:i\s+want\s+to|i\'?d\s+like\s+to|i\s+would\s+like\s+to|can\s+you|'
+        r'could\s+you|please|let\'?s|lets|i\s+need\s+to|help\s+me)\b',
+        re.IGNORECASE,
+    )
+    # "empty"/"blank"/etc. signal "nothing to decompose" but don't by themselves
+    # pick a build method — kept separate from _PLAN_CANVAS_RE below, which is
+    # an explicit tool preference and should skip straight to the canvas
+    # rather than showing the discuss-vs-canvas choice.
+    _PLAN_BLANK_RE = re.compile(
+        r'\bempty\b|\bblank\b|\bfrom\s+scratch\b|\bmanually\b|\bmyself\b',
+        re.IGNORECASE,
+    )
+    _PLAN_CANVAS_RE = re.compile(
+        r'\b(?:with|using|on|via|in)\s+the\s+canvas\b|\bcanvas\b',
+        re.IGNORECASE,
+    )
+    _PLAN_TYPE_RE = re.compile(r'\bdr\.?\s*egeria\b|\bgovernance\b', re.IGNORECASE)
+    _PLAN_VERB_RE = re.compile(r'\b(?:create|make|build|start|generate|new)\b', re.IGNORECASE)
+    _PLAN_ARTICLE_RE = re.compile(r'\b(?:a|an|the)\b', re.IGNORECASE)
+    _PLAN_NOUN_RE = re.compile(r'\bplans?\b', re.IGNORECASE)
+    # "called X" / "named X" / "titled X" — a title is not "real content" to
+    # decompose into a command; it's metadata for the plan document itself.
+    # Captured separately so the extracted name can be used as the actual
+    # plan title instead of being lost (or worse, misread as an object name —
+    # "create a plan called Link-Test" previously hallucinated a
+    # "Create Solution Blueprint / Campaign named Link-Test", confirmed live
+    # 2026-07-09).
+    _PLAN_NAME_RE = re.compile(
+        r'\b(?:called|named|titled)\s+["\']?([A-Za-z0-9][\w\-]{0,40}'
+        r'(?:\s+(?!using\b|with\b|on\b|via\b|in\s+the\b|empty\b|blank\b)[\w\-]{1,40}){0,4})["\']?',
         re.IGNORECASE,
     )
 
+    def _extract_plan_title(self, query: str) -> Optional[str]:
+        m = self._PLAN_NAME_RE.search(query)
+        return m.group(1).strip() if m else None
+
+    def _wants_canvas_directly(self, query: str) -> bool:
+        return bool(self._PLAN_CANVAS_RE.search(query))
+
     def _is_bare_plan_request(self, query: str) -> bool:
-        return bool(self._BARE_PLAN_RE.match(query.strip()))
+        q = query.strip()
+        # Must actually be a plan-creation ask in the first place.
+        if not self._PLAN_NOUN_RE.search(q) or not self._PLAN_VERB_RE.search(q):
+            return False
+        remainder = q
+        for pat in (self._PLAN_FILLER_RE, self._PLAN_CANVAS_RE, self._PLAN_BLANK_RE,
+                    self._PLAN_NAME_RE, self._PLAN_TYPE_RE, self._PLAN_VERB_RE,
+                    self._PLAN_ARTICLE_RE, self._PLAN_NOUN_RE):
+            remainder = pat.sub(' ', remainder)
+        remainder = re.sub(r'[^\w]', '', remainder)
+        return remainder == ''
 
     # Patterns that indicate "what dr.egeria commands/templates handle X" — answer from catalog.
     _COMMAND_DISCOVERY_RE = re.compile(
@@ -820,6 +873,32 @@ class RAGSystem:
         # selection (Report/Act/Explain/Troubleshoot) is left alone.
         _override_ok = query_type_override in (None, '', 'create', 'plan')
         if _override_ok and self._is_bare_plan_request(user_query):
+            extracted_title = self._extract_plan_title(user_query)
+            if self._wants_canvas_directly(user_query):
+                # Explicit tool preference ("...using the canvas") — the user
+                # already told us how they want to build it, so skip the
+                # discuss/canvas choice (and the builder's own title modal)
+                # and open a blank canvas immediately with whatever title
+                # they gave.
+                logger.info("Bare plan request with explicit canvas preference — opening canvas")
+                from advisor.governance_draft import create_builder_draft
+                spec = create_builder_draft(extracted_title or user_query[:50], perspective)
+                return {
+                    "query": user_query,
+                    "response": (
+                        f"**{spec['title']}** — plan canvas is open. Use **+ Add step** to "
+                        f"browse and add Dr.Egeria commands, or ask me questions in chat."
+                    ),
+                    "query_type": "plan_canvas_direct",
+                    "routing_agent": "create_router",
+                    "draft_id": spec["draft_id"],
+                    "sources": [], "num_sources": 0,
+                    "retrieval_time": 0.0, "generation_time": 0.0,
+                    "avg_relevance_score": 0.0, "context_length": 0,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                }
+
             logger.info("Bare plan request detected — offering discuss/canvas choice")
             return {
                 "query": user_query,
@@ -834,6 +913,7 @@ class RAGSystem:
                 "routing_agent": "create_router",
                 "navigation": ["plan_discuss", "plan_canvas"],
                 "draft_id": None,
+                "extracted_title": extracted_title,
                 "sources": [], "num_sources": 0,
                 "retrieval_time": 0.0, "generation_time": 0.0,
                 "avg_relevance_score": 0.0, "context_length": 0,

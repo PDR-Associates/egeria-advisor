@@ -93,9 +93,22 @@ function _parsePlanMarkdown(md) {
   }
 
   const commands = [];
-  const blocks   = cmdBody.split(/(?=^<!--\s*Step\s+\d+)/m).filter(b => b.trim());
+  const blocks   = cmdBody.split(/(?=^<!--\s*(?:Step\s+\d+|Note)\b)/m).filter(b => b.trim());
 
   for (const block of blocks) {
+    // Freestanding note block — see _synthesizePlanMarkdownFrom's "_note" case.
+    const noteRe = /^<!--\s*Note\s*-->\s*\n?([\s\S]*)$/;
+    const nm     = noteRe.exec(block);
+    if (nm) {
+      const noteText = nm[1].trim();
+      commands.push({
+        stepNum: 0, action: '_note', rationale: '',
+        fields: [{ name: 'Display Name', value: noteText, required: false, type: 'Simple', validValues: [] }],
+        postNotes: '',
+      });
+      continue;
+    }
+
     const commentRe = /^<!--\s*Step\s+(\d+):\s*([\s\S]*?)-->/;
     const cm        = commentRe.exec(block);
     if (!cm) continue;
@@ -141,6 +154,16 @@ function _synthesizePlanMarkdownFrom(narrative, commands, mode, outcome) {
   let md = narrative + '\n\n---\n\n## Command Sequence\n\n';
 
   for (const cmd of commands) {
+    // A freestanding note — no template/header, just the text, tagged with a
+    // dedicated marker so _parsePlanMarkdown can read it back as its own
+    // reorderable entry rather than folding it into the preceding command's
+    // postNotes (plain inter-command text alone is ambiguous on reparse).
+    if (cmd.action === '_note') {
+      const noteText = (cmd.fields[0] && cmd.fields[0].value || '').trim();
+      md += `<!-- Note -->\n${noteText}\n\n`;
+      continue;
+    }
+
     const commentLines = [cmd.action];
     if (cmd.rationale) commentLines.push('     ' + cmd.rationale);
     md += `<!-- Step ${cmd.stepNum}: ${commentLines.join('\n')} -->\n`;
@@ -172,7 +195,7 @@ function _synthesizePlanMarkdown() {
 // ── Template field loading ─────────────────────────────────────────────────────
 
 async function _loadAllTemplateFields() {
-  const actions = [...new Set(_ped.commands.map(c => c.action))];
+  const actions = [...new Set(_ped.commands.map(c => c.action).filter(a => a !== '_note'))];
   await Promise.all(actions.map(a => _fetchTemplateFields(a, _ped.mode)));
   _enrichFieldMetadata();
   _renderCommandCards();
@@ -326,6 +349,54 @@ function _renderCommandCards() {
   _ped.commands.forEach((cmd, idx) => container.appendChild(_buildCommandCard(cmd, idx)));
 }
 
+// ── Add step ─────────────────────────────────────────────────────────────────
+// Reuses the same Dr.Egeria command picker modal as the docked Plan Canvas
+// (openCmdPicker, defined in index.html) — the full-screen editor previously
+// had no way to add a new command at all, only reorder/edit existing ones.
+async function _pedAddStep() {
+  if (typeof openCmdPicker !== 'function') {
+    alert('Command picker is not available.');
+    return;
+  }
+  openCmdPicker(async (typeName) => {
+    if (!typeName || !typeName.trim()) return;
+    _ped.commands.push({ stepNum: 0, action: typeName, rationale: '', fields: [], postNotes: '' });
+    _renumberCommands();
+    _ped.dirty = true;
+    await _loadAllTemplateFields();  // fetches template fields for the new action, enriches, re-renders
+    _updateStatusBar();
+  });
+}
+
+// ── Add note ─────────────────────────────────────────────────────────────────
+// A freestanding, reorderable/removable note in the command list — matches
+// the docked Plan Canvas's "+ Add note" (artifact_canvas.js), which the
+// full-screen editor lacked entirely. Serialized via a dedicated "<!-- Note -->"
+// marker in _synthesizePlanMarkdownFrom/_parsePlanMarkdown (plain inter-command
+// narrative alone can't round-trip as an independent, reorderable entry — it's
+// always attributed as the *preceding* command's postNotes on reparse).
+function _pedAddNote() {
+  _ped.commands.push({
+    stepNum: 0, action: '_note', rationale: '',
+    fields: [{ name: 'Display Name', value: '', required: false, type: 'Simple', validValues: [] }],
+    postNotes: '',
+  });
+  _renumberCommands();
+  _ped.dirty = true;
+  _renderCommandCards();
+  _updateStatusBar();
+}
+
+// ── Remove step ──────────────────────────────────────────────────────────────
+function _pedRemoveStep(idx) {
+  if (idx < 0 || idx >= _ped.commands.length) return;
+  _ped.commands.splice(idx, 1);
+  _renumberCommands();
+  _ped.dirty = true;
+  _renderCommandCards();
+  _updateStatusBar();
+}
+
 // ── Drag-and-drop reorder ────────────────────────────────────────────────────
 let _pedDragSrcIdx = null;
 
@@ -365,6 +436,48 @@ function _attachCommandDragHandlers(card, idx) {
 }
 
 function _buildCommandCard(cmd, idx) {
+  // ── Note card — free-form text, no template/fields ──────────────────
+  if (cmd.action === '_note') {
+    const noteCard = document.createElement('div');
+    noteCard.className = 'ped-cmd-card bg-amber-950/10 rounded-lg border border-amber-800/30 overflow-hidden';
+    noteCard.dataset.idx = idx;
+    const noteHdr = document.createElement('div');
+    noteHdr.className = 'flex items-center gap-2 px-4 py-2 select-none';
+    noteHdr.innerHTML =
+      (_ped.isInbox ? `<span class="text-slate-600 cursor-grab shrink-0" title="Drag to reorder">⠿</span>` : '') +
+      `<span class="text-amber-400/80 text-xs font-semibold flex-1">📝 Note</span>`;
+    if (_ped.isInbox) {
+      const rmBtn = document.createElement('button');
+      rmBtn.className = 'text-slate-600 hover:text-red-400 text-xs px-1 transition-colors shrink-0';
+      rmBtn.title = 'Remove this note';
+      rmBtn.textContent = '✕';
+      rmBtn.onclick = (e) => { e.stopPropagation(); _pedRemoveStep(idx); };
+      noteHdr.appendChild(rmBtn);
+    }
+    noteCard.appendChild(noteHdr);
+    if (_ped.isInbox) {
+      noteCard.draggable = true;
+      _attachCommandDragHandlers(noteCard, idx);
+    }
+    const noteBody = document.createElement('div');
+    noteBody.className = 'px-4 pb-3';
+    const ta = document.createElement('textarea');
+    ta.className = 'w-full bg-amber-950/20 text-slate-300 text-sm rounded p-2 resize-none border ' +
+                    'border-amber-800/30 focus:outline-none focus:border-amber-500/50 transition-colors';
+    ta.rows = 3;
+    ta.placeholder = 'Section heading, context, or explanatory text for the plan document…';
+    ta.value = (cmd.fields[0] && cmd.fields[0].value) || '';
+    ta.oninput = () => {
+      if (!cmd.fields[0]) cmd.fields = [{ name: 'Display Name', value: '', required: false, type: 'Simple', validValues: [] }];
+      cmd.fields[0].value = ta.value;
+      _ped.dirty = true;
+      _updateStatusBar();
+    };
+    noteBody.appendChild(ta);
+    noteCard.appendChild(noteBody);
+    return noteCard;
+  }
+
   const card = document.createElement('div');
   card.className = 'ped-cmd-card bg-slate-800 rounded-lg border border-slate-700 overflow-hidden';
   card.dataset.idx = idx;
@@ -379,6 +492,14 @@ function _buildCommandCard(cmd, idx) {
     `<span class="text-sm font-semibold text-slate-100 flex-1">${_esc(cmd.action)}</span>` +
     `<span class="ped-cmd-status text-xs"></span>` +
     `<span class="ped-cmd-toggle text-slate-500 text-xs ml-1">▼</span>`;
+  if (_ped.isInbox) {
+    const rmBtn = document.createElement('button');
+    rmBtn.className = 'text-slate-600 hover:text-red-400 text-xs px-1 ml-1 transition-colors shrink-0';
+    rmBtn.title = 'Remove this step';
+    rmBtn.textContent = '✕';
+    rmBtn.onclick = (e) => { e.stopPropagation(); _pedRemoveStep(idx); };
+    hdr.appendChild(rmBtn);
+  }
   card.appendChild(hdr);
 
   if (_ped.isInbox) {

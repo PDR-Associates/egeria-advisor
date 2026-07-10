@@ -1,7 +1,7 @@
 ___
 
-## Create Campaign
-> Creates or updates a campaign — a collection of related projects working towards a common goal. Sets the Campaign classification on the Project entity.
+## Create Risk
+> The GovernanceRisk entity defines a risk to be managed.
 
 ### Display Name
 >	**Input Required**: True
@@ -13,136 +13,64 @@ ___
 >	**Alternative Labels**: "Term Name"
 
 
-### Actual Completion Date
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: The actual date the project completed as an ISO 8601 string.
-
-
-### Actual Start Date
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: The actual date the project started as an ISO 8601 string.
-
-
-### Mission
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: The project mission statement.
-
-
-### Planned Completion Date
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: Planned project end date as an ISO 8601 string.
-
-
-### Planned Start Date
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: Planned project start date as an ISO 8601 string.
-
-
-### Priority
->	**Input Required**: False
-
->	**Attribute Type**: Simple Int
-
->	**Description**: An integer priority for the project.
-
-
-### Project Approach
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: The methodology or approach used to achieve the project's goals (ProjectClassification attribute).
-
-
-### Project Health
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: A string representing the health of the project.
-
-
-### Project Identifier
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: A user-assigned identifier for the project.
-
-
-### Project Management Style
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: The management style for the project (ProjectClassification attribute). For example, experimental vs. formal product development.
-
-
-### Project Phase
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: A string describing the current phase of the project.
-
-
-### Project Results Usage
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: How the results of the project are intended to be used (ProjectClassification attribute). For example: inform future projects, test a theory, develop a product.
-
-
-### Project Scope
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: The scope of the project — what is in and out of scope.
-
-
-### Project Status
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: A string representing the current status of the project.
-
-
-### Project Type
+### Domain Identifier
 >	**Input Required**: False
 
 >	**Attribute Type**: Enum
 
->	**Description**: A string classifying the project. Supported values are Campaign, Task, PersonalProject and StudyProject.
+>	**Description**: String representing the governance domain. All domains is ALL
 
->	**Valid Values**: Project,Campaign,Task,PersonalProject,StudyProject,Experiment
+>	**Valid Values**: ALL,DATA,PRIVACY,SECURITY,IT_INFRASTRUCTURE,SOFTWARE_DEVELOPMENT,CORPORATE,ASSET_MANAGEMENT,OTHER
 
->	**Default Value**: Project
+>	**Default Value**: ALL
 
 
-### Success Criteria
+### Implications
 >	**Input Required**: False
 
 >	**Attribute Type**: Simple List
 
->	**Description**: A list of criteria used to evaluate the success of the project.
+>	**Description**: List of implications.
+
+
+### Importance
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple
+
+>	**Description**: Importance of the definition.
+
+
+### Outcomes
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple List
+
+>	**Description**: List of desired outcomes.
+
+
+### Results
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple List
+
+>	**Description**: A list of expected results.
+
+
+### Summary
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple
+
+>	**Description**: A short summary of the element's meaning or purpose.
+
+
+### Usage
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple
+
+>	**Description**: The usage guidance for this element — how it is intended to be used in context.
 
 
 ### Journal Entry
@@ -199,12 +127,12 @@ ___
 >	**Default Value**: ACTIVE
 
 
-### Purposes
+### Scope
 >	**Input Required**: False
 
->	**Attribute Type**: Simple List
+>	**Attribute Type**: Simple
 
->	**Description**: A list of purposes for this project (array&lt;string&gt;). Note: distinct from Collection.purpose (string, singular) which is a separate attribute on Collection Base.
+>	**Description**: Scope of the definition or element.
 
 
 ### Search Keywords
@@ -251,16 +179,6 @@ ___
 >	**Attribute Type**: Simple List
 
 >	**Description**: The authors.
-
-
-### Sub-Projects
->	**Input Required**: False
-
->	**Attribute Type**: Reference Name List
-
->	**Description**: List of sub-projects.
-
->	**Alternative Labels**: SubProjects; Child Projects
 
 
 ### Effective From

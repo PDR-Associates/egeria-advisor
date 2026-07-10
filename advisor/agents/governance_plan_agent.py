@@ -1083,53 +1083,6 @@ class GovernancePlanAgent:
 
         ql = q.lower()
 
-        # ── View Report / Mermaid diagram detection ────────────────────────
-        # Handles "view report for Solution Blueprint", "mermaid graph of X", etc.
-        vr_m = self._VIEW_REPORT_PATTERN.search(q)
-        if vr_m:
-            target_name = next((g.strip() for g in vr_m.groups() if g), "")
-            # Strip leading articles ("the", "a", "an")
-            target_name = re.sub(r'^(?:the|a|an)\s+', '', target_name, flags=re.IGNORECASE)
-            # Detect explicit output format from the phrase used
-            if re.search(r'\bmermaid\b', ql):
-                output_fmt = "MERMAID"
-            elif re.search(r'\bprint\s+report\b|\bfull\s+report\b', ql):
-                output_fmt = "MD"
-            elif re.search(r'\bprint\s+list\b', ql):
-                output_fmt = "LIST"
-            else:
-                output_fmt = "LIST"
-            # Infer report spec from entity type keywords in query
-            report_spec = "Solution-Blueprint"  # default
-            for kw, spec in [
-                ("glossary term", "Glossary-Terms"),
-                ("glossary",      "Glossaries"),
-                ("collection",    "Collections"),
-                ("project",       "Projects"),
-                ("campaign",      "Projects"),
-                ("digital product", "Digital-Products"),
-                ("data dictionary", "Data-Dictionaries"),
-                ("governance zone", "Governance-Zones"),
-                ("blueprint",     "Solution-Blueprint"),
-                ("solution",      "Solution-Blueprint"),
-            ]:
-                if kw in ql:
-                    report_spec = spec
-                    break
-            return {
-                "title": f"View {report_spec} Report",
-                "purpose": q[:120],
-                "objects": [{
-                    "type": "view_report",
-                    "name": target_name or report_spec,
-                    "report_spec": report_spec,
-                    "output_format": output_fmt,
-                    "search_string": target_name,
-                    "low_confidence_suggestions": [],
-                }],
-                "roles": [],
-            }
-
         # keyword → entity_type map for fast inline matching
         _KW_MAP = {
             "campaign": "campaign", "glossary": "glossary",
@@ -1152,6 +1105,23 @@ class GovernancePlanAgent:
                 raw_names = multi_m.group(2)
                 names = [n.strip().strip('"\'') for n in
                          re.split(r'\s*,\s*|\s+and\s+', raw_names) if n.strip()]
+                # Sanity check: a genuine list item is a short proper name. If
+                # the query names a container elsewhere ("Blueprint called X")
+                # AND separately lists items ("components for A, B, C"), the
+                # shared (?:for|called|named) group above can match the wrong
+                # keyword occurrence and the lazy capture can run away,
+                # swallowing the rest of the sentence into one "name" (confirmed
+                # live 2026-07-10). Rather than trust a garbled result, bail out
+                # entirely — _decompose_intent's LLM extraction fallback handles
+                # this combined case correctly.
+                _SUSPICIOUS_NAME_WORDS = (
+                    "is part of", "the final step", "solution component", "each component",
+                )
+                if names and any(
+                    len(n) > 60 or any(w in n.lower() for w in _SUSPICIOUS_NAME_WORDS)
+                    for n in names
+                ):
+                    return {"objects": [], "roles": []}
                 if names:
                     # ── Auto-name a container when query mentions "blueprint" ─
                     container_name = ""
@@ -1200,6 +1170,65 @@ class GovernancePlanAgent:
                         "objects": objects,
                         "roles":   roles,
                     }
+
+        # ── View Report / Mermaid diagram detection ────────────────────────
+        # Handles "view report for Solution Blueprint", "mermaid graph of X", etc.
+        # Checked AFTER multi-item list detection above: a request like
+        # "...create solution components for A, B, C... The final step is to
+        # View Report..." must not have its Blueprint/Components silently
+        # discarded just because it also mentions a report at the end — this
+        # early-return path is only for queries that are ~exclusively about
+        # viewing a report, with nothing else to create. (Confirmed live
+        # 2026-07-10: this block firing first caused exactly that — a
+        # 5-object plan request came back with only the View Report step.)
+        # When multi-item/main-entity detection above DOES match a Solution
+        # Blueprint creation, the auto-append step in _entities_to_commands
+        # already adds a View Report/Mermaid step automatically, so nothing
+        # requested is lost by deferring to it instead.
+        vr_m = self._VIEW_REPORT_PATTERN.search(q)
+        if vr_m:
+            target_name = next((g.strip() for g in vr_m.groups() if g), "")
+            # Strip leading articles ("the", "a", "an")
+            target_name = re.sub(r'^(?:the|a|an)\s+', '', target_name, flags=re.IGNORECASE)
+            # Detect explicit output format from the phrase used
+            if re.search(r'\bmermaid\b', ql):
+                output_fmt = "MERMAID"
+            elif re.search(r'\bprint\s+report\b|\bfull\s+report\b', ql):
+                output_fmt = "MD"
+            elif re.search(r'\bprint\s+list\b', ql):
+                output_fmt = "LIST"
+            else:
+                output_fmt = "LIST"
+            # Infer report spec from entity type keywords in query
+            report_spec = "Solution-Blueprint"  # default
+            for kw, spec in [
+                ("glossary term", "Glossary-Terms"),
+                ("glossary",      "Glossaries"),
+                ("collection",    "Collections"),
+                ("project",       "Projects"),
+                ("campaign",      "Projects"),
+                ("digital product", "Digital-Products"),
+                ("data dictionary", "Data-Dictionaries"),
+                ("governance zone", "Governance-Zones"),
+                ("blueprint",     "Solution-Blueprint"),
+                ("solution",      "Solution-Blueprint"),
+            ]:
+                if kw in ql:
+                    report_spec = spec
+                    break
+            return {
+                "title": f"View {report_spec} Report",
+                "purpose": q[:120],
+                "objects": [{
+                    "type": "view_report",
+                    "name": target_name or report_spec,
+                    "report_spec": report_spec,
+                    "output_format": output_fmt,
+                    "search_string": target_name,
+                    "low_confidence_suggestions": [],
+                }],
+                "roles": [],
+            }
 
         # Tracks entity-type inferences that used the keyword index (low confidence)
         # so confirm_commands can surface "Did you mean X?"
@@ -1331,13 +1360,16 @@ Rules:
 - For sub_project: include "parent" with the parent campaign/project name.
 - "name" must be copied EXACTLY from the request — never use the type word as the name.
 - If a list of names is given for the same type, create one object per name.
+- "title" must be a real 3-6 word summary of THIS request (e.g. "Finance Zone Setup") —
+  never copy the placeholder text below verbatim.
 
 {existing_hint}{perspective_hint}Request: "{query}"
 
-Return:
+Return (the field values below are placeholders showing the expected shape —
+replace every one of them with real content derived from the request):
 {{
-  "title": "short title",
-  "purpose": "one sentence",
+  "title": "<3-6 word summary of this request>",
+  "purpose": "<one sentence>",
   "objects": [{{"type": "...", "name": "exact name from request"}}],
   "roles": [{{"role": "role title", "person": "person name"}}]
 }}
@@ -1349,7 +1381,15 @@ JSON:"""
             m   = re.search(r"\{.*\}", raw, re.DOTALL)
             if not m:
                 raise ValueError("no JSON in LLM output")
-            return json.loads(_extract_balanced_json(m.group()))
+            result = json.loads(_extract_balanced_json(m.group()))
+            # Defense in depth: a weak model can still echo the placeholder
+            # verbatim (confirmed live 2026-07-09 — literally returned the
+            # string "short title"). Never trust a title that looks like the
+            # prompt's own placeholder text rather than real content.
+            bad_titles = {"short title", "<3-6 word summary of this request>", ""}
+            if str(result.get("title", "")).strip().lower() in bad_titles:
+                result["title"] = query[:50].strip()
+            return result
         except Exception as exc:
             logger.warning(f"GovernancePlanAgent: LLM extraction failed: {exc}")
             return {"objects": [], "roles": []}
@@ -1373,7 +1413,11 @@ JSON:"""
             # __create_qualified_name__(type_name, display_name) → "Type::display-name"
             egeria_type = _ACTION_TO_EGERIA_TYPE.get(action)
             if egeria_type and display_name and "Qualified Name" not in pf:
-                dn_slug = re.sub(r'\s+', '-', display_name.strip())
+                # Strip anything that isn't a word char/space/hyphen first (quotes,
+                # colons, slashes, pipes, parens, …) so the result is always a
+                # valid identifier, then collapse whitespace to hyphens.
+                dn_slug = re.sub(r'[^\w\s-]', '', display_name.strip())
+                dn_slug = re.sub(r'\s+', '-', dn_slug).strip('-') or 'unnamed'
                 pf["Qualified Name"] = f"{egeria_type}::{dn_slug}"
             return {
                 "action":       action,

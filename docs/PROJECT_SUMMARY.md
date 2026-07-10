@@ -911,6 +911,68 @@ groundwork exists so far — no dedicated UI:
 - Status correctly infers Partial when fewer GUIDs returned or fewer command blocks found than expected
 - Outcome header shows "N of M commands processed (K succeeded)"
 
+### Phase 13 — Plan Templates sidebar + NL reorder/relationship editing (Jul 6, 2026)
+
+**Plan Templates sidebar** ✓ (commit 775f319)
+- Closes the gap flagged in Phase 12b's next-steps: template retrieval was chat-only
+- Scrollable "Plan Templates" sub-section under the existing **Plans** tab (not a new top-level
+  tab — there are many other kinds of templates in this project, so it stays scoped)
+- Lists `PlanTemplateManager.list_templates()`; one-click "start from this template" (reuses the
+  existing `"start from template <name>"` chat phrase); delete button
+- "Save as Template" now checks for a filename collision (mirroring `PlanTemplateManager`'s
+  `_safe_name()` derivation) and confirms before overwriting an existing template
+
+**Natural-language reorder + relationship editing** ✓ (commit ef5cc41)
+- Chat can reorder plan steps ("move step 3 to be the first step", by name, by ordinal-of-type
+  "Project 2") and establish two relationship types, in both `confirm_commands` (pre-generation)
+  and `refine` (post-generation) phases — all deterministic, no LLM in the structural path:
+  - **Project Hierarchy** — "make Campaign the parent of all other projects" — embedded mutation
+    (see composer-bug note below), bulk-capable ("all other projects")
+  - **Project Dependency** — "Project 1 depends on Project 2 and 3" — standalone
+    `Link Project Dependency` insertion, fans out across multiple targets
+- Shared resolver primitives (`_resolve_command_ref`, `_resolve_bulk_command_refs`,
+  `_split_multi_target_refs`) are reusable for other relationship families later — see
+  `docs/design/RELATIONSHIP_LINKING_SCOPE.md` for the full catalog schema and rollout plan
+  across the other ~48 `Link *` relationships (a cross-family template scan found embedded
+  relationship fields are actually the *minority* pattern — most families are standalone-Link-only)
+
+**Two pre-existing bugs found by building and testing this end-to-end:**
+- **Priority re-sort was clobbering manual reorder** (design rule 26) — commands were
+  unconditionally re-sorted by a fixed priority/family key on every render/regeneration,
+  including the Plan Canvas's own drag-reorder save path, so cross-family canvas drag-reorder
+  was likely already silently broken before this session. Fixed: list order is now authoritative
+  except at the one-time initial-decomposition sort.
+- **PC-1 (`BACKLOG.md`): the document composer always validates against the basic-tier
+  template, regardless of `spec["mode"]`** (design rule 28) — `_load_template()` hardcodes
+  `root / "basic"`, so any advanced-only field is silently dropped from every generated plan
+  document, at any mode. This means the historical `Create Project` + `Parent ID` sub-project
+  mechanism (design rule 13) has likely never actually rendered into a chat-generated plan,
+  ever. Confirmed live via the new NL hierarchy handler. Worked around (not root-cause-fixed)
+  by targeting the newly-added basic-tier `Sub-Projects` field instead — root cause tracked as
+  PC-1, not yet fixed.
+
+**Outcome-reporter false-success bug** ✓ (commit fa7e3f2, design rule 29)
+- Found live: a real plan execution hit a 60s MCP timeout; chat showed an execution error, but
+  the Command Results table showed all commands succeeded
+- Root cause: `execute()`'s generic exception handler synthesizes a plain-text error with no
+  real per-command attribution (`step="?"`, `command="?"`); `_build_command_results()`'s
+  "unlisted = succeeded" heuristic then marked every real command in the plan "Success," and
+  status inference followed suit
+- Fixed: when every recorded error is unattributed to a specific command, return no per-command
+  results at all rather than fabricating an all-succeeded table — status inference correctly
+  falls back to scanning the raw output text instead
+- User confirmed a subsequent retest (after an independent pyegeria-side fix) completed
+  properly with the 60s timeout unchanged
+
+**Dr.Egeria template sync** ✓ (commit 92048f8)
+- Regenerated templates fixing the defects found during this session's cross-family scan
+  (`Link_Regulation_to_Regulator` stale fields, `Link_Certification`/
+  `Link_Regulation_Certification_Type` description bugs, `Link_Data_Class_Composition`
+  copy-paste, `Attach_Comment` missing target field, `Link_Term-Term_Relationship` missing
+  reference fields — also filed as `egeria-python` PR #252)
+- New basic-tier `Sub-Projects` field on `Create Project`/`Campaign`/`Personal Project`/
+  `Study Project`/`Task` — the PC-1 workaround above depends on this
+
 ---
 
 ## Current state and next steps (Jul 2026)
@@ -927,6 +989,7 @@ groundwork exists so far — no dedicated UI:
 - Phase 11g ✓ — code intelligence & symbol analysis (SQLite symbol table, Python + Java, structural query routing)
 - Phase 12 ✓ — report spec builder & parameter model (RSD lifecycle, parameter model, collapsible canvas panels, Create intent, Act verb split)
 - Phase 12b ✓ — composite examples agent (Show me composite response, related templates, related report specs with file:// links)
+- Phase 13 ✓ — Plan Templates sidebar, NL reorder/relationship editing, priority-resort fix, outcome-reporter false-success fix
 
 **What's working end-to-end (Jul 6, 2026):**
 - Full plan lifecycle exercised live against a real Dr.Egeria MCP server + Egeria REST backend + Postgres for the first time (not just synthetic testing) — surfaced and fixed six real bugs in one session (SS-6 through SS-11, see "Recent work" above and `BACKLOG.md`), including a genuine event-loop-freezing hang in the MCP client
@@ -945,12 +1008,16 @@ groundwork exists so far — no dedicated UI:
 - Java symbol table: ~38,900 symbols from 4,181 `.java` files in the egeria_java collection
 - Report specifications are fully editable via visual canvas (drag-and-drop columns + Content Filters, Shape Defaults, and Performance Hints panels)
 - Show me queries return composite responses linking relevant Python code, Dr.Egeria templates, and catalog report specs with clickable file:// links
+- Chat-driven plan reorder ("move step 3 to be the first step") and relationship editing (Project Hierarchy, Project Dependency) work in both pre- and post-generation phases
+- Plan Templates are browsable from the Plans sidebar tab, not just via chat phrase
 
 **Planned next (in priority order):**
 
-- **Continue live testing against the real backend** — this session's SS-6 through SS-11 fixes were all found through hands-on execution against a live Dr.Egeria MCP server / Egeria REST API / Postgres, the first time this had happened outside synthetic testing. Treat the next few real planning/execution sessions as still finding latent bugs; keep the same investigate-before-guessing, verify-with-a-test, sync-before-commit discipline established this session.
+- **PC-1 — fix the document composer's basic-tier-only template loading** (`BACKLOG.md`) — `_load_template()` always loads basic regardless of `spec["mode"]`, so any advanced-only field is silently dropped from every generated plan. Root cause behind the historical `Parent ID` sub-project mechanism likely never having worked; currently only worked around for the one case (Sub-Projects field) that needed it this session. Needs a decision on merge behavior when a command has fields from both tiers.
 
-- **Browsable template list in the sidebar** — "Save as Template" (SS-11-adjacent, done this session) writes to `~/egeria-plans/plan_templates/` via `PlanTemplateManager`, but there's no UI to browse saved templates; retrieval is chat-only ("start from template X"). Add a Templates tab/section to the sidebar listing `PlanTemplateManager.list_templates()` with a one-click "start from this template" action.
+- **Generalize NL relationship editing beyond Projects** — `docs/design/RELATIONSHIP_LINKING_SCOPE.md` has the full catalog schema and rollout order (Solution Architect next, then Collections, then Governance Officer). Build the phrase-library mechanism data-driven (catalog entries, not hardcoded Python) so it can extend to the ~48 other `Link *` relationships without another full rewrite, and expand coverage driven by real usage (`SessionLogger`) rather than upfront guessing.
+
+- **Continue live testing against the real backend** — this session's SS-6 through SS-11 fixes were all found through hands-on execution against a live Dr.Egeria MCP server / Egeria REST API / Postgres, the first time this had happened outside synthetic testing. Treat the next few real planning/execution sessions as still finding latent bugs; keep the same investigate-before-guessing, verify-with-a-test, sync-before-commit discipline established this session.
 
 - **Create→Update directive rewriting for idempotent re-execution** — `POST /api/plans/{doc_id}/rerun` (done) re-executes an outbox plan in place, appending a new `## Outcome (Run N)` section, but always resubmits the original `Create` commands. Still needed: an `update-if-exists` directive + validator rewrite so a second run of the same plan updates rather than re-creates already-materialized objects.
 
@@ -984,7 +1051,7 @@ groundwork exists so far — no dedicated UI:
 
 ## How to resume in a new conversation
 
-1. Read `CLAUDE.md` — full maintenance context, design rules (13–25 for LGCI)
+1. Read `CLAUDE.md` — full maintenance context, design rules (13–29 for LGCI)
 2. Read `docs/literate-governance-plan.md` — complete LGCI design including lessons
 3. Read `docs/PROJECT_SUMMARY.md` (this document) for overall phase history
 4. Run `git log --oneline -10` to see recent commits

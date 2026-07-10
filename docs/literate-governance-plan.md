@@ -116,7 +116,7 @@ The slot vocabulary for each entity type — what properties it has, which are r
 
 | Family | Unique commands | Notes |
 |---|---|---|
-| Governance Officer | ~36 | Largest family: zones, policies, controls, regulations, metrics |
+| Governance Officer | ~37 | Largest family: zones, policies, controls, regulations, risks, metrics |
 | Collections | 15 | Folders, folios, subject areas, security groups |
 | Data Designer | 15 | Data specs, structures, fields, data classes |
 | Solution Architect | 13 | Blueprints, components, supply chains |

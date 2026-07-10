@@ -109,21 +109,33 @@ class CommandKeywordIndex:
             catalogued.add(command_name.lower())
 
     def _find_template_root(self) -> Optional[Path]:
-        """Find the Dr-Egeria-Templates directory."""
+        """Find the Dr-Egeria-Templates directory.
+
+        Checked in decreasing preference. This repo's own bundled copy
+        (examples/templates/) comes first — it's version-controlled as part
+        of egeria-advisor and kept in sync by the dr-egeria-command-sync
+        skill's explicit sync step, so it doesn't depend on any sibling
+        checkout existing at a hardcoded path on this machine.
+
+        The old `data/repos/egeria-workspaces/exchange-quickstart/...` and
+        `egeria-workspaces-fs/exchange-quickstart/...` paths were dropped —
+        confirmed live (2026-07-09) that path is a stale, orphaned copy
+        missing entire families (Action Author, Actor Manager) that exist
+        in every other copy. `egeria-workspaces-fs/templates/` (no
+        `exchange-quickstart/Templates/Dr-Egeria-Templates` prefix) is the
+        one actually served to the Portal app at runtime and kept current —
+        see the dr-egeria-command-sync skill's references/repo_paths.md.
+        """
         candidates = [
-            # Data repos clone
-            Path(__file__).parent.parent / "data" / "repos" / "egeria-workspaces" /
-            "exchange-quickstart" / "Templates" / "Dr-Egeria-Templates",
-            # Workspace filesystem
-            Path("/Users/dwolfson/localGit/egeria-v6/egeria-workspaces-fs") /
-            "exchange-quickstart" / "Templates" / "Dr-Egeria-Templates",
+            Path(__file__).parent.parent / "examples" / "templates",
+            Path("/Users/dwolfson/localGit/egeria-v6/egeria-workspaces-fs") / "templates",
         ]
         # Try pyegeria config
         try:
             import pyegeria.core.config as cfg
             root = Path(cfg.get_app_config().Environment.pyegeria_root)
-            candidates.insert(0, root / "Templates" / "Dr-Egeria-Templates")
-            candidates.insert(0, root / "templates")
+            candidates.append(root / "Templates" / "Dr-Egeria-Templates")
+            candidates.append(root / "templates")
         except Exception:
             pass
 

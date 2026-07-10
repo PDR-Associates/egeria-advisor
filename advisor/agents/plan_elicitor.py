@@ -43,6 +43,39 @@ _PHASE_LABELS = {
     "done":             "Complete",
 }
 
+# "move <ref> to [be] <target>" — e.g. "move step 3 to be the first step",
+# "move Create Campaign to step 1", "move Campaign to be the first step".
+_MOVE_RE = re.compile(r'^\s*move\s+(.+?)\s+to\s+(?:be\s+)?(.+?)\s*$', re.IGNORECASE)
+
+# Project Hierarchy phrasings — resolved to an embedded Parent ID mutation on
+# existing Create Project command(s), never a standalone Link Project Hierarchy
+# command (see CLAUDE.md design rule 13).
+_HIERARCHY_PARENT_OF_RE = re.compile(
+    r'^\s*make\s+(.+?)\s+(?:the|a)\s+parent\s+of\s+(.+?)\s*$', re.IGNORECASE
+)
+_HIERARCHY_SUBPROJECT_OF_RE = re.compile(
+    r'^\s*(?:link\s+)?(.+?)\s+as\s+(?:a\s+)?sub-?project\s+of\s+(.+?)\s*$', re.IGNORECASE
+)
+
+# Project Dependency phrasings — resolved to a standalone Link Project Dependency
+# command per pair (Child Project = dependent, Parent Project = depended-upon).
+_DEPENDENT_ON_RE = re.compile(
+    r'^\s*(?:link\s+)?(.+?)\s+as\s+dependent\s+on\s+(.+?)\s*$', re.IGNORECASE
+)
+_DEPENDS_ON_RE = re.compile(
+    r'^\s*(.+?)\s+depends?\s+on\s+(.+?)\s*$', re.IGNORECASE
+)
+
+# Rename the plan document itself — distinct from renaming a Dr.Egeria command's
+# Display Name. "rename the plan to X" / "rename it to X" / "call it X" /
+# "call the plan X" / "title it X" / "name it X" / "change the title to X".
+_RENAME_PLAN_RE = re.compile(
+    r'^\s*(?:rename\s+(?:the\s+)?plan\s+to|rename\s+(?:it|this)\s+to|'
+    r'call\s+(?:the\s+)?plan|call\s+it|title\s+it|name\s+it|'
+    r'change\s+the\s+title\s+to)\s+["\']?(.+?)["\']?\s*[.!]?\s*$',
+    re.IGNORECASE,
+)
+
 
 # ---------------------------------------------------------------------------
 # Public entry points (called from GovernancePlanAgent)
@@ -532,6 +565,51 @@ class PlanElicitor:
                     spec, note="I've removed those steps. Does the updated plan look right?"
                 )
 
+        # --- Move / reorder request -------------------------------------
+        if _MOVE_RE.match(user_response.strip()):
+            reordered = self._handle_move_request(spec["commands_identified"], user_response)
+            if reordered is not None:
+                dm.push_history(spec)
+                spec["commands_identified"] = reordered
+                dm.save(spec)
+                return self._build_confirm_commands_response(
+                    spec, note="Done — I've reordered the steps. Does the plan look right now?"
+                )
+            return self._build_confirm_commands_response(
+                spec,
+                note=(
+                    "I wasn't able to tell which step to move or where — could you be more "
+                    "specific?\n\nFor example: *\"move step 3 to be the first step\"* or "
+                    "*\"move Create Campaign to step 1\"*."
+                ),
+            )
+
+        # --- Rename the plan itself ("rename the plan to X", "call it X") --
+        note = self._apply_rename_request(spec, user_response)
+        if note is not None:
+            dm.save(spec)
+            return self._build_confirm_commands_response(
+                spec, note=note + " Does the plan look right now?"
+            )
+
+        # --- Project hierarchy request ("make Campaign the parent of...",  --
+        # --- "link Project 1 as a sub-project of Campaign") ----------------
+        note = self._apply_hierarchy_request(spec, user_response)
+        if note is not None:
+            dm.save(spec)
+            return self._build_confirm_commands_response(
+                spec, note=note + " Does the plan look right now?"
+            )
+
+        # --- Project dependency request ("Project 1 depends on Project 2", -
+        # --- "link project 1 as dependent on project 2") -------------------
+        note = self._apply_dependency_request(spec, user_response)
+        if note is not None:
+            dm.save(spec)
+            return self._build_confirm_commands_response(
+                spec, note=note + " Does the plan look right now?"
+            )
+
         # --- Addition / refinement request ----------------------------
         # Re-decompose the addition with context of what's already in the plan
         llm = get_planning_llm()
@@ -641,6 +719,333 @@ class PlanElicitor:
             if keep:
                 result.append(cmd)
         return result if result else commands  # never remove everything
+
+    def _resolve_command_ref(self, ref_text: str, commands: List[Dict]) -> Optional[int]:
+        """
+        Resolve a natural-language reference to a single command's 0-based index.
+
+        Tries, in order of confidence: "step N" (1-based) -> exact display-name
+        match -> exact action-name match -> ordinal-of-type ("Project 2" = the
+        2nd command whose action mentions "project") -> unique action-name
+        substring match -> unique display-name keyword match. Returns None if
+        nothing matches or a bare keyword matches more than one command
+        (ambiguous — caller should ask for clarification rather than guess).
+
+        This never treats an ordinal reference like "Project 1" as if it named
+        a literal Display Name — it only reads existing commands' names to
+        locate them, never writes a reference string back as a name.
+        """
+        ref = ref_text.strip().strip('"\'')
+        if not ref:
+            return None
+        low = ref.lower()
+
+        # "step N"
+        m = re.search(r'\bstep\s+(\d+)\b', low)
+        if m:
+            idx = int(m.group(1)) - 1
+            return idx if 0 <= idx < len(commands) else None
+
+        # Exact display-name match — highest-confidence real named entity
+        for i, cmd in enumerate(commands):
+            dn = (cmd.get("display_name") or "").strip().lower()
+            if dn and dn == low:
+                return i
+
+        # Exact action-name match ("Create Campaign")
+        for i, cmd in enumerate(commands):
+            if cmd["action"].strip().lower() == low:
+                return i
+
+        # Ordinal-of-type ("Project 2" -> 2nd command whose action mentions "project")
+        om = re.match(r'^(.+?)\s+(\d+)$', ref)
+        if om:
+            type_word = om.group(1).strip().lower()
+            ordinal = int(om.group(2))
+            type_matches = [
+                i for i, cmd in enumerate(commands) if type_word in cmd["action"].lower()
+            ]
+            if 1 <= ordinal <= len(type_matches):
+                return type_matches[ordinal - 1]
+
+        # Unique action-name substring match ("Campaign" -> "Create Campaign")
+        action_matches = [i for i, cmd in enumerate(commands) if low in cmd["action"].lower()]
+        if len(action_matches) == 1:
+            return action_matches[0]
+
+        # Unique display-name keyword match (last resort)
+        kw_matches = [
+            i for i, cmd in enumerate(commands)
+            if low and low in (cmd.get("display_name") or "").lower()
+        ]
+        if len(kw_matches) == 1:
+            return kw_matches[0]
+
+        return None
+
+    def _resolve_target_position(self, ref_text: str):
+        """
+        Resolve a move-target phrase to 'first', 'last', or a 0-based step index.
+        Returns None if the phrase doesn't specify a recognizable position.
+        """
+        low = ref_text.strip().lower()
+        if "first" in low:
+            return "first"
+        if "last" in low:
+            return "last"
+        m = re.search(r'\bstep\s+(\d+)\b', low)
+        if m:
+            return int(m.group(1)) - 1
+        return None
+
+    def _handle_move_request(
+        self, commands: List[Dict], user_response: str
+    ) -> Optional[List[Dict]]:
+        """
+        Parse a "move <ref> to [be] <target>" request and return the reordered
+        command list, or None if the source/target couldn't be confidently resolved.
+        """
+        m = _MOVE_RE.match(user_response.strip())
+        if not m:
+            return None
+        source_ref, target_ref = m.group(1).strip(), m.group(2).strip()
+
+        src_idx = self._resolve_command_ref(source_ref, commands)
+        if src_idx is None:
+            return None
+        target = self._resolve_target_position(target_ref)
+        if target is None:
+            return None
+
+        new_commands = list(commands)
+        moved = new_commands.pop(src_idx)
+        if target == "first":
+            tgt_idx = 0
+        elif target == "last":
+            tgt_idx = len(new_commands)
+        else:
+            tgt_idx = target - 1 if target > src_idx else target
+        tgt_idx = max(0, min(tgt_idx, len(new_commands)))
+        new_commands.insert(tgt_idx, moved)
+        return new_commands
+
+    def _resolve_bulk_command_refs(
+        self, ref_text: str, commands: List[Dict],
+        action_filter: Optional[str] = None, exclude_idx: Optional[int] = None,
+    ) -> List[int]:
+        """
+        Resolve a reference phrase to one or more 0-based indices. Recognizes
+        bulk selectors ("all projects", "all other projects", "the rest of the
+        projects", "everything else") in addition to single references (which
+        fall through to _resolve_command_ref). `action_filter`, if given,
+        restricts matches to commands whose action contains this substring
+        (case-insensitive); `exclude_idx` is always excluded (typically the
+        anchor/parent of the request).
+        """
+        low = ref_text.strip().lower()
+        bulk_words = ("all ", "all other", "the rest", "everything", "the other")
+        is_bulk = any(w in low for w in bulk_words)
+        if not is_bulk:
+            idx = self._resolve_command_ref(ref_text, commands)
+            return [idx] if idx is not None and idx != exclude_idx else []
+        return [
+            i for i, cmd in enumerate(commands)
+            if (action_filter is None or action_filter in cmd["action"].lower())
+            and i != exclude_idx
+        ]
+
+    def _split_multi_target_refs(self, text: str) -> List[str]:
+        """
+        Split "Project 2 and 3" / "Project 2, Project 3" / "Project 2 and Project 3"
+        into individual reference strings, propagating a shared type-word ("Project")
+        onto bare-number fragments so "3" alone resolves the same way "Project 3" would.
+        """
+        parts = re.split(r'\s*,\s*|\s+and\s+', text.strip())
+        result: List[str] = []
+        last_type_word: Optional[str] = None
+        for p in parts:
+            p = p.strip()
+            if not p:
+                continue
+            m = re.match(r'^(.+?)\s+(\d+)$', p)
+            if m:
+                last_type_word = m.group(1).strip()
+                result.append(p)
+            elif re.match(r'^\d+$', p) and last_type_word:
+                result.append(f"{last_type_word} {p}")
+            else:
+                result.append(p)
+                last_type_word = None
+        return result
+
+    def _parse_hierarchy_request(self, text: str) -> Optional[Tuple[str, str]]:
+        """Return (parent_ref, child_ref) if text expresses a project-hierarchy request."""
+        t = text.strip()
+        m = _HIERARCHY_PARENT_OF_RE.match(t)
+        if m:
+            return m.group(1).strip(), m.group(2).strip()
+        m = _HIERARCHY_SUBPROJECT_OF_RE.match(t)
+        if m:
+            # subject/object flipped: "X as a sub-project of Y" -> (parent=Y, child=X)
+            return m.group(2).strip(), m.group(1).strip()
+        return None
+
+    def _parse_dependency_request(self, text: str) -> Optional[Tuple[str, str]]:
+        """Return (child_ref_text, parent_ref_text) for a project-dependency request."""
+        t = text.strip()
+        m = _DEPENDENT_ON_RE.match(t)
+        if m:
+            return m.group(1).strip(), m.group(2).strip()
+        m = _DEPENDS_ON_RE.match(t)
+        if m:
+            return m.group(1).strip(), m.group(2).strip()
+        return None
+
+    def _apply_rename_request(self, spec: Dict, user_response: str) -> Optional[str]:
+        """
+        If user_response asks to rename the plan itself ("rename the plan to
+        X", "call it X"), mutate spec["title"] in place and return a status
+        note. Returns None if the text isn't a rename request at all. Caller
+        is responsible for persisting the draft (dm.save) and, in the refine
+        phase, also updating the document's H1 heading — this method only
+        touches spec["title"].
+        """
+        m = _RENAME_PLAN_RE.match(user_response.strip())
+        if not m:
+            return None
+        new_title = m.group(1).strip().strip('"\'')
+        if not new_title:
+            return None
+        old_title = spec.get("title", "")
+        get_draft_manager().push_history(spec)
+        spec["title"] = new_title
+        return f"Done — renamed the plan from \"{old_title}\" to **{new_title}**."
+
+    def _apply_hierarchy_request(self, spec: Dict, user_response: str) -> Optional[str]:
+        """
+        If user_response expresses a project-hierarchy request ("make Campaign
+        the parent of...", "link Project 1 as a sub-project of Campaign"),
+        mutate spec["commands_identified"]/spec["answers"] in place — always an
+        embedded mutation, never a standalone Link Project Hierarchy command
+        (CLAUDE.md design rule 13; the validator would rewrite it anyway) — and
+        return a status note (success or "couldn't resolve"). Returns None if
+        the text isn't a hierarchy request at all, so the caller can try
+        something else. Caller is responsible for persisting the draft
+        (dm.save) after a non-None return.
+
+        Appends to the *parent's* `Sub-Projects` field (Reference Name List,
+        top-down) rather than setting `Parent ID` on each child (bottom-up).
+        `Parent ID`/`Parent Relationship Type Name` only exist in the advanced
+        Create Project template, and _load_template()/_compose_command_block()
+        always validate against the basic-tier template regardless of
+        spec["mode"] — an advanced-only field is silently dropped from the
+        rendered document (see BACKLOG.md PC-1). `Sub-Projects` is basic-tier
+        and actually survives composition.
+        """
+        hier = self._parse_hierarchy_request(user_response)
+        if not hier:
+            return None
+        parent_ref, child_ref = hier
+        commands = spec["commands_identified"]
+        parent_idx = self._resolve_command_ref(parent_ref, commands)
+        if parent_idx is None:
+            return (f"I couldn't find a step matching \"{parent_ref}\" to use as the "
+                    "parent. Which step did you mean?")
+        parent_cmd = commands[parent_idx]
+        parent_label = parent_cmd.get("display_name") or parent_cmd["action"]
+        child_indices = self._resolve_bulk_command_refs(
+            child_ref, commands, action_filter="project", exclude_idx=parent_idx
+        )
+        if not child_indices:
+            return (f"I couldn't find any project steps matching \"{child_ref}\" to "
+                    f"link under {parent_label}.")
+
+        get_draft_manager().push_history(spec)
+        parent_cmd.setdefault("pre_filled", {})
+        existing_raw = parent_cmd["pre_filled"].get("Sub-Projects", "")
+        existing_names = [n.strip() for n in existing_raw.split(",") if n.strip()]
+        linked_labels = []
+        for i in child_indices:
+            child_cmd = commands[i]
+            child_ref_name = (child_cmd.get("pre_filled") or {}).get("Qualified Name") \
+                or child_cmd.get("display_name") or child_cmd["action"]
+            if child_ref_name not in existing_names:
+                existing_names.append(child_ref_name)
+            linked_labels.append(child_cmd.get("display_name") or child_cmd["action"])
+        parent_cmd["pre_filled"]["Sub-Projects"] = ", ".join(existing_names)
+        key = parent_cmd.get("_answers_key") or parent_cmd["action"]
+        spec["answers"].setdefault(key, {}).update(parent_cmd["pre_filled"])
+        return (f"Done — linked {', '.join(linked_labels)} under **{parent_label}** "
+                "as sub-project(s).")
+
+    def _apply_dependency_request(self, spec: Dict, user_response: str) -> Optional[str]:
+        """
+        If user_response expresses a project-dependency request ("Project 1
+        depends on Project 2 and 3", "link Project 1 as dependent on Project 2"),
+        insert one standalone Link Project Dependency command per pair into
+        spec["commands_identified"] (a peer relationship, not an embeddable
+        creation-time attribute — unlike hierarchy). Returns a status note, or
+        None if the text isn't a dependency request at all. Caller is
+        responsible for persisting the draft (dm.save) after a non-None return.
+        """
+        dep = self._parse_dependency_request(user_response)
+        if not dep:
+            return None
+        child_ref_text, parent_ref_text = dep
+        commands = spec["commands_identified"]
+        child_indices = []
+        for ref in self._split_multi_target_refs(child_ref_text):
+            child_indices.extend(
+                self._resolve_bulk_command_refs(ref, commands, action_filter="project")
+            )
+        parent_indices = []
+        for ref in self._split_multi_target_refs(parent_ref_text):
+            parent_indices.extend(
+                self._resolve_bulk_command_refs(ref, commands, action_filter="project")
+            )
+        child_indices = list(dict.fromkeys(child_indices))
+        parent_indices = list(dict.fromkeys(parent_indices))
+
+        if not child_indices or not parent_indices:
+            return (f"I couldn't confidently match the projects in \"{user_response}\" to "
+                    "steps in the plan — could you name them more specifically "
+                    "(e.g. \"step 2\")?")
+
+        new_links: List[Dict] = []
+        added_labels = []
+        for ci in child_indices:
+            child_cmd = commands[ci]
+            child_qn = (child_cmd.get("pre_filled") or {}).get("Qualified Name")
+            for pi in parent_indices:
+                if pi == ci or not child_qn:
+                    continue
+                parent_cmd = commands[pi]
+                parent_qn = (parent_cmd.get("pre_filled") or {}).get("Qualified Name")
+                if not parent_qn:
+                    continue
+                child_label = child_cmd.get("display_name") or child_cmd["action"]
+                parent_label = parent_cmd.get("display_name") or parent_cmd["action"]
+                new_links.append({
+                    "action":       "Link Project Dependency",
+                    "display_name": "",
+                    "_answers_key": f"Link Project Dependency:{child_qn}->{parent_qn}",
+                    "description":  "",
+                    "rationale":    "",
+                    "narrative":    f"Links {child_label} as dependent on {parent_label}.",
+                    "pre_filled":   {"Child Project": child_qn, "Parent Project": parent_qn},
+                    "placeholders": {},
+                })
+                added_labels.append(f"{child_label} → {parent_label}")
+
+        if not added_labels:
+            return ("I found the projects but couldn't establish the dependency — "
+                     "make sure both have names filled in.")
+
+        get_draft_manager().push_history(spec)
+        for link_cmd in new_links:
+            spec["answers"][link_cmd["_answers_key"]] = dict(link_cmd["pre_filled"])
+            commands.append(link_cmd)
+        return f"Added {len(added_labels)} dependency link(s): {', '.join(added_labels)}."
 
     def _handle_elicit_required(self, spec: Dict, user_response: str) -> Dict[str, Any]:
         dm = get_draft_manager()
@@ -770,6 +1175,36 @@ class PlanElicitor:
         # Treat this as a refinement request
         return self._handle_refine(spec, user_response)
 
+    def _rebuild_command_sequence(self, spec: Dict, current_content: str) -> str:
+        """
+        Regenerate only the "## Command Sequence" block of a plan document from
+        spec["commands_identified"], preserving the narrative header and any
+        "## Outcome" section. Used for structural edits (reorder) that must not
+        touch the narrative and must not go through the LLM. Mirrors the same
+        technique used by PATCH /api/drafts/{id}/commands in app.py.
+        """
+        from advisor.agents.governance_plan_agent import GovernancePlanAgent
+
+        commands_with_params = self._merge_answers_into_commands(spec)
+
+        idx = current_content.find("## Command Sequence")
+        narrative = current_content[:idx].strip() if idx != -1 else current_content.strip()
+
+        outcome = ""
+        out_idx = current_content.find("## Outcome")
+        if out_idx != -1:
+            outcome = current_content[out_idx:].strip()
+
+        agent = GovernancePlanAgent()
+        cmd_blocks = [
+            agent._compose_command_block(cmd, i + 1)
+            for i, cmd in enumerate(commands_with_params)
+        ]
+        new_content = narrative + "\n\n## Command Sequence\n\n" + "\n".join(cmd_blocks)
+        if outcome:
+            new_content += "\n\n" + outcome
+        return new_content
+
     def _handle_refine(self, spec: Dict, user_response: str) -> Dict[str, Any]:
         """Parse a natural-language change request and update the plan document."""
         from advisor.governance_docs import get_doc_manager
@@ -794,6 +1229,82 @@ class PlanElicitor:
             spec["phase_label"] = _PHASE_LABELS["template_offer"]
             dm.save(spec)
             return self._build_template_offer_response(spec)
+
+        # Move / reorder — handled deterministically against the structured
+        # commands_identified list, never sent to the LLM. Reordering a whole
+        # markdown document via free-text LLM patch is exactly the kind of
+        # structural edit that risks duplication/corruption (see design rule 15
+        # in CLAUDE.md re: keeping the LLM away from command structure).
+        if _MOVE_RE.match(user_response.strip()):
+            reordered = self._handle_move_request(spec["commands_identified"], user_response)
+            if reordered is not None:
+                spec["commands_identified"] = reordered
+                new_content = self._rebuild_command_sequence(spec, current_content)
+                doc_manager.update(doc_id, new_content)
+                dm.save(spec)
+                return _clarification_result(
+                    spec,
+                    "Done — I've reordered the steps and updated the canvas. Describe "
+                    "another change, or use **Validate** / **Execute** on the canvas when ready.",
+                    can_go_back=False, nav=[],
+                    extra={"doc_id": doc_id},
+                )
+            return _clarification_result(
+                spec,
+                "I wasn't able to tell which step to move or where — could you be more "
+                "specific?\n\nFor example: *\"move step 3 to be the first step\"* or "
+                "*\"move Create Campaign to step 1\"*.",
+                can_go_back=False, nav=[],
+                extra={"doc_id": doc_id},
+            )
+
+        # Rename the plan itself ("rename the plan to X", "call it X"). Updates
+        # both spec["title"] and the document's H1 heading — DocumentManager
+        # derives the displayed title fresh from the H1 line on every listing
+        # (governance_docs._list_folder -> _extract_title), not from any
+        # separately-stored metadata, so both must change together.
+        note = self._apply_rename_request(spec, user_response)
+        if note is not None:
+            from advisor.governance_docs import _replace_title
+            new_content = _replace_title(current_content, spec["title"])
+            doc_manager.update(doc_id, new_content)
+            dm.save(spec)
+            return _clarification_result(
+                spec,
+                f"{note} The canvas has been updated. Describe another change, or use "
+                "**Validate** / **Execute** on the canvas when ready.",
+                can_go_back=False, nav=[],
+                extra={"doc_id": doc_id},
+            )
+
+        # Project hierarchy / dependency requests — same deterministic handlers
+        # used in confirm_commands, reused here so relationship-establishment
+        # works whether it's asked for before or after the plan is generated.
+        note = self._apply_hierarchy_request(spec, user_response)
+        if note is not None:
+            new_content = self._rebuild_command_sequence(spec, current_content)
+            doc_manager.update(doc_id, new_content)
+            dm.save(spec)
+            return _clarification_result(
+                spec,
+                f"{note} The canvas has been updated. Describe another change, or use "
+                "**Validate** / **Execute** on the canvas when ready.",
+                can_go_back=False, nav=[],
+                extra={"doc_id": doc_id},
+            )
+
+        note = self._apply_dependency_request(spec, user_response)
+        if note is not None:
+            new_content = self._rebuild_command_sequence(spec, current_content)
+            doc_manager.update(doc_id, new_content)
+            dm.save(spec)
+            return _clarification_result(
+                spec,
+                f"{note} The canvas has been updated. Describe another change, or use "
+                "**Validate** / **Execute** on the canvas when ready.",
+                can_go_back=False, nav=[],
+                extra={"doc_id": doc_id},
+            )
 
         # Guard: if the request looks like a single-word command or an affirmation
         # with no structural change verb, don't send it to the LLM — it would
@@ -968,13 +1479,15 @@ class PlanElicitor:
         Show the proposed command sequence with template-informed field status,
         then ask the user to confirm, extend, or adjust before any field Q&A.
         """
-        from advisor.agents.governance_plan_agent import GovernancePlanAgent, _command_order_key
+        from advisor.agents.governance_plan_agent import GovernancePlanAgent
         agent = GovernancePlanAgent()
 
-        commands = sorted(
-            spec["commands_identified"],
-            key=lambda c: _command_order_key(c["action"]),
-        )
+        # NOTE: spec["commands_identified"] order is authoritative here — it's
+        # already priority-sorted once at initial decomposition (validate_commands
+        # -> _sort_by_priority) and additions are merged in already-sorted. Do NOT
+        # re-sort on every render: that would silently undo any user-requested
+        # "move step N..." reorder the next time this response is built.
+        commands = spec["commands_identified"]
         answers = spec["answers"]
 
         lines: List[str] = []
@@ -1018,6 +1531,9 @@ class PlanElicitor:
             "- Say **\"generate now\"** to create the plan immediately (missing fields become placeholders)\n"
             "- Describe anything to **add**: *\"also create a sub-project for data collection\"*\n"
             "- Describe anything to **remove**: *\"remove the governance zone\"*\n"
+            "- **Reorder** a step: *\"move step 3 to be the first step\"* or *\"move Campaign to step 1\"*\n"
+            "- Set a **parent/sub-project**: *\"make Campaign the parent of all other projects\"*\n"
+            "- Set a **dependency**: *\"Project 1 depends on Project 2 and 3\"*\n"
             "- Say **\"completely wrong\"** to describe your intent from scratch"
         )
 
@@ -1377,7 +1893,12 @@ class PlanElicitor:
                 "order":           _command_order_key(action),
                 "params":          params,
             })
-        return sorted(result, key=lambda x: x["order"])
+        # NOTE: spec["commands_identified"] order is authoritative — do NOT
+        # re-sort by "order" here. This function backs both plan generation and
+        # the Plan Canvas reorder PATCH (app.py: /api/drafts/{id}/commands), so
+        # resorting would silently undo a user's manual/NL reorder on every save.
+        # "order" is retained on each dict for callers that want the priority hint.
+        return result
 
     def _format_current_state(self, spec: Dict) -> str:
         """Compact summary of what's been collected so far."""

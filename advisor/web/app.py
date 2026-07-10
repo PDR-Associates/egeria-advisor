@@ -75,6 +75,24 @@ async def _startup():
     threading.Thread(target=_warm, daemon=True).start()
 
 
+@app.on_event("shutdown")
+async def _shutdown():
+    """
+    Terminate the MCP agent's subprocess(es) so they don't outlive this
+    process. Without this, every uvicorn --reload restart during development
+    orphans the MCP server subprocess instead of killing it — confirmed live
+    2026-07-10: ~50 orphaned mcp_server.py processes had accumulated over two
+    weeks of iterative development, one per reload, with no shutdown handler
+    ever calling shutdown_mcp_agent() to reap them.
+    """
+    try:
+        from advisor.mcp_agent import shutdown_mcp_agent
+        await shutdown_mcp_agent()
+        logger.info("MCP agent shut down cleanly")
+    except Exception as exc:
+        logger.warning(f"MCP agent shutdown failed: {exc}")
+
+
 # ── request / response models ──────────────────────────────────────────────────
 
 class QueryRequest(BaseModel):
@@ -871,7 +889,6 @@ async def patch_draft_commands(draft_id: str, body: Dict[str, Any]) -> Dict[str,
         try:
             from advisor.governance_docs import get_doc_manager
             from advisor.agents.plan_elicitor import get_plan_elicitor
-            from advisor.agents.governance_plan_agent import GovernancePlanAgent
 
             doc_manager = get_doc_manager()
             current_content = doc_manager.load(doc_id)
@@ -884,30 +901,7 @@ async def patch_draft_commands(draft_id: str, body: Dict[str, Any]) -> Dict[str,
                 dm.save(spec)
 
                 elicitor = get_plan_elicitor()
-                commands_with_params = elicitor._merge_answers_into_commands(spec)
-
-                # Keep the narrative header (everything before "## Command Sequence")
-                idx = current_content.find("## Command Sequence")
-                if idx != -1:
-                    narrative = current_content[:idx].strip()
-                else:
-                    narrative = current_content.strip()
-
-                # Extract outcome section if already present
-                outcome = ""
-                out_idx = current_content.find("## Outcome")
-                if out_idx != -1:
-                    outcome = current_content[out_idx:].strip()
-
-                agent = GovernancePlanAgent()
-                cmd_blocks = []
-                for i, cmd in enumerate(commands_with_params):
-                    cmd_blocks.append(agent._compose_command_block(cmd, i + 1))
-
-                new_content = narrative + "\n\n## Command Sequence\n\n" + "\n".join(cmd_blocks)
-                if outcome:
-                    new_content += "\n\n" + outcome
-
+                new_content = elicitor._rebuild_command_sequence(spec, current_content)
                 doc_manager.update(doc_id, new_content)
                 logger.info(f"Regenerated and updated plan document {doc_id} to match canvas edits")
         except Exception as exc:
@@ -1473,24 +1467,10 @@ async def create_builder_draft(body: Dict[str, Any]) -> Dict[str, Any]:
     Body: {title: str, perspective?: str}
     Returns the draft spec with builder_mode=true and an empty command list.
     """
-    from advisor.governance_draft import get_draft_manager
+    from advisor.governance_draft import create_builder_draft as _create_builder_draft
     title = (body.get("title") or "Untitled Plan").strip()
     perspective = body.get("perspective")
-    dm = get_draft_manager()
-    spec = dm.create(
-        title=title,
-        original_query=f"[builder] {title}",
-        commands_identified=[],
-        pending_questions={"required": [], "optional": []},
-        pre_filled_answers={},
-        mode="basic",
-        perspective=perspective,
-    )
-    spec["phase"] = "confirm_commands"
-    spec["phase_label"] = "Building plan"
-    spec["builder_mode"] = True
-    dm.save(spec)
-    return spec
+    return _create_builder_draft(title, perspective)
 
 
 @app.get("/api/plan-templates")

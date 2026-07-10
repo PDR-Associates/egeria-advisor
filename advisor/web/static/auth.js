@@ -196,6 +196,42 @@ const Auth = (() => {
     showLogin('Your session has expired. Please sign in again.');
   }
 
+  // Wrap window.fetch once so ANY API call that gets a 401 triggers the
+  // re-login overlay — not just the couple of call sites that used to check
+  // this manually. Individual call sites can still check r.status === 401
+  // themselves for their own early-return/spinner-reset behavior; this just
+  // guarantees the overlay always appears too, even from call sites that
+  // never checked. Auth's own login/portal-exchange endpoints are excluded:
+  // a 401 there means "wrong credentials", not "your session expired", and
+  // they already show their own inline error message — firing handle401
+  // there would clear the in-progress login attempt and show a confusing
+  // "session expired" message instead of "invalid credentials".
+  const _origFetch = window.fetch.bind(window);
+  const _AUTH_ENDPOINTS_EXCLUDED_FROM_401_HANDLING = ['/api/auth/login', '/api/auth/portal'];
+  window.fetch = async (...args) => {
+    // Proactive check: most endpoints (e.g. /api/query) never actually
+    // return 401 for an expired token — get_current_user() in auth.py
+    // deliberately never raises, it just silently falls back to anonymous
+    // and callers decide what "anonymous" means for them (often a plain
+    // 200 response with an in-band "please sign in" message). A reactive
+    // 401 check alone would miss this entirely, so also check locally: if
+    // we're sending a token that's already expired by its own `exp` claim,
+    // treat that the same as a 401 — no need to wait for a round-trip that
+    // may never signal failure. Only fires once per expiry (guarded by
+    // whether a token is still present — handle401 clears it).
+    const token = getToken();
+    if (token && !isAuthenticated()) {
+      handle401();
+    }
+    const response = await _origFetch(...args);
+    if (response.status === 401) {
+      const url = typeof args[0] === 'string' ? args[0] : (args[0]?.url || '');
+      const isExcluded = _AUTH_ENDPOINTS_EXCLUDED_FROM_401_HANDLING.some(p => url.includes(p));
+      if (!isExcluded) handle401();
+    }
+    return response;
+  };
+
   // ── Init ─────────────────────────────────────────────────────────────────
 
   async function init(onReady) {

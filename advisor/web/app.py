@@ -75,6 +75,24 @@ async def _startup():
     threading.Thread(target=_warm, daemon=True).start()
 
 
+@app.on_event("shutdown")
+async def _shutdown():
+    """
+    Terminate the MCP agent's subprocess(es) so they don't outlive this
+    process. Without this, every uvicorn --reload restart during development
+    orphans the MCP server subprocess instead of killing it — confirmed live
+    2026-07-10: ~50 orphaned mcp_server.py processes had accumulated over two
+    weeks of iterative development, one per reload, with no shutdown handler
+    ever calling shutdown_mcp_agent() to reap them.
+    """
+    try:
+        from advisor.mcp_agent import shutdown_mcp_agent
+        await shutdown_mcp_agent()
+        logger.info("MCP agent shut down cleanly")
+    except Exception as exc:
+        logger.warning(f"MCP agent shutdown failed: {exc}")
+
+
 # ── request / response models ──────────────────────────────────────────────────
 
 class QueryRequest(BaseModel):

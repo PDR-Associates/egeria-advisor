@@ -45,6 +45,7 @@ class ReportSpecAgent:
         source_folder: str = "inbox",
         output_format: str = "TABLE",
         custom_params: Optional[Dict[str, Any]] = None,
+        egeria_credentials: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """
         Execute a report spec document and append the run outcome.
@@ -123,7 +124,7 @@ class ReportSpecAgent:
         # Resolve connection details
         pipeline = get_report_pipeline()
         try:
-            conn = pipeline._read_pyegeria_connection()
+            conn = pipeline._read_pyegeria_connection(egeria_credentials=egeria_credentials)
         except Exception as exc:
             logger.error(f"Failed to read Egeria connection info: {exc}")
             conn = {}
@@ -236,14 +237,18 @@ class ReportSpecAgent:
             "context_length": len(response),
         }
 
-    def retry(self, doc_id: str, perspective: Optional[str] = None, output_format: str = "TABLE") -> Dict[str, Any]:
+    def retry(
+        self, doc_id: str, perspective: Optional[str] = None, output_format: str = "TABLE",
+        egeria_credentials: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
         """Re-execute a report spec.
 
         Strips any _executed_<ts> suffix to find the base spec in the catalog (inbox),
         then runs it again.  The spec is never removed from inbox so no move is needed.
         """
         base_doc_id = re.sub(r'_executed_\d{8}_\d{6}$', '', doc_id)
-        return self.execute(base_doc_id, perspective=perspective, output_format=output_format)
+        return self.execute(base_doc_id, perspective=perspective, output_format=output_format,
+                             egeria_credentials=egeria_credentials)
 
     def recover(self, doc_id: str) -> Dict[str, Any]:
         """Confirm the spec is available in the catalog (inbox).

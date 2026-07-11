@@ -77,22 +77,29 @@ class GovernancePlanAgent:
     pointing to the saved inbox document.
     """
 
-    def handle(self, query: str, perspective: str | None = None, mode: str = "basic") -> Dict[str, Any]:
+    def handle(
+        self, query: str, perspective: str | None = None, mode: str = "basic",
+        egeria_credentials: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
         """Start a new conversational planning session via PlanElicitor."""
         logger.info(f"GovernancePlanAgent.handle: delegating to PlanElicitor, query={query[:80]!r}")
         try:
             from advisor.agents.plan_elicitor import get_plan_elicitor
-            result = get_plan_elicitor().start(query, perspective=perspective, mode=mode)
+            result = get_plan_elicitor().start(query, perspective=perspective, mode=mode,
+                                                egeria_credentials=egeria_credentials)
             result.setdefault("routing_agent", "governance_plan_agent")
             return result
         except Exception as exc:
             logger.error(f"GovernancePlanAgent.handle: PlanElicitor failed: {exc}")
             return _error_result(query, f"Planning session could not be started: {exc}")
 
-    def continue_draft(self, draft_id: str, user_response: str) -> Dict[str, Any]:
+    def continue_draft(
+        self, draft_id: str, user_response: str,
+        egeria_credentials: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
         """Route a user response to the active planning Q&A session."""
         from advisor.agents.plan_elicitor import get_plan_elicitor
-        result = get_plan_elicitor().process(draft_id, user_response)
+        result = get_plan_elicitor().process(draft_id, user_response, egeria_credentials=egeria_credentials)
         result.setdefault("routing_agent", "governance_plan_agent")
         return result
 
@@ -367,6 +374,7 @@ class GovernancePlanAgent:
         dry_run: bool = False,
         source_folder: str = "inbox",
         draft_id: str | None = None,
+        egeria_credentials: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """
         Execute an approved plan document and append the outcome section.
@@ -431,6 +439,7 @@ class GovernancePlanAgent:
                 command_section,
                 directive="process",
                 dry_run=dry_run,
+                egeria_credentials=egeria_credentials,
             )
         except ConnectionError as exc:
             return _error_result(
@@ -566,7 +575,7 @@ class GovernancePlanAgent:
             "context_length": len(outcome_md),
         }
 
-    def validate(self, doc_id: str) -> Dict[str, Any]:
+    def validate(self, doc_id: str, egeria_credentials: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """
         Validate a plan's command sequence against Egeria without executing it.
 
@@ -600,6 +609,7 @@ class GovernancePlanAgent:
                 command_section,
                 directive="validate",
                 dry_run=False,
+                egeria_credentials=egeria_credentials,
             )
         except ConnectionError as exc:
             return _error_result(
@@ -638,7 +648,10 @@ class GovernancePlanAgent:
         result.update(counts)
         return result
 
-    def retry(self, doc_id: str, perspective: str | None = None) -> Dict[str, Any]:
+    def retry(
+        self, doc_id: str, perspective: str | None = None,
+        egeria_credentials: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
         """
         Move a failed outbox plan back to inbox and re-execute it.
 
@@ -655,7 +668,7 @@ class GovernancePlanAgent:
                 f"Could not move `{doc_id}` back to inbox. "
                 f"It may not be in the outbox, or the inbox already has a file with that name.",
             )
-        return self.execute(inbox_doc_id, perspective=perspective)
+        return self.execute(inbox_doc_id, perspective=perspective, egeria_credentials=egeria_credentials)
 
     @staticmethod
     def _extract_command_section(plan_content: str) -> str:
@@ -920,6 +933,7 @@ class GovernancePlanAgent:
         perspective: str | None,
         llm,
         existing_commands: Optional[List[Dict]] = None,
+        egeria_credentials: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """
         Two-stage decomposition:
@@ -959,7 +973,7 @@ class GovernancePlanAgent:
         context_warnings: list[str] = []
         try:
             from advisor.egeria_context import EgeriaContext
-            ctx = EgeriaContext()
+            ctx = EgeriaContext(egeria_credentials=egeria_credentials)
             ctx.enrich_entities(entities)
             # Surface "already exists" warnings so the user can decide to update instead
             for obj in entities.get("objects", []):

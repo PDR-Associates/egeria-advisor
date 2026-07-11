@@ -351,12 +351,24 @@ async def auth_logout() -> Dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/auth/defaults")
+async def auth_defaults() -> Dict[str, Any]:
+    """Return the configured default Egeria username, for login-form prefill
+    convenience on this local, single-user tool. Deliberately does NOT return
+    the password — this is an unauthenticated endpoint, and returning a
+    plaintext password from it would let anyone who can reach the server
+    retrieve it before ever logging in."""
+    from advisor.config import settings
+    return {"username": settings.egeria_user}
+
+
 @app.post("/api/query")
 async def query_endpoint(request: Request, req: QueryRequest) -> Dict[str, Any]:
     """Process a natural-language query and return the response dict."""
-    from advisor.auth import get_current_user
+    from advisor.auth import get_current_user, get_egeria_credentials
     current_user = get_current_user(request)
     egeria_authenticated = current_user is not None
+    egeria_credentials = get_egeria_credentials(request)
 
     user_query = req.query.strip()
     # Append search filter tag so the report pipeline can extract it
@@ -390,6 +402,7 @@ async def query_endpoint(request: Request, req: QueryRequest) -> Dict[str, Any]:
                 egeria_authenticated=egeria_authenticated,
                 session_id=req.session_id or None,
                 user_id=user_id,
+                egeria_credentials=egeria_credentials,
             ),
         )
     except Exception as exc:
@@ -423,9 +436,10 @@ async def query_stream_endpoint(request: Request, req: QueryRequest) -> Streamin
       data: {"type":"done","result":{...}}
       data: [DONE]
     """
-    from advisor.auth import get_current_user
+    from advisor.auth import get_current_user, get_egeria_credentials
     current_user = get_current_user(request)
     egeria_authenticated = current_user is not None
+    egeria_credentials = get_egeria_credentials(request)
 
     user_query = req.query.strip()
     if req.search_string and req.search_string.strip() not in ("", "*"):
@@ -455,6 +469,7 @@ async def query_stream_endpoint(request: Request, req: QueryRequest) -> Streamin
                     egeria_authenticated=egeria_authenticated,
                     session_id=req.session_id or None,
                     user_id=user_id,
+                    egeria_credentials=egeria_credentials,
                 ):
                     loop.call_soon_threadsafe(q.put_nowait, chunk)
             except Exception as exc:
@@ -656,7 +671,7 @@ async def save_plan(doc_id: str, body: Dict[str, Any]) -> Dict[str, str]:
 
 
 @app.post("/api/plans/{doc_id}/execute")
-async def execute_plan(doc_id: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+async def execute_plan(request: Request, doc_id: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Execute an inbox plan directly (first execution). Direct REST call —
     deliberately not routed through chat text — since "execute the plan X"
@@ -668,48 +683,71 @@ async def execute_plan(doc_id: str, body: Optional[Dict[str, Any]] = None) -> Di
     Optional body.draft_id: if this plan originated from a draft, its doc_id
     gets updated to the new outbox id after execution — otherwise a later
     "resume draft" hands back a doc_id that no longer exists anywhere.
+
+    Requires login — this performs live writes against Egeria and must be
+    attributable to the signed-in user, not a shared service account.
     """
+    from advisor.auth import require_egeria_user, get_egeria_credentials
+    require_egeria_user(request)
+    egeria_credentials = get_egeria_credentials(request)
     from advisor.agents.governance_plan_agent import get_governance_plan_agent
     agent = get_governance_plan_agent()
     draft_id = (body or {}).get("draft_id") or None
     result = await asyncio.get_event_loop().run_in_executor(
-        None, partial(agent.execute, doc_id, draft_id=draft_id)
+        None, partial(agent.execute, doc_id, draft_id=draft_id, egeria_credentials=egeria_credentials)
     )
     return result
 
 
 @app.post("/api/plans/{doc_id}/validate")
-async def validate_plan(doc_id: str) -> Dict[str, Any]:
-    """Run Dr.Egeria validate directive on the plan's command section."""
+async def validate_plan(request: Request, doc_id: str) -> Dict[str, Any]:
+    """Run Dr.Egeria validate directive on the plan's command section.
+
+    Requires login — see execute_plan.
+    """
+    from advisor.auth import require_egeria_user, get_egeria_credentials
+    require_egeria_user(request)
+    egeria_credentials = get_egeria_credentials(request)
     from advisor.agents.governance_plan_agent import get_governance_plan_agent
     agent = get_governance_plan_agent()
     result = await asyncio.get_event_loop().run_in_executor(
-        None, agent.validate, doc_id
+        None, partial(agent.validate, doc_id, egeria_credentials=egeria_credentials)
     )
     return result
 
 
 @app.post("/api/plans/{doc_id}/retry")
-async def retry_plan(doc_id: str) -> Dict[str, Any]:
-    """Move a failed outbox plan back to inbox and re-execute it immediately."""
+async def retry_plan(request: Request, doc_id: str) -> Dict[str, Any]:
+    """Move a failed outbox plan back to inbox and re-execute it immediately.
+
+    Requires login — see execute_plan.
+    """
+    from advisor.auth import require_egeria_user, get_egeria_credentials
+    require_egeria_user(request)
+    egeria_credentials = get_egeria_credentials(request)
     from advisor.agents.governance_plan_agent import get_governance_plan_agent
     agent = get_governance_plan_agent()
     result = await asyncio.get_event_loop().run_in_executor(
-        None, agent.retry, doc_id
+        None, partial(agent.retry, doc_id, egeria_credentials=egeria_credentials)
     )
     return result
 
 
 @app.post("/api/plans/{doc_id}/rerun")
-async def rerun_plan(doc_id: str) -> Dict[str, Any]:
+async def rerun_plan(request: Request, doc_id: str) -> Dict[str, Any]:
     """
     Re-execute an outbox plan directly, in place — no inbox detour.
     Appends a new "## Outcome (Run N)" section to the same outbox document.
+
+    Requires login — see execute_plan.
     """
+    from advisor.auth import require_egeria_user, get_egeria_credentials
+    require_egeria_user(request)
+    egeria_credentials = get_egeria_credentials(request)
     from advisor.agents.governance_plan_agent import get_governance_plan_agent
     agent = get_governance_plan_agent()
     result = await asyncio.get_event_loop().run_in_executor(
-        None, lambda: agent.execute(doc_id, source_folder="outbox")
+        None, lambda: agent.execute(doc_id, source_folder="outbox", egeria_credentials=egeria_credentials)
     )
     return result
 
@@ -1006,10 +1044,18 @@ async def update_report_doc(doc_id: str, body: Dict[str, str]) -> Dict[str, Any]
 
 @app.post("/api/reports/docs/{doc_id}/execute")
 async def execute_report_doc(
+    request: Request,
     doc_id: str,
     body: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Execute a report spec document and append run outcome."""
+    """Execute a report spec document and append run outcome.
+
+    Requires login — this performs a live Egeria read and must be
+    attributable to the signed-in user, not a shared service account.
+    """
+    from advisor.auth import require_egeria_user, get_egeria_credentials
+    require_egeria_user(request)
+    egeria_credentials = get_egeria_credentials(request)
     from advisor.agents.report_spec_agent import get_report_spec_agent
     agent = get_report_spec_agent()
     body_data = body or {}
@@ -1021,6 +1067,7 @@ async def execute_report_doc(
         dry_run=dry_run,
         output_format=fmt,
         custom_params=params,
+        egeria_credentials=egeria_credentials,
     )
 
 
@@ -1041,13 +1088,19 @@ async def archive_report_result(doc_id: str, body: Optional[Dict[str, Any]] = No
 
 
 @app.post("/api/reports/docs/{doc_id}/retry")
-async def retry_report_doc(doc_id: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Move an executed report back to inbox and re-execute it."""
+async def retry_report_doc(request: Request, doc_id: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Move an executed report back to inbox and re-execute it.
+
+    Requires login — see execute_report_doc.
+    """
+    from advisor.auth import require_egeria_user, get_egeria_credentials
+    require_egeria_user(request)
+    egeria_credentials = get_egeria_credentials(request)
     from advisor.agents.report_spec_agent import get_report_spec_agent
     agent = get_report_spec_agent()
     body_data = body or {}
     fmt = body_data.get("output_format", "REPORT")
-    return agent.retry(doc_id, output_format=fmt)
+    return agent.retry(doc_id, output_format=fmt, egeria_credentials=egeria_credentials)
 
 
 @app.post("/api/reports/docs/{doc_id}/recover")
@@ -1121,7 +1174,9 @@ async def get_report_draft(draft_id: str) -> Dict[str, Any]:
 _SCHEMA_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
-async def discover_draft_schema_internal(draft_id: str) -> List[Dict[str, str]]:
+async def discover_draft_schema_internal(
+    draft_id: str, egeria_credentials: Optional[Dict[str, str]] = None
+) -> List[Dict[str, str]]:
     """Internal helper to dynamically retrieve the schema for a draft report specification."""
     from advisor.report_draft import get_report_draft_manager
     from advisor.report_spec_parser import register_report_spec, parse_report_spec_markdown
@@ -1160,7 +1215,7 @@ async def discover_draft_schema_internal(draft_id: str) -> List[Dict[str, str]]:
 
     pipeline = get_report_pipeline()
     try:
-        conn = pipeline._read_pyegeria_connection()
+        conn = pipeline._read_pyegeria_connection(egeria_credentials=egeria_credentials)
     except Exception as exc:
         logger.error(f"Failed to read Egeria connection info: {exc}")
         return []
@@ -1202,9 +1257,16 @@ async def discover_draft_schema_internal(draft_id: str) -> List[Dict[str, str]]:
 
 
 @app.get("/api/reports/drafts/{draft_id}/schema")
-async def get_report_draft_schema(draft_id: str) -> List[Dict[str, str]]:
-    """Return the dynamically discovered schema attributes for a report draft."""
-    return await discover_draft_schema_internal(draft_id)
+async def get_report_draft_schema(request: Request, draft_id: str) -> List[Dict[str, str]]:
+    """Return the dynamically discovered schema attributes for a report draft.
+
+    Requires login — this performs a live Egeria read and must be
+    attributable to the signed-in user, not a shared service account.
+    """
+    from advisor.auth import require_egeria_user, get_egeria_credentials
+    require_egeria_user(request)
+    egeria_credentials = get_egeria_credentials(request)
+    return await discover_draft_schema_internal(draft_id, egeria_credentials=egeria_credentials)
 
 
 @app.delete("/api/reports/drafts/{draft_id}")
@@ -1556,8 +1618,15 @@ async def get_column_fields(draft_id: Optional[str] = None) -> Dict[str, Any]:
 
 
 @app.get("/api/templates/{command_name}/fields")
-async def get_template_fields(command_name: str, level: str = "basic") -> Dict[str, Any]:
-    """Return template field metadata for a Dr.Egeria command at the given template level."""
+async def get_template_fields(request: Request, command_name: str, level: str = "basic") -> Dict[str, Any]:
+    """Return template field metadata for a Dr.Egeria command at the given template level.
+
+    Requires login — the valid-values enrichment below performs live Egeria reads
+    and must be attributable to the signed-in user, not a shared service account.
+    """
+    from advisor.auth import require_egeria_user, get_egeria_credentials
+    require_egeria_user(request)
+    egeria_credentials = get_egeria_credentials(request)
     from urllib.parse import unquote
     from advisor.agents.tools import _templates_root, _normalise
     from advisor.agents.dr_egeria_agent import parse_template
@@ -1607,7 +1676,7 @@ async def get_template_fields(command_name: str, level: str = "basic") -> Dict[s
             if not zone_values:
                 try:
                     from advisor.egeria_context import EgeriaContext
-                    zone_values = EgeriaContext().list_governance_zones()
+                    zone_values = EgeriaContext(egeria_credentials=egeria_credentials).list_governance_zones()
                 except Exception:
                     pass
             if zone_values:
@@ -1616,7 +1685,7 @@ async def get_template_fields(command_name: str, level: str = "basic") -> Dict[s
             if not tech_type_values:
                 try:
                     from advisor.egeria_context import EgeriaContext
-                    tech_type_values = EgeriaContext().list_technology_types()
+                    tech_type_values = EgeriaContext(egeria_credentials=egeria_credentials).list_technology_types()
                 except Exception:
                     pass
             if tech_type_values:
@@ -1640,11 +1709,18 @@ async def get_template_fields(command_name: str, level: str = "basic") -> Dict[s
 
 
 @app.get("/api/egeria/zones")
-async def get_governance_zones() -> Dict[str, Any]:
-    """Return all governance zone names from the live Egeria instance."""
+async def get_governance_zones(request: Request) -> Dict[str, Any]:
+    """Return all governance zone names from the live Egeria instance.
+
+    Requires login — this performs a live Egeria read and must be
+    attributable to the signed-in user, not a shared service account.
+    """
+    from advisor.auth import require_egeria_user, get_egeria_credentials
+    require_egeria_user(request)
+    egeria_credentials = get_egeria_credentials(request)
     try:
         from advisor.egeria_context import EgeriaContext
-        zones = EgeriaContext().list_governance_zones()
+        zones = EgeriaContext(egeria_credentials=egeria_credentials).list_governance_zones()
         return {"zones": zones, "count": len(zones)}
     except Exception as exc:
         return {"zones": [], "count": 0, "error": str(exc)}

@@ -109,6 +109,7 @@ class RAGSystem:
         egeria_authenticated: bool = True,
         session_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        egeria_credentials: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """
         Process a user query and generate a response.
@@ -122,6 +123,9 @@ class RAGSystem:
                 plan execution) and returns a friendly degradation message instead.
             session_id: Optional session ID for tracking
             user_id: Optional user ID for tracking
+            egeria_credentials: the authenticated caller's {user_id, password} for live
+                Egeria calls (reports, Dr.Egeria actions, plan execution); falls back to
+                the .env-backed service account when None (see advisor.auth).
 
         Returns:
             Dictionary with response and metadata
@@ -139,6 +143,7 @@ class RAGSystem:
             egeria_authenticated=egeria_authenticated,
             session_id=session_id,
             user_id=user_id,
+            egeria_credentials=egeria_credentials,
         )
         
         # Always record metrics in local database (for dashboard)
@@ -530,6 +535,7 @@ class RAGSystem:
         egeria_authenticated: bool = True,
         session_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        egeria_credentials: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Internal query processing."""
 
@@ -585,7 +591,8 @@ class RAGSystem:
                         exec_id,
                         perspective=perspective,
                         output_format=_output_fmt,
-                        custom_params=custom_params if custom_params else None
+                        custom_params=custom_params if custom_params else None,
+                        egeria_credentials=egeria_credentials,
                     )
                     # Preserve context so the canvas state is maintained
                     result["next_context"] = context
@@ -615,13 +622,14 @@ class RAGSystem:
                     try:
                         result = get_governance_plan_agent().execute(
                             _spec_d["doc_id"], perspective=perspective, draft_id=_ctx_draft_id,
+                            egeria_credentials=egeria_credentials,
                         )
                         result.setdefault("routing_agent", "governance_plan_agent")
                         result["next_context"] = None
                         return result
                     except Exception as exc:
                         logger.error("GovernancePlanAgent.execute failed (ctx): {}", str(exc), exc_info=True)
-            return _gpa.continue_draft(_ctx_draft_id, user_query)
+            return _gpa.continue_draft(_ctx_draft_id, user_query, egeria_credentials=egeria_credentials)
 
         elif _ctx_task == "act_confirm":
             if not egeria_authenticated:
@@ -652,7 +660,7 @@ class RAGSystem:
                     _extra = {"metadata_element_type": _etype} if _etype else None
                     result = _rp._execute_report(user_query, _spec_id, search_string=_filt,
                                                   page_size=page_size, extra_params=_extra,
-                                                  output_type=_fmt)
+                                                  output_type=_fmt, egeria_credentials=egeria_credentials)
                     if result:
                         result["query_type"]  = "act_report_result"
                         result["matched_spec_id"] = _spec_id
@@ -691,7 +699,8 @@ class RAGSystem:
                 try:
                     from advisor.report_pipeline import get_report_pipeline
                     result = get_report_pipeline()._execute_report(user_query, chosen,
-                                                                     search_string="*", page_size=page_size)
+                                                                     search_string="*", page_size=page_size,
+                                                                     egeria_credentials=egeria_credentials)
                     if result:
                         result["query_type"]  = "act_report_result"
                         result["matched_spec_id"] = chosen
@@ -807,7 +816,7 @@ class RAGSystem:
                 doc_id = spec.get("doc_id") if spec else None
                 if doc_id:
                     logger.info(f"Draft execute command detected — executing plan {doc_id}")
-                    return agent.execute(doc_id)
+                    return agent.execute(doc_id, egeria_credentials=egeria_credentials)
                 else:
                     return {
                         "query": user_query,
@@ -823,7 +832,7 @@ class RAGSystem:
                     }
 
             # Default: forward user response to active Q&A phase
-            return agent.continue_draft(draft_id, user_query)
+            return agent.continue_draft(draft_id, user_query, egeria_credentials=egeria_credentials)
 
         # ------------------------------------------------------------------ #
         # Top-level navigation patterns (no active draft — resume by ID)      #
@@ -858,7 +867,8 @@ class RAGSystem:
             try:
                 from advisor.agents.plan_elicitor import get_plan_elicitor
                 result = get_plan_elicitor().start(
-                    user_query, perspective=perspective, template_name=_tname
+                    user_query, perspective=perspective, template_name=_tname,
+                    egeria_credentials=egeria_credentials,
                 )
                 result.setdefault("routing_agent", "governance_plan_agent")
                 return result
@@ -1067,7 +1077,8 @@ class RAGSystem:
             _dry_run = "dry" in user_query.lower()
             try:
                 from advisor.agents.governance_plan_agent import get_governance_plan_agent
-                result = get_governance_plan_agent().execute(_doc_id, perspective=perspective, dry_run=_dry_run)
+                result = get_governance_plan_agent().execute(_doc_id, perspective=perspective, dry_run=_dry_run,
+                                                               egeria_credentials=egeria_credentials)
                 result.setdefault("routing_agent", "governance_plan_agent")
                 result.update({
                     "active_perspective": active_perspective,
@@ -1097,7 +1108,8 @@ class RAGSystem:
                 # means there's real content for PlanElicitor to decompose.
                 logger.info("Create intent → PlanElicitor")
                 from advisor.agents.plan_elicitor import get_plan_elicitor
-                result = get_plan_elicitor().start(user_query, perspective=perspective)
+                result = get_plan_elicitor().start(user_query, perspective=perspective,
+                                                    egeria_credentials=egeria_credentials)
                 result.setdefault("routing_agent", "plan_elicitor")
                 result.update(_ctx)
                 return result
@@ -1135,7 +1147,8 @@ class RAGSystem:
             logger.info("Handling plan query via GovernancePlanAgent")
             try:
                 from advisor.agents.governance_plan_agent import get_governance_plan_agent
-                result = get_governance_plan_agent().handle(user_query, perspective=perspective)
+                result = get_governance_plan_agent().handle(user_query, perspective=perspective,
+                                                              egeria_credentials=egeria_credentials)
                 result.setdefault("routing_agent", "governance_plan_agent")
                 result.update({
                     "active_perspective": active_perspective,
@@ -1164,7 +1177,8 @@ class RAGSystem:
                 from advisor.agents.report_spec_agent import get_report_spec_agent
                 result = get_report_spec_agent().execute(
                     _doc_id, perspective=perspective, dry_run=_dry_run, output_format=_output_fmt,
-                    custom_params=custom_params if custom_params else None
+                    custom_params=custom_params if custom_params else None,
+                    egeria_credentials=egeria_credentials,
                 )
                 result.setdefault("routing_agent", "report_spec_agent")
                 result.update({
@@ -1221,7 +1235,8 @@ class RAGSystem:
             logger.info("Handling report query via MCP report pipeline")
             try:
                 from advisor.report_pipeline import get_report_pipeline
-                result = get_report_pipeline().process(user_query, perspective=perspective, page_size=page_size)
+                result = get_report_pipeline().process(user_query, perspective=perspective, page_size=page_size,
+                                                         egeria_credentials=egeria_credentials)
                 result.setdefault("routing_agent", "report_pipeline")
                 result.update({
                     "active_perspective": active_perspective,
@@ -1259,6 +1274,7 @@ class RAGSystem:
                     search_string=filt, page_size=page_size,
                     extra_params=extra_params or None,
                     output_type=fmt_override or "TABLE",
+                    egeria_credentials=egeria_credentials,
                 )
                 if result:
                     result["query_type"] = "act_report_result"
@@ -1442,7 +1458,8 @@ class RAGSystem:
             logger.info("Handling command query via DrEgeriaActionAgent")
             try:
                 from advisor.agents.dr_egeria_agent import get_dr_egeria_agent
-                result = get_dr_egeria_agent().handle(user_query, dry_run=dry_run)
+                result = get_dr_egeria_agent().handle(user_query, dry_run=dry_run,
+                                                        egeria_credentials=egeria_credentials)
                 result.setdefault("routing_agent", "dr_egeria_agent")
                 result.update({
                     "active_perspective": active_perspective,
@@ -1691,6 +1708,7 @@ class RAGSystem:
         egeria_authenticated: bool = True,
         session_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        egeria_credentials: Optional[Dict[str, str]] = None,
     ) -> Iterator[str]:
         """
         Run the full pipeline and yield SSE-formatted strings.
@@ -1727,6 +1745,7 @@ class RAGSystem:
                     egeria_authenticated=egeria_authenticated,
                     session_id=session_id,
                     user_id=user_id,
+                    egeria_credentials=egeria_credentials,
                 )
                 result_holder.append(result)
             except Exception as exc:

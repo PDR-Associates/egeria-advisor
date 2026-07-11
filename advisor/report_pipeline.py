@@ -416,8 +416,19 @@ class ReportPipeline:
         # None means the last run either succeeded or returned a genuine empty result.
         self._last_run_error: Optional[str] = None
 
-    def _read_pyegeria_connection(self) -> Dict[str, str]:
-        """Extract Egeria connection params from the pyegeria MCP server config section."""
+    def _read_pyegeria_connection(
+        self, egeria_credentials: Optional[Dict[str, str]] = None
+    ) -> Dict[str, str]:
+        """Extract Egeria connection params for report execution.
+
+        view_server/platform_url are static — same Egeria instance for everyone —
+        and come from the pyegeria MCP server config section. user_id/user_pwd
+        come from the authenticated caller's own credentials when given (see
+        advisor.auth.resolve_egeria_credentials); falls back to the .env-backed
+        service account when egeria_credentials is None (anonymous/background use).
+        """
+        from advisor.auth import resolve_egeria_credentials
+        creds = resolve_egeria_credentials(egeria_credentials)
         try:
             with open(self._config_path) as f:
                 cfg = json.load(f)
@@ -425,8 +436,8 @@ class ReportPipeline:
             return {
                 "view_server": env.get("EGERIA_VIEW_SERVER", ""),
                 "platform_url": env.get("EGERIA_VIEW_SERVER_URL", ""),
-                "user_id": env.get("EGERIA_USER", ""),
-                "user_pwd": env.get("EGERIA_PASSWORD", ""),
+                "user_id": creds["user_id"],
+                "user_pwd": creds["password"],
             }
         except Exception:
             return {}
@@ -590,11 +601,14 @@ class ReportPipeline:
         output_type: str = "DICT",
         page_size: Optional[int] = None,
         extra_params: Optional[Dict[str, Any]] = None,
+        egeria_credentials: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
         """
         Execute a named report and return the output string.
 
         page_size: limits graph nodes Egeria traverses. None → use self._default_page_size.
+        egeria_credentials: the authenticated caller's {user_id, password}; falls back
+            to the service account (see advisor.auth.resolve_egeria_credentials) when None.
         Returns None on failure.
         """
         effective_page_size = page_size if page_size is not None else self._default_page_size
@@ -615,7 +629,7 @@ class ReportPipeline:
         # submodule directly can trip a circular import during lazy first load.
         from pyegeria import exec_report_spec
 
-        conn = self._read_pyegeria_connection()
+        conn = self._read_pyegeria_connection(egeria_credentials=egeria_credentials)
         if not all((conn.get("view_server"), conn.get("platform_url"),
                     conn.get("user_id"), conn.get("user_pwd"))):
             raise ConnectionError("Egeria connection is not configured (config/mcp_servers.json → pyegeria.env)")
@@ -1156,6 +1170,7 @@ class ReportPipeline:
     def process(
         self, query: str, perspective: Optional[str] = None,
         page_size: Optional[int] = None,
+        egeria_credentials: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """
         Full report pipeline: discover spec → run report → return response dict.
@@ -1180,7 +1195,8 @@ class ReportPipeline:
             # Normalise camelCase / variant spellings to the exact catalog name
             report_name = self._resolve_report_name(report_name)
             logger.info(f"Direct report dispatch: {report_name!r} search={search_string!r}")
-            return self._execute_report(query, report_name, search_string=search_string, page_size=page_size)
+            return self._execute_report(query, report_name, search_string=search_string, page_size=page_size,
+                                         egeria_credentials=egeria_credentials)
 
         # Name-first: if the user typed (or selected the Report intent and typed) a
         # report name, match it directly before any semantic question matching.
@@ -1194,7 +1210,8 @@ class ReportPipeline:
                 f"(conf={name_match[1]:.2f}, search={search_string!r})"
             )
             return self._execute_report(
-                query, name_match[0], search_string=search_string, page_size=page_size
+                query, name_match[0], search_string=search_string, page_size=page_size,
+                egeria_credentials=egeria_credentials
             )
 
         try:
@@ -1233,7 +1250,8 @@ class ReportPipeline:
             logger.warning("Spec has no usable name field")
             return _no_report_found(query)
 
-        return self._execute_report(query, report_name, num_specs_found=len(ranked), page_size=page_size)
+        return self._execute_report(query, report_name, num_specs_found=len(ranked), page_size=page_size,
+                                     egeria_credentials=egeria_credentials)
 
     def _classify_run_error(self, run_error: str, report_name: str, fmt: str) -> str:
         """
@@ -1335,6 +1353,7 @@ class ReportPipeline:
         page_size: Optional[int] = None,
         extra_params: Optional[Dict[str, Any]] = None,
         output_type: Optional[str] = None,
+        egeria_credentials: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Shared execution path: run a named report and format the result."""
         # Normalise to exact catalog name (catches camelCase / hyphen / space variants)
@@ -1362,6 +1381,7 @@ class ReportPipeline:
                 report_name, search_string=search_string,
                 output_type=mcp_output_type, page_size=page_size,
                 extra_params=extra_params,
+                egeria_credentials=egeria_credentials,
             )
         except ConnectionError as exc:
             egeria_reachable = False

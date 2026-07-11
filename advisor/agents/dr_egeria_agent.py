@@ -343,30 +343,41 @@ class DrEgeriaActionAgent:
             self._mcp_agent = None
             raise ConnectionError(f"Egeria MCP server not reachable: {exc}") from exc
 
-    def _get_egeria_conn(self) -> Dict[str, str]:
-        """Extract Egeria connection params from MCP server config."""
-        if self._egeria_conn:
-            return self._egeria_conn
-        import json
-        try:
-            with open(self._config_path) as f:
-                cfg = json.load(f)
-            dr_env = cfg.get("mcpServers", {}).get("dr-egeria", {}).get("env", {})
-            self._egeria_conn = {
-                "url": dr_env.get("EGERIA_VIEW_SERVER_URL", "https://localhost:9443"),
-                "server_name": dr_env.get("EGERIA_VIEW_SERVER", "qs-view-server"),
-                "user_id": dr_env.get("EGERIA_USER", "erinoverview"),
-                "user_pass": dr_env.get("EGERIA_USER_PASSWORD", "secret"),
-            }
-        except Exception as e:
-            logger.warning(f"Could not read MCP config for Egeria conn: {e}")
-            self._egeria_conn = {
-                "url": "https://localhost:9443",
-                "server_name": "qs-view-server",
-                "user_id": "erinoverview",
-                "user_pass": "secret",
-            }
-        return self._egeria_conn
+    def _get_egeria_conn(self, egeria_credentials: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+        """Extract Egeria connection params for Dr.Egeria command execution.
+
+        url/server_name are static — same Egeria instance for everyone — and are
+        cached on self. user_id/user_pass are resolved FRESH on every call from
+        the caller's own credentials (see advisor.auth.resolve_egeria_credentials)
+        and are NEVER cached on self: this class is a process-wide singleton
+        (get_dr_egeria_agent()) shared across every user's requests, so caching
+        credentials here would leak the first caller's identity into every
+        subsequent user's actions for the life of the process.
+
+        Note: previously read a "dr-egeria" key from config/mcp_servers.json that
+        never existed there (only "pyegeria" is registered), so url/server_name
+        silently always fell back to hardcoded defaults. Fixed to read "pyegeria",
+        matching every other reader of this file (ReportPipeline, EgeriaContext).
+        """
+        if self._egeria_conn is None:
+            import json
+            try:
+                with open(self._config_path) as f:
+                    cfg = json.load(f)
+                dr_env = cfg.get("mcpServers", {}).get("pyegeria", {}).get("env", {})
+                self._egeria_conn = {
+                    "url": dr_env.get("EGERIA_VIEW_SERVER_URL", "https://localhost:9443"),
+                    "server_name": dr_env.get("EGERIA_VIEW_SERVER", "qs-view-server"),
+                }
+            except Exception as e:
+                logger.warning(f"Could not read MCP config for Egeria conn: {e}")
+                self._egeria_conn = {
+                    "url": "https://localhost:9443",
+                    "server_name": "qs-view-server",
+                }
+        from advisor.auth import resolve_egeria_credentials
+        creds = resolve_egeria_credentials(egeria_credentials)
+        return {**self._egeria_conn, "user_id": creds["user_id"], "user_pass": creds["password"]}
 
     def find_template(self, query: str) -> Optional[Dict[str, Any]]:
         """
@@ -512,6 +523,7 @@ JSON:"""
         markdown: str,
         directive: str = "process",
         dry_run: bool = False,
+        egeria_credentials: Optional[Dict[str, str]] = None,
     ) -> str:
         """
         Execute a composed Dr.Egeria markdown file via MCP.
@@ -520,6 +532,8 @@ JSON:"""
             markdown: Complete Dr.Egeria markdown command file
             directive: "display" | "validate" | "process"
             dry_run: If True, return the markdown without executing
+            egeria_credentials: the authenticated caller's {user_id, password};
+                falls back to the service account when None.
 
         Returns:
             Output string from MCP tool (or the markdown if dry_run)
@@ -528,7 +542,7 @@ JSON:"""
             return markdown
 
         self._ensure_mcp()
-        conn = self._get_egeria_conn()
+        conn = self._get_egeria_conn(egeria_credentials)
 
         from advisor.report_pipeline import _run_async
         raw = _run_async(self._mcp_agent.execute_tool(
@@ -555,6 +569,7 @@ JSON:"""
         query: str,
         directive: str = "process",
         dry_run: bool = False,
+        egeria_credentials: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """
         Full action pipeline: find template → extract params → compose → execute.
@@ -563,6 +578,8 @@ JSON:"""
             query: User's natural language action request
             directive: "display" | "validate" | "process"
             dry_run: Return composed markdown without executing
+            egeria_credentials: the authenticated caller's {user_id, password};
+                falls back to the service account when None.
 
         Returns:
             Response dict compatible with RAGSystem result format.
@@ -609,7 +626,8 @@ JSON:"""
 
         # Step 5: Execute (or dry run)
         try:
-            output = self.execute(markdown, directive=directive, dry_run=dry_run)
+            output = self.execute(markdown, directive=directive, dry_run=dry_run,
+                                   egeria_credentials=egeria_credentials)
         except Exception as e:
             logger.error(f"DrEgeria execute failed: {e}")
             output = f"Execution failed: {e}"

@@ -94,6 +94,7 @@ class PlanElicitor:
         perspective: Optional[str],
         mode: str = "basic",
         template_name: Optional[str] = None,
+        egeria_credentials: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """
         Decompose the user's intent, pre-fill what we can from the query,
@@ -118,7 +119,7 @@ class PlanElicitor:
             title = template_name
             purpose = query
         else:
-            decomp = agent._decompose_intent(query, perspective, llm)
+            decomp = agent._decompose_intent(query, perspective, llm, egeria_credentials=egeria_credentials)
             title = decomp.get("title", query[:50])
             purpose = decomp.get("purpose", query)
             _val_warnings = decomp.get("validator_warnings") or []
@@ -230,7 +231,10 @@ class PlanElicitor:
     # Phase dispatch — continue an existing draft
     # ------------------------------------------------------------------
 
-    def process(self, draft_id: str, user_response: str) -> Dict[str, Any]:
+    def process(
+        self, draft_id: str, user_response: str,
+        egeria_credentials: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
         """
         Receive a user message for an active draft and advance the phase.
         """
@@ -286,7 +290,7 @@ class PlanElicitor:
                 return result
 
         if phase == "confirm_commands":
-            result = self._handle_confirm_commands(spec, user_response)
+            result = self._handle_confirm_commands(spec, user_response, egeria_credentials=egeria_credentials)
         elif phase == "elicit_required":
             result = self._handle_elicit_required(spec, user_response)
         elif phase == "elicit_optional":
@@ -432,7 +436,10 @@ class PlanElicitor:
     # Phase handlers
     # ------------------------------------------------------------------
 
-    def _handle_confirm_commands(self, spec: Dict, user_response: str) -> Dict[str, Any]:
+    def _handle_confirm_commands(
+        self, spec: Dict, user_response: str,
+        egeria_credentials: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
         """
         Process the user's response to the confirm_commands step.
 
@@ -620,6 +627,7 @@ class PlanElicitor:
                 spec.get("perspective"),
                 llm,
                 existing_commands=spec["commands_identified"],
+                egeria_credentials=egeria_credentials,
             )
             from advisor.action_catalog import get_action_catalog
             catalog = get_action_catalog()

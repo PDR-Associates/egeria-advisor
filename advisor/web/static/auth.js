@@ -103,6 +103,22 @@ const Auth = (() => {
     btn.textContent = loading ? 'Signing in…' : 'Sign in';
   }
 
+  // Best-effort prefill of the username field from the server's configured
+  // default (.env EGERIA_USER), for local/dev convenience. Never touches the
+  // password field, and never overwrites anything the user has already typed.
+  async function prefillLoginDefaults() {
+    const userEl = document.getElementById('login-username');
+    if (!userEl || userEl.value) return;
+    try {
+      const r = await fetch('/api/auth/defaults');
+      if (!r.ok) return;
+      const data = await r.json();
+      if (!userEl.value && data.username) userEl.value = data.username;
+    } catch {
+      // Best-effort only — leave the field blank on any failure.
+    }
+  }
+
   // ── Login flow ───────────────────────────────────────────────────────────
 
   async function doLogin() {
@@ -271,6 +287,7 @@ const Auth = (() => {
     // No valid token — start the app anyway (anonymous RAG mode), but show login overlay.
     // The login overlay is dismissible so users can access knowledge features immediately.
     onReady && onReady();
+    await prefillLoginDefaults();
     showLogin();
   }
 

@@ -1,5 +1,5 @@
 """
-Test vector search functionality in Milvus.
+Test vector search functionality in pgvector.
 
 This script tests that we can successfully search for similar code elements
 using semantic similarity.

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Ingest code from git repositories into Milvus collections.
+Ingest code from git repositories into pgvector collections.
 
 This script processes cloned repositories and ingests code into
-appropriate Milvus collections based on collection configuration.
+appropriate pgvector collections based on collection configuration.
 """
 
 import sys
@@ -333,7 +333,7 @@ def main():
     """Main function."""
     import argparse
     
-    parser = argparse.ArgumentParser(description="Ingest code into Milvus collections")
+    parser = argparse.ArgumentParser(description="Ingest code into pgvector collections")
     parser.add_argument(
         "--phase",
         choices=["1", "2", "all"],

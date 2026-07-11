@@ -28,7 +28,7 @@ class MultiCollectionSearchResult:
 
 class MultiCollectionStore:
     """
-    Manages searches across multiple Milvus collections.
+    Manages searches across multiple collections.
     
     Provides intelligent routing, result merging, and re-ranking
     for multi-collection queries.
@@ -370,39 +370,6 @@ class MultiCollectionStore:
             )
         
         return result
-    
-    def get_collection_stats(self) -> Dict[str, Any]:
-        """Get statistics about enabled collections."""
-        enabled = get_enabled_collections()
-        
-        stats = {
-            "total_enabled": len(enabled),
-            "collections": {}
-        }
-        
-        for collection in enabled:
-            try:
-                # Try to get collection info from Milvus
-                milvus_collection = self.vector_store.get_collection(collection.name)
-                num_entities = milvus_collection.num_entities
-                
-                stats["collections"][collection.name] = {
-                    "priority": collection.priority,
-                    "content_type": collection.content_type.value,
-                    "language": collection.language.value,
-                    "num_entities": num_entities,
-                    "domain_terms": len(collection.domain_terms)
-                }
-            except Exception as e:
-                logger.debug(f"Could not get stats for {collection.name}: {e}")
-                stats["collections"][collection.name] = {
-                    "priority": collection.priority,
-                    "content_type": collection.content_type.value,
-                    "language": collection.language.value,
-                    "error": str(e)
-                }
-        
-        return stats
 
 
 # Singleton instance

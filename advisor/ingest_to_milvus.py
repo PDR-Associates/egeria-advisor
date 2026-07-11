@@ -1,8 +1,8 @@
 """
-Ingest data from Phase 2 cache into Milvus vector store.
+Ingest data from Phase 2 cache into the vector store.
 
 This script reads the JSON files created by the data preparation pipeline
-and populates Milvus collections with embeddings for semantic search.
+and populates vector store collections with embeddings for semantic search.
 
 Also provides CodeIngester for directly ingesting code files from repositories.
 """
@@ -21,7 +21,7 @@ from advisor.mlflow_tracking import track_operation
 
 
 class DataIngester:
-    """Ingest prepared data into Milvus."""
+    """Ingest prepared data into the vector store."""
     
     def __init__(self, cache_dir: Path = None):
         """
@@ -95,7 +95,7 @@ class DataIngester:
     
     def ingest_code_elements(self, drop_existing: bool = False) -> int:
         """
-        Ingest code elements (functions, classes, methods) into Milvus.
+        Ingest code elements (functions, classes, methods) into the vector store.
         
         Args:
             drop_existing: Drop existing collection if it exists
@@ -180,7 +180,7 @@ class DataIngester:
                 }
                 metadata.append(meta)
             
-            # Insert into Milvus
+            # Insert into the vector store
             count = self.vector_store.insert_data(
                 collection_name,
                 texts=texts,
@@ -207,7 +207,7 @@ class DataIngester:
     
     def ingest_documentation(self, drop_existing: bool = False) -> int:
         """
-        Ingest documentation sections into Milvus.
+        Ingest documentation sections into the vector store.
         
         Args:
             drop_existing: Drop existing collection if it exists
@@ -255,7 +255,7 @@ class DataIngester:
             }
             metadata.append(meta)
         
-        # Insert into Milvus
+        # Insert into the vector store
         count = self.vector_store.insert_data(
             collection_name,
             texts=texts,
@@ -276,7 +276,7 @@ class DataIngester:
     
     def ingest_examples(self, drop_existing: bool = False) -> int:
         """
-        Ingest code examples into Milvus.
+        Ingest code examples into the vector store.
         
         Args:
             drop_existing: Drop existing collection if it exists
@@ -328,7 +328,7 @@ class DataIngester:
             }
             metadata.append(meta)
         
-        # Insert into Milvus
+        # Insert into the vector store
         count = self.vector_store.insert_data(
             collection_name,
             texts=texts,
@@ -349,7 +349,7 @@ class DataIngester:
     
     def ingest_all(self, drop_existing: bool = False) -> Dict[str, int]:
         """
-        Ingest all data types into Milvus.
+        Ingest all data types into the vector store.
         
         Args:
             drop_existing: Drop existing collections if they exist
@@ -358,7 +358,7 @@ class DataIngester:
             Dictionary with counts for each collection
         """
         logger.info("=" * 80)
-        logger.info("Starting full data ingestion to Milvus")
+        logger.info("Starting full data ingestion to the vector store")
         logger.info("=" * 80)
         
         results = {}
@@ -392,7 +392,7 @@ def main():
     """Main entry point for data ingestion."""
     import argparse
     
-    parser = argparse.ArgumentParser(description="Ingest data into Milvus")
+    parser = argparse.ArgumentParser(description="Ingest data into the vector store")
     parser.add_argument(
         "--drop-existing",
         action="store_true",
@@ -440,14 +440,14 @@ if __name__ == "__main__":
 
 
 class CodeIngester:
-    """Ingest code files directly from repositories into Milvus."""
+    """Ingest code files directly from repositories into the vector store."""
     
     def __init__(self, collection_name: str, chunk_size: Optional[int] = None, chunk_overlap: Optional[int] = None):
         """
         Initialize code ingester.
         
         Args:
-            collection_name: Name of the Milvus collection
+            collection_name: Name of the vector store collection
             chunk_size: Size of text chunks (defaults to collection-specific value)
             chunk_overlap: Overlap between chunks (defaults to collection-specific value)
         """
@@ -660,7 +660,7 @@ class CodeIngester:
         
         for i, chunk in enumerate(chunks):
             texts.append(chunk)
-            # Generate ID with hash if path is too long (Milvus limit: 256 chars)
+            # Generate ID with hash if path is too long (id column limit: 256 chars)
             chunk_id = f"{file_path}::chunk_{i}"
             if len(chunk_id) > 250:  # Leave margin for safety
                 # Use hash of path + chunk index
@@ -674,7 +674,7 @@ class CodeIngester:
                 "total_chunks": len(chunks)
             })
         
-        # Insert into Milvus
+        # Insert into the vector store
         if texts:
             self.vector_store.insert_data(
                 self.collection_name,

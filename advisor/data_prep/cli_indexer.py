@@ -382,7 +382,7 @@ class CLICommandIndexer:
             query: Search query
             top_k: Number of results to return
             filters: Optional metadata filters (dict) - deprecated, use filter_expr
-            filter_expr: Optional Milvus filter expression string
+            filter_expr: Optional filter expression string
             
         Returns:
             List of SearchResult objects with matching commands

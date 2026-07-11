@@ -44,7 +44,7 @@ data_sources:
 
 vector_store:
   host: localhost
-  port: 19530
+  port: 5442
   # Collections are defined in advisor/collection_config.py
   # Active collections (9 total) — backend is pgvector (see pgvector section below):
   #   1. pyegeria         - Python SDK code and tests
@@ -68,7 +68,7 @@ pgvector:
   max_connections: 10
   ef_search: 128  # HNSW query-time parameter — higher = better recall, slower
 
-# Active vector store backend: "milvus" or "pgvector"
+# Active vector store backend — pgvector is the only supported backend
 vector_store_backend: pgvector
 
 llm:

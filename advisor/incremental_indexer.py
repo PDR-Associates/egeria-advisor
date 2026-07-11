@@ -66,7 +66,7 @@ class FileTracker:
     Track file states and detect changes using consolidated PostgreSQL.
     
     Maintains a database of indexed files with their modification times,
-    content hashes, and associated Milvus entity IDs.
+    content hashes, and associated vector store entity IDs.
     """
     
     def __init__(self, db_path: Optional[Path] = None):
@@ -131,7 +131,7 @@ class FileTracker:
             collection_name: Collection name
             content_hash: Content hash
             chunk_count: Number of chunks created
-            entity_ids: List of Milvus entity IDs (strings)
+            entity_ids: List of vector store entity IDs (strings)
         """
         now = time.time()
         mtime = file_path.stat().st_mtime
@@ -249,7 +249,7 @@ class IncrementalIndexer:
         Initialize incremental indexer.
         
         Args:
-            collection_name: Name of Milvus collection
+            collection_name: Name of vector store collection
             source_paths: List of source directories/files
             file_patterns: List of file patterns to match (e.g., ["*.py"])
             chunk_size: Size of text chunks
@@ -402,7 +402,7 @@ class IncrementalIndexer:
                 for file_path in changeset.deleted_files:
                     entity_ids = self.tracker.untrack_file(str(file_path), self.collection_name)
                     if entity_ids:
-                        # Delete entities from Milvus
+                        # Delete entities from the vector store
                         self.vector_store.delete_entities(self.collection_name, entity_ids)
                         chunks_removed += len(entity_ids)
                         logger.info(f"Deleted {len(entity_ids)} chunks for {file_path}")

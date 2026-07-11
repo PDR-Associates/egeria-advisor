@@ -186,14 +186,14 @@ The pgvector table for `pyegeria_drE` is named `pyegeria_dre` (normalized to low
 
 The `CollectionRouter` selects 1–N collections per query based on classified intent. RAG parameters: chunk_size=512, top_k=10, min_score=0.30.
 
-### Vector Store Backends
+### Vector Store Backend
 
-`BaseVectorStore` (`advisor/vector_store_base.py`) is the abstract base class for all backends.
+`BaseVectorStore` (`advisor/vector_store_base.py`) is the abstract base class. `PgVectorStore`
+(`advisor/vector_store_pg.py`) is the sole implementation — uses `ThreadedConnectionPool`.
+Milvus was the original backend but has been fully removed (migrated Apr 2026, code/config/
+dependency deleted Jul 2026).
 
-- **`PgVectorStore`** (`advisor/vector_store_pg.py`) — active backend; uses `ThreadedConnectionPool`
-- **`MilvusVectorStore`** (`advisor/vector_store.py`) — legacy; kept for reference
-
-`get_vector_store()` in `advisor/vector_store.py` reads `vector_store_backend` from `config/advisor.yaml` and returns the correct instance. Currently set to `pgvector`.
+`get_vector_store()` in `advisor/vector_store.py` reads `vector_store_backend` from `config/advisor.yaml` and returns a `PgVectorStore` instance.
 
 ### Agent Modes (`advisor/agents/`)
 

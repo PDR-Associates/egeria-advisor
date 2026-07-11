@@ -1,7 +1,7 @@
 """
 Metadata Filter Utilities for Vector Store Queries.
 
-Provides helper functions to build Milvus filter expressions from
+Provides helper functions to build filter expressions from
 natural language queries and structured filter dictionaries.
 """
 
@@ -12,13 +12,13 @@ from loguru import logger
 
 def build_filter_expr(filters: Dict[str, Any]) -> str:
     """
-    Build Milvus filter expression from dictionary.
+    Build filter expression from dictionary.
     
     Args:
         filters: Dictionary of field->value mappings
         
     Returns:
-        Milvus filter expression string
+        filter expression string
         
     Examples:
         >>> build_filter_expr({'class_name': 'ProjectManager'})
@@ -193,7 +193,7 @@ def build_like_filter(field: str, value: str) -> str:
         value: Value to match (will be wrapped with %)
         
     Returns:
-        Milvus LIKE filter expression
+        LIKE filter expression
         
     Example:
         >>> build_like_filter('options', '--url')
@@ -284,7 +284,7 @@ def build_combined_filter_expr(filters: Dict[str, Any]) -> str:
         filters: Dictionary with mixed filter types
         
     Returns:
-        Complete Milvus filter expression
+        Complete filter expression
         
     Example:
         >>> build_combined_filter_expr({

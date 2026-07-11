@@ -719,7 +719,7 @@ scripts/
   full_reset.sh              — Re-clone all source repos + force re-ingest all collections from one consistent snapshot
   clone_repos.py             — Clone/update the 4 source repos into data/repos/
   ingest_collections.py      — Ingest one/all collections from data/repos/ into pgvector
-  count_vectors.py           — Legacy Milvus vector counter; superseded by full_reset.sh's pgvector count step
+  count_vectors.py           — Count indexed entities per pgvector collection
   test_end_to_end.py         — E2E test suite
 docs/
   literate-governance-plan.md — LGCI design (v5, comprehensive)
@@ -1059,8 +1059,87 @@ every class-containing file, on every ingestion run to date.
   | `pyegeria_drE` | 266 | 487 (+83%) |
   | `egeria_workspaces` | 15,519 | 15,700 |
 
-**Commits:** not yet committed as of this writing — `scripts/full_reset.sh` (new),
-`advisor/data_prep/code_parser.py` (bug fix), `config/advisor.yaml` (path fix).
+**Commits:** `d4d29ff` — `scripts/full_reset.sh` (new), `advisor/data_prep/code_parser.py`
+(bug fix), `config/advisor.yaml` (path fix), `scripts/count_vectors.py` (pgvector port).
+
+### Phase 15 — MCP credential propagation (Jul 11, 2026)
+
+**Theme:** Every live Egeria call (reports, Dr.Egeria actions, plan execution) ran as one
+static service account regardless of who was logged in. `/api/query` extracted the real
+`egeria_user`/`egeria_password` from the JWT but only forwarded the username downstream —
+the password never left that function. Everything below it fell back to
+`config/mcp_servers.json`'s `EGERIA_USER`/`EGERIA_PASSWORD`, which on this machine were
+literal unresolved template placeholders (`"{EGERIA_USER}"`) that had never been substituted
+anywhere in the codebase.
+
+**Root cause and fix** ✓
+- New `get_egeria_credentials()`/`resolve_egeria_credentials()` in `advisor/auth.py` — the
+  single fallback point (real per-user creds when present, else the `.env`-backed service
+  account via `advisor.config.settings`, never the broken `mcp_servers.json` placeholders).
+- Threaded as `egeria_credentials: Optional[Dict[str,str]]` through the same pattern already
+  used for `user_id`: `app.py` → `RAGSystem.query()`/`_process_query()` →
+  `ReportPipeline`/`DrEgeriaActionAgent`/`GovernancePlanAgent`/`PlanElicitor`/`EgeriaContext`.
+- Fixed two bugs found while wiring this up: `DrEgeriaActionAgent` (a process-wide singleton)
+  was caching credentials on `self`, which would have leaked one user's identity into a
+  concurrent user's actions — verified fixed live with a synthetic two-identity test; and it
+  was reading a `"dr-egeria"` config key that never existed, always falling back to hardcoded
+  `erinoverview`/`secret`.
+- Previously-unauthenticated live-Egeria endpoints (`/api/plans/*/execute|validate|retry|rerun`,
+  `/api/reports/docs/*/execute|retry`, `/api/templates/*/fields`, `/api/egeria/zones`) now
+  hard-require login. `/api/query`/`/api/query/stream` keep their existing anonymous-friendly
+  soft-fallback behavior.
+- Login form now prefills the username field from `.env` (`GET /api/auth/defaults`) for local-
+  dev convenience; password intentionally excluded from that unauthenticated endpoint.
+
+**Known remaining gap (separate from this fix):** plans, drafts, and report specs still live
+in one shared, unscoped filesystem tree (`~/egeria-plans/`, `~/egeria-reports/`) — any user
+can see or act on any other user's documents by ID. Tracked as `BACKLOG.md` SS-4 (priority:
+medium); full design in `docs/design/SESSION_AND_INTERACTION_STATE.md`.
+
+**Commits:** `f23b690`.
+
+### Phase 16 — Milvus removal (Jul 11, 2026)
+
+**Theme:** pgvector has been the active vector store backend since Phase 10 (Apr 2026), but
+`advisor/vector_store.py` was still a complete Milvus implementation with a module-level
+`from pymilvus import ...` — making pymilvus a hard import-time dependency of the entire app
+even though the runtime path always went through pgvector. Two Explore agents mapped every
+Milvus reference across 30+ files before any code changed.
+
+**Migrated first, then removed** ✓
+- Ported the still-useful pieces to pgvector: `scripts/test_end_to_end.py`'s Vector Store
+  test category (was hardcoded to pymilvus, failing outright against the real backend —
+  now 3/3 pass), `scripts/collect_collection_health.py` (feeds the admin dashboard),
+  `scripts/diagnose_retrieval.py`, and `scripts/test_metadata_filtering.py`'s schema check.
+- Deleted `MultiCollectionStore.get_collection_stats()` — dead code (zero callers) with a
+  latent Milvus-only bug (`self.vector_store.get_collection(name).num_entities`, silently
+  swallowed by a broad `except`); the real, correct, callers-having path
+  (`metrics_collector.py` → `PgVectorStore.get_collection_stats()`) was unaffected.
+- Gutted `advisor/vector_store.py` down to a thin factory function — `MilvusVectorStore` and
+  the `pymilvus` import are gone; `get_vector_store()` now defaults to `pgvector` instead of
+  silently falling back to a nonexistent Milvus backend.
+- Removed `milvus_host`/`milvus_port`/`milvus_user`/`milvus_password` from `advisor/config.py`;
+  `vector_store_backend` now defaults to `"pgvector"`.
+- Deleted `pymilvus` from `pyproject.toml` and actually uninstalled it from the venv.
+- Deleted 9 one-off Milvus migration/diagnostic scripts whose job was long done:
+  `migrate_milvus_to_pgvector.py`, `verify_pgvector_migration.py`, `check_collection_manager.py`,
+  `check_projectmanager.py`, `migrate_pyegeria_to_scalar_fields.py`,
+  `recreate_pyegeria_with_scalar_fields.py`, `simple_reingest_pyegeria.py` (+ its `.sh`
+  wrapper), `check_ingestion_status.py` (redundant with `count_vectors.py`).
+- Stripped cosmetic Milvus wording from ~20 remaining files' comments/docstrings; two of them
+  (`test_setup.py`, `test_vector_store_caching.py`) referenced the just-deleted
+  `settings.milvus_host`/`milvus_port` config fields and would have thrown `AttributeError` —
+  fixed as part of the same pass, not just reworded.
+- `advisor/ingest_to_milvus.py` was **not** renamed — confirmed zero pymilvus dependency
+  (purely backend-agnostic via `get_vector_store()`), and a rename would cascade through 4
+  live import sites for a cosmetic-only win. Flagged as an optional fast-follow.
+
+**Verified:** fresh process import confirms `pymilvus` never loads; `count_vectors.py` and all
+four ported scripts run clean against live pgvector data; `test_end_to_end.py --quick` went
+from 2 failures to 37/40 passing with zero failures; web server restarts clean and a live
+query works.
+
+**Commits:** (this session, following Phase 15).
 
 ---
 
@@ -1080,6 +1159,8 @@ every class-containing file, on every ingestion run to date.
 - Phase 12b ✓ — composite examples agent (Show me composite response, related templates, related report specs with file:// links)
 - Phase 13 ✓ — Plan Templates sidebar, NL reorder/relationship editing, priority-resort fix, outcome-reporter false-success fix
 - Phase 14 ✓ — data pipeline sync (repos/vector store/config brought back into alignment), silent Python ingestion data-loss bug found and fixed
+- Phase 15 ✓ — MCP credential propagation (live Egeria calls use the signed-in user's own credentials, not a shared service account; singleton credential-caching bug fixed)
+- Phase 16 ✓ — Milvus removal (migrated remaining diagnostics/tests to pgvector, then deleted all Milvus code, config, scripts, and the pymilvus dependency)
 
 **What's working end-to-end (Jul 6, 2026):**
 - Full plan lifecycle exercised live against a real Dr.Egeria MCP server + Egeria REST backend + Postgres for the first time (not just synthetic testing) — surfaced and fixed six real bugs in one session (SS-6 through SS-11, see "Recent work" above and `BACKLOG.md`), including a genuine event-loop-freezing hang in the MCP client
@@ -1101,6 +1182,8 @@ every class-containing file, on every ingestion run to date.
 - Chat-driven plan reorder ("move step 3 to be the first step") and relationship editing (Project Hierarchy, Project Dependency) work in both pre- and post-generation phases
 - Plan Templates are browsable from the Plans sidebar tab, not just via chat phrase
 - `data/repos/`, the pgvector store, and `config/advisor.yaml` are back in sync (`scripts/full_reset.sh` re-clones and re-ingests everything from one consistent snapshot); Python ingestion no longer silently drops class-containing files
+- Live Egeria calls (reports, Dr.Egeria actions, plan execution) use the signed-in user's own credentials end-to-end, verified against the real Egeria instance
+- Milvus is fully gone — pgvector is the only vector store code path, config, or dependency in the repo
 
 **Planned next (in priority order):**
 
@@ -1125,8 +1208,6 @@ every class-containing file, on every ingestion run to date.
 - **Egeria Actor lookup for unresolved names** — when `actor_found=False`, optionally auto-insert a `Create Actor Profile` command before the role appointment. Currently surfaces a warning only.
 
 - **Builder mode chat routing** — when `builder_mode: True` is set on a draft, informational chat queries should route to DocAgent rather than GovernancePlanAgent (flag is stored but not yet read by `_process_query`).
-
-- **MCP credential propagation** — investigate whether `run_report`/`dr_egeria_run_block` accept per-call user args; if yes, thread JWT-extracted credentials through to MCP calls.
 
 - **Report Spec canvas** — create/edit question_specs via chat + canvas (needs design session).
 

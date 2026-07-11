@@ -146,7 +146,7 @@ class QuestionSpecIndex:
     Lazy in-memory semantic index over all question_spec entries in base_report_specs.
 
     Uses sentence-transformers for embedding and numpy cosine similarity for search.
-    No Milvus or external vector store required — the corpus is small enough (~1000
+    No external vector store required — the corpus is small enough (~1000
     questions) that in-memory matrix multiply is fast.
 
     Thread-safe: build is protected by a lock; after first build the object is read-only.

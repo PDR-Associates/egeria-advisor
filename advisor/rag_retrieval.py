@@ -179,7 +179,7 @@ class RAGRetriever:
             List of retrieved SearchResult objects
         """
         # For now, run the sync version in an executor to avoid blocking
-        # In the future, this could use true async Milvus operations
+        # In the future, this could use true async vector store operations
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
             None,

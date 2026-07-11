@@ -40,7 +40,7 @@ class DataSourceConfig(BaseModel):
 class VectorStoreConfig(BaseModel):
     """Vector store configuration."""
     host: str = "localhost"
-    port: int = 19530
+    port: int = 5442
     collections: list[str] = ["code_elements", "examples", "documentation"]
 
 
@@ -221,12 +221,6 @@ class AdvisorSettings(BaseSettings):
         extra="ignore"
     )
 
-    # Milvus
-    milvus_host: str = Field(default="localhost", alias="MILVUS_HOST")
-    milvus_port: int = Field(default=19530, alias="MILVUS_PORT")
-    milvus_user: str = Field(default="", alias="MILVUS_USER")
-    milvus_password: str = Field(default="", alias="MILVUS_PASSWORD")
-
     # pgvector
     pgvector_host: str = Field(default="localhost", alias="PGVECTOR_HOST")
     pgvector_port: int = Field(default=5442, alias="PGVECTOR_PORT")
@@ -236,8 +230,8 @@ class AdvisorSettings(BaseSettings):
     pgvector_max_connections: int = Field(default=10, alias="PGVECTOR_MAX_CONNECTIONS")
     pgvector_ef_search: int = Field(default=128, alias="PGVECTOR_EF_SEARCH")
 
-    # Active vector store backend: "milvus" or "pgvector"
-    vector_store_backend: str = Field(default="milvus", alias="VECTOR_STORE_BACKEND")
+    # Active vector store backend — pgvector is the only supported backend
+    vector_store_backend: str = Field(default="pgvector", alias="VECTOR_STORE_BACKEND")
 
     # Egeria
     egeria_platform_url: str = Field(

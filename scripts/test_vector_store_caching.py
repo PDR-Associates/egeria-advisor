@@ -145,7 +145,7 @@ def test_singleton_pattern():
 def main():
     """Run all tests."""
     logger.info("Starting Vector Store Caching Tests")
-    logger.info(f"Milvus: {settings.milvus_host}:{settings.milvus_port}")
+    logger.info(f"pgvector: {settings.pgvector_host}:{settings.pgvector_port}")
     
     try:
         # Test 1: Collection caching

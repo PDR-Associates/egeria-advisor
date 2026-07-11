@@ -155,30 +155,40 @@ def test_filter_extraction():
 
 
 def verify_collection_schema():
-    """Verify that collections have the required scalar fields."""
+    """Verify that collections have the required scalar columns."""
     logger.info("\n" + "=" * 80)
     logger.info("VERIFYING COLLECTION SCHEMAS")
     logger.info("=" * 80)
-    
-    from pymilvus import Collection, connections
-    
-    connections.connect('default', host='localhost', port='19530')
-    
-    # Check PyEgeria collection
+
+    from advisor.vector_store import get_vector_store
+
+    store = get_vector_store()
+    store.connect()
+
+    def _log_columns(collection_name: str) -> None:
+        table = store._table(collection_name)
+        conn = store._get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f'SELECT count(*) FROM "{table}"')
+                count = cur.fetchone()[0]
+                logger.info(f"  Entities: {count}")
+                cur.execute(
+                    "SELECT column_name, data_type FROM information_schema.columns "
+                    "WHERE table_name = %s ORDER BY ordinal_position",
+                    (table,),
+                )
+                logger.info("  Schema columns:")
+                for name, dtype in cur.fetchall():
+                    logger.info(f"    - {name}: {dtype}")
+        finally:
+            store._put_conn(conn)
+
     logger.info("\nPyEgeria Collection:")
-    pyegeria = Collection('pyegeria')
-    logger.info(f"  Entities: {pyegeria.num_entities}")
-    logger.info(f"  Schema fields:")
-    for field in pyegeria.schema.fields:
-        logger.info(f"    - {field.name}: {field.dtype}")
-    
-    # Check CLI Commands collection
-    logger.info("\nCLI Commands Collection:")
-    cli_commands = Collection('cli_commands')
-    logger.info(f"  Entities: {cli_commands.num_entities}")
-    logger.info(f"  Schema fields:")
-    for field in cli_commands.schema.fields:
-        logger.info(f"    - {field.name}: {field.dtype}")
+    _log_columns('pyegeria')
+
+    logger.info("\nPyEgeria CLI Collection:")
+    _log_columns('pyegeria_cli')
 
 
 def main():

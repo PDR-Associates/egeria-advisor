@@ -46,7 +46,7 @@ def prepare_metadata_for_indexing(element: CodeElement) -> Dict[str, Any]:
     
     Returns metadata dict with both scalar fields and full metadata.
     """
-    # Determine element_type for Milvus schema
+    # Determine element_type for the vector store schema
     element_type = element.type  # 'class', 'method', 'function'
     
     # Extract module path from file path

@@ -99,23 +99,31 @@ class CodeParser:
             return []
         
         elements = []
-        
+
+        # Map each method node to its owning class first, so the main walk below
+        # visits every FunctionDef/AsyncFunctionDef exactly once. Previously methods
+        # were parsed twice — once here as a bare "function" (via ast.walk hitting the
+        # node directly) and again via an explicit second loop over the class body —
+        # producing two elements with the same `name::line_number` id. That collided
+        # in the pgvector upsert ("ON CONFLICT DO UPDATE command cannot affect row a
+        # second time") and silently dropped the *entire file's* chunks on error.
+        parent_class_of: Dict[ast.AST, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                for item in node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        parent_class_of[item] = node.name
+
         # Walk the AST and extract elements
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef) or isinstance(node, ast.AsyncFunctionDef):
-                element = self._parse_function(node, file_path)
+                element = self._parse_function(node, file_path, parent_class=parent_class_of.get(node))
                 if element:
                     elements.append(element)
             elif isinstance(node, ast.ClassDef):
                 element = self._parse_class(node, file_path)
                 if element:
                     elements.append(element)
-                # Also parse methods within the class
-                for item in node.body:
-                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        method = self._parse_function(item, file_path, parent_class=node.name)
-                        if method:
-                            elements.append(method)
         
         self.parsed_files.append(file_path)
         logger.info(f"Parsed {file_path}: found {len(elements)} code elements")

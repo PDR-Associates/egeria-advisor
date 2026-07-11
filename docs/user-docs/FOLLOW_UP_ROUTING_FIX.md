@@ -1,5 +1,9 @@
 # Follow-Up Query Routing Fix
 
+**This is a historical bug-fix record (Mar 2026, CLI follow-up query context), not a living
+guide** — the fix described here has been shipped. Kept for reference on the root cause and
+fix approach. For current routing behavior, see the [Query Routing Guide](QUERY_ROUTING_GUIDE.md).
+
 ## Problem Summary
 
 When users selected follow-up options (e.g., "1. See detailed method documentation"), the system was routing to semantic search instead of maintaining PyEgeria agent context, causing:

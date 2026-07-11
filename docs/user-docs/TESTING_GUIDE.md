@@ -45,8 +45,8 @@ python scripts/test_end_to_end.py --verbose
    - Version compatibility
 
 4. **Vector Store Tests** (3 tests)
-   - Milvus connection
-   - Collection existence
+   - pgvector connection
+   - Collection (table) existence
    - Entity counts
 
 5. **Embeddings Tests** (3 tests)
@@ -194,7 +194,7 @@ python scripts/benchmark_multi_collection.py
 Validates multi-layer caching:
 - L1: Agent response cache (12.3M x speedup)
 - L2: RAG query cache (17,997x speedup)
-- L3: Milvus internal cache
+- L3: pgvector query plan cache (Postgres-managed)
 
 **Expected Results**:
 - First query: 2-5 seconds
@@ -295,20 +295,20 @@ Recommended test stages:
 
 ### Common Test Failures
 
-#### 1. Milvus Connection Failed
+#### 1. pgvector Connection Failed
 
-**Symptom**: `Cannot connect to Milvus`
+**Symptom**: `Cannot connect to pgvector` / `connection refused` on port 5442
 
 **Solutions**:
 ```bash
-# Check Milvus is running
-docker ps | grep milvus
-
-# Restart Milvus
-docker-compose restart milvus-standalone
+# Check Postgres/pgvector is running and reachable
+psql -h localhost -p 5442 -U egeria_advisor -d egeria_advisor -c "SELECT 1;"
 
 # Check port
-netstat -an | grep 19530
+netstat -an | grep 5442
+
+# Check row counts per collection
+python scripts/count_vectors.py
 ```
 
 #### 2. Ollama Connection Failed
@@ -356,7 +356,7 @@ pip install -r requirements.txt
 python -c "import sys; print(sys.path)"
 
 # Verify installation
-pip list | grep -E "pymilvus|sentence-transformers|mlflow"
+pip list | grep -E "psycopg2|pgvector|sentence-transformers|mlflow"
 ```
 
 #### 5. Cache Not Working
@@ -372,13 +372,12 @@ pip list | grep -E "pymilvus|sentence-transformers|mlflow"
 ### Test Environment Setup
 
 ```bash
-# 1. Ensure services are running
-docker-compose up -d milvus-standalone
+# 1. Ensure services are running (pgvector/Postgres, Ollama, MLflow)
 ollama serve &
 mlflow server --host 0.0.0.0 --port 5025 &
 
 # 2. Verify connections
-python -c "from pymilvus import connections; connections.connect('default', 'localhost', '19530')"
+psql -h localhost -p 5442 -U egeria_advisor -d egeria_advisor -c "SELECT 1;"
 curl http://localhost:11434/api/tags
 curl http://localhost:5025
 

@@ -2,7 +2,9 @@
 
 **Version**: 1.0  
 **Date**: 2026-03-03  
-**Status**: Ready for Testing
+**Status: not adopted.** `config/advisor.yaml` → `embeddings.backend` is `pytorch` as of
+2026-07-11; this migration was proposed and prototyped but PyTorch remains the active
+embedding backend. Kept for reference if ONNX migration is revisited.
 
 ## Overview
 

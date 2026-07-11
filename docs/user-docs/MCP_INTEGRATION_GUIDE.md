@@ -2,7 +2,12 @@
 
 **Version:** 1.1
 **Date:** 2026-02-20
-**Status:** Phase 10.1 & 10.2 Complete
+**Status: superseded snapshot.** This describes MCP integration as of Feb 2026 (Phase 10.1/10.2,
+with 10.3 "pending"). MCP integration is now fully built into the main system — the Dr.Egeria
+MCP server backs report execution (`ReportPipeline`), command execution (`DrEgeriaActionAgent`),
+and plan execution (`GovernancePlanAgent`); see the Query Flow diagram in `CLAUDE.md` and
+`docs/PROJECT_SUMMARY.md` Phases 10–14 for current architecture and status. The conceptual
+"What is MCP?" background below is still accurate; the phase/status details above it are not.
 
 ## Overview
 

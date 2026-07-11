@@ -1,7 +1,7 @@
 # Egeria Advisor — Project Summary: Phases, Capabilities, Lessons Learned
 
-**Last updated:** 2026-06-25  
-**Repository:** `/Users/dwolfson/localGit/egeria-v6/egeria-advisor`  
+**Last updated:** 2026-07-11  
+**Repository:** `/home/dwolfson/localGit/egeria-v6/egeria-advisor`  
 **GitHub:** `https://github.com/dwolfson/egeria-advisor`
 
 ---
@@ -13,7 +13,7 @@ A local RAG (Retrieval-Augmented Generation) system that provides intelligent as
 **Stack:**
 - Python 3.12+, FastAPI, pgvector @ `localhost:5442`, Ollama @ `localhost:11434`
 - Web UI: single-page app served by FastAPI @ `localhost:8880`
-- ~88,900 indexed entities across 9 vector collections
+- ~92,400 indexed entities across 9 vector collections
 - ~33,000 lines of Python
 
 ---
@@ -519,19 +519,19 @@ flowchart LR
 ## Current capabilities
 
 ### Query / RAG
-- **Explain** — conceptual answers from indexed Egeria docs (9 collections, ~88,900 entities)
+- **Explain** — conceptual answers from indexed Egeria docs (9 collections, ~92,400 entities)
 - **Show me / Code** — runnable Python examples; API reference (ExamplesAgent)
 - **Report** — live data from Egeria via MCP report specs (200+ reports); all three invocation paths (sidebar, typed name, plain chat) reliable
 - **Act** — Dr.Egeria command execution and template lookup; template responses offer plan CTA
 - **Plan** — LGCI multi-step plan generation (see above)
 - **Troubleshoot** — debugging guidance
-- **Structural code questions** — "how many classes are in pyegeria?", "list methods on AssetManager", "most complex methods in egeria_java" answered via live SQL from symbol store (no LLM hallucination)
+- **Inspect / structural code questions** — "how many classes are in pyegeria?", "list methods on AssetManager", "most complex methods in egeria_java", "does X inherit from Y?" answered via live SQL from the symbol store (no LLM hallucination); dedicated `CodeIntelAgent` (`advisor/agents/code_intel_agent.py`) behind the **Inspect** intent button
 
 ### Web UI (http://localhost:8880)
 - Chat with markdown rendering, source citations, 👍/👎 feedback
 - Left sidebar: tabbed — **Reports** (grouped by topic, spec-specific format picker) | **Plans** (drafts/inbox/outbox) | **Recent Queries**; auto-switches to Plans on plan activity
 - Role selector (As:) — Anyone / Developer / Data Engineer / Data Steward / Governance
-- Intent override (Auto / Explain / Show me / Report / Act / Plan / Troubleshoot)
+- Intent override (Auto / Explain / Show me / Inspect / Run Report / Act / Create / Troubleshoot) — "Report" and "Plan" were renamed "Run Report" and "Create" in Phase 12; "Inspect" (→ `CodeIntelAgent`) is a dedicated maintainer-facing button added after Phase 11g's ad-hoc structural-query routing, covering method→class lookup, inheritance checks, class hierarchy, and codebase stats over the SQLite symbol table
 - **Plan Canvas** — persistent split-view panel alongside chat when a plan is active:
   - Drag-to-reorder command cards
   - Expand cards for field editing (Basic/Advanced toggle)
@@ -620,6 +620,21 @@ The catalog grew to 42 entries by adding entries only when scenarios were tested
 
 Using a 32B model for narrative generation / refinement while keeping 8B for high-volume Q&A gives much better plan document quality without sacrificing RAG latency.
 
+### 11. A silent per-file catch-all can hide a systemic ingestion bug indefinitely
+
+`ingest_file()`'s top-level `try/except` logged a warning and returned `(0, 0, [])`
+on any error, which is reasonable for a genuinely bad file (syntax error) but also
+swallowed a duplicate-id upsert conflict that was dropping every class-containing
+Python file's chunks, silently, on every ingestion run since Mar 2026. Because the
+bug reproduced the same (wrong) row counts every time, there was no obvious signal
+that anything was missing — the numbers looked "stable," not "broken." It only
+surfaced when a full reset re-ran ingestion with error output actually being read.
+
+**Fix:** don't let a per-item catch-all fully absorb an error class that indicates a
+structural bug (duplicate ids from double-parsing an AST) rather than bad input.
+When re-running any bulk ingestion/reset, grep the log for `ERROR` before trusting
+the "N files ingested" summary line.
+
 ---
 
 ## Architecture overview (current)
@@ -652,7 +667,7 @@ Plan Editor (builder mode):
   → same canvas + execution path as conversational mode
 ```
 
-**Vector collections (9 active, ~88,900 entities):**
+**Vector collections (9 active, ~92,400 entities):**
 `pyegeria`, `pyegeria_cli`, `pyegeria_drE`, `egeria_java`, `egeria_concepts`,
 `egeria_types`, `egeria_general`, `egeria_workspaces`, `egeria_templates`
 
@@ -701,7 +716,10 @@ config/
   routing.yaml               — query classification patterns
 scripts/
   backfill_code_symbols.py   — Populate symbol table from existing source repos (no pgvector re-index)
-  count_vectors.py           — Count indexed entities per collection
+  full_reset.sh              — Re-clone all source repos + force re-ingest all collections from one consistent snapshot
+  clone_repos.py             — Clone/update the 4 source repos into data/repos/
+  ingest_collections.py      — Ingest one/all collections from data/repos/ into pgvector
+  count_vectors.py           — Legacy Milvus vector counter; superseded by full_reset.sh's pgvector count step
   test_end_to_end.py         — E2E test suite
 docs/
   literate-governance-plan.md — LGCI design (v5, comprehensive)
@@ -973,6 +991,77 @@ groundwork exists so far — no dedicated UI:
 - New basic-tier `Sub-Projects` field on `Create Project`/`Campaign`/`Personal Project`/
   `Study Project`/`Task` — the PC-1 workaround above depends on this
 
+### Phase 14 — Data pipeline sync + silent ingestion data-loss fix (Jul 11, 2026)
+
+**Theme:** The three layers that define what the RAG system actually knows —
+downloaded source repos (`data/repos/`), the pgvector store, and
+`config/advisor.yaml` — had drifted out of sync with each other, and a
+latent bug in Python ingestion was silently dropping most of the content in
+every class-containing file, on every ingestion run to date.
+
+**Diagnosed drift** ✓
+- `data/repos/` had only `egeria-python` checked out; the `egeria` (Java),
+  `egeria-docs`, and `egeria-workspaces` checkouts used to build the
+  `egeria_java`, `egeria_workspaces`, `egeria_concepts`, `egeria_types`, and
+  `egeria_general` collections had been deleted from disk after ingestion —
+  those collections' vector data was orphaned from any source on disk.
+- `egeria-python` itself had drifted internally: it was refreshed on
+  2026-07-10 and `pyegeria`/`pyegeria_cli`/`pyegeria_drE` were re-ingested
+  same day, but `egeria_templates` — sourced from the same repo's
+  `sample-data/templates/` — was last ingested 2026-07-01, so it reflected
+  the pre-refresh state.
+- `config/advisor.yaml`'s `data_sources.egeria_python_path` was a leftover
+  macOS path (`/Users/dwolfson/...`) that doesn't exist on this machine —
+  dead config, silently bypassed by working fallback paths in
+  `advisor/config.py`, but first in the resolution order.
+
+**`scripts/full_reset.sh`** ✓ (new, reusable)
+- Deletes and re-clones all 4 source repos via `scripts/clone_repos.py --phase all`, then force
+  re-ingests every enabled pgvector collection via `scripts/ingest_collections.py --phase all --force`
+  from that single consistent snapshot, then verifies row counts.
+- Fixed `config/advisor.yaml`'s `egeria_python_path` to point at the real
+  `data/repos/egeria-python` checkout instead of the stale macOS path.
+
+**Root-caused a real, pre-existing data-loss bug found while re-running the reset** ✓
+- The reset run logged 166 `ON CONFLICT DO UPDATE command cannot affect row
+  a second time` Postgres errors, concentrated in `pyegeria` (138),
+  `egeria_workspaces` (8), `pyegeria_drE` (16), `pyegeria_cli` (4) — all
+  Python-parsed collections.
+- Root cause: `advisor/data_prep/code_parser.py`'s `parse_file()` used
+  `ast.walk(tree)` to find every `FunctionDef`/`AsyncFunctionDef` node
+  (producing a "function" element for each), *and separately* looped over
+  each `ClassDef`'s body to parse its methods again (producing a "method"
+  element for the same node). Both elements share the same id
+  (`file_path::name::line_number` in `ingest_to_milvus.py`), so any
+  class-containing file produced a batch with duplicate ids. Postgres's
+  upsert rejects a batch that updates the same row twice, so the whole
+  file's insert failed — and `ingest_file()`'s catch-all silently returned
+  `(0, 0, [])`, so the file just vanished from the collection with only a
+  logged warning easy to miss in a long ingestion run.
+- Because this has been true since AST-based Python ingestion was
+  introduced (Mar 8, per Phase 7b), every prior ingestion of `pyegeria`,
+  `pyegeria_cli`, `pyegeria_drE`, and the Python portion of
+  `egeria_workspaces` silently lost most class-containing files — this
+  reset reproduced the exact same (undercounted) row counts as before the
+  reset, which is what surfaced it.
+- **Fix:** `parse_file()` now builds a `parent_class_of` map from a single
+  pass over `ClassDef` nodes first, then visits every function/method node
+  exactly once via `ast.walk(tree)`, looking up `parent_class` from the map.
+  No behavior change to the extracted data (methods are still tagged with
+  `parent_class`), just no more duplicate elements.
+- Re-ingested the 4 affected collections after the fix; row counts jumped
+  significantly now that entire files are no longer being dropped:
+
+  | Collection | Before fix | After fix |
+  |---|---|---|
+  | `pyegeria` | 3,338 | 6,234 (+87%) |
+  | `pyegeria_cli` | 466 | 513 |
+  | `pyegeria_drE` | 266 | 487 (+83%) |
+  | `egeria_workspaces` | 15,519 | 15,700 |
+
+**Commits:** not yet committed as of this writing — `scripts/full_reset.sh` (new),
+`advisor/data_prep/code_parser.py` (bug fix), `config/advisor.yaml` (path fix).
+
 ---
 
 ## Current state and next steps (Jul 2026)
@@ -990,6 +1079,7 @@ groundwork exists so far — no dedicated UI:
 - Phase 12 ✓ — report spec builder & parameter model (RSD lifecycle, parameter model, collapsible canvas panels, Create intent, Act verb split)
 - Phase 12b ✓ — composite examples agent (Show me composite response, related templates, related report specs with file:// links)
 - Phase 13 ✓ — Plan Templates sidebar, NL reorder/relationship editing, priority-resort fix, outcome-reporter false-success fix
+- Phase 14 ✓ — data pipeline sync (repos/vector store/config brought back into alignment), silent Python ingestion data-loss bug found and fixed
 
 **What's working end-to-end (Jul 6, 2026):**
 - Full plan lifecycle exercised live against a real Dr.Egeria MCP server + Egeria REST backend + Postgres for the first time (not just synthetic testing) — surfaced and fixed six real bugs in one session (SS-6 through SS-11, see "Recent work" above and `BACKLOG.md`), including a genuine event-loop-freezing hang in the MCP client
@@ -1010,6 +1100,7 @@ groundwork exists so far — no dedicated UI:
 - Show me queries return composite responses linking relevant Python code, Dr.Egeria templates, and catalog report specs with clickable file:// links
 - Chat-driven plan reorder ("move step 3 to be the first step") and relationship editing (Project Hierarchy, Project Dependency) work in both pre- and post-generation phases
 - Plan Templates are browsable from the Plans sidebar tab, not just via chat phrase
+- `data/repos/`, the pgvector store, and `config/advisor.yaml` are back in sync (`scripts/full_reset.sh` re-clones and re-ingests everything from one consistent snapshot); Python ingestion no longer silently drops class-containing files
 
 **Planned next (in priority order):**
 

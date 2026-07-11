@@ -2,6 +2,28 @@
 
 This guide explains how to update cloned repositories and incrementally update the pgvector store with new or modified content.
 
+## Full reset
+
+If the downloaded repos under `data/repos/`, the pgvector store, and `config/advisor.yaml`
+have drifted out of sync with each other — e.g. a repo directory was deleted after
+ingestion, or only some collections were re-ingested after a repo update — the fastest
+way back to a known-good state is a full reset:
+
+```bash
+scripts/full_reset.sh          # prompts for confirmation
+scripts/full_reset.sh --yes    # skip confirmation (for automation)
+```
+
+This deletes and re-clones all 4 source repos (`egeria-python`, `egeria`, `egeria-docs`,
+`egeria-workspaces`), then force re-ingests every enabled collection from that single
+consistent snapshot, then prints row counts per collection to verify. It does not touch
+MLflow runs, query cache, or feedback data. Expect this to take a while — `egeria`'s Java
+monorepo is the largest checkout, and every collection's embeddings are regenerated from
+scratch.
+
+Use the incremental workflow below for routine day-to-day updates; use the full reset when
+you suspect drift or want a guaranteed-consistent baseline.
+
 ## Quick Reference
 
 ```bash

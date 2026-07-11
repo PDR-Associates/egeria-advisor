@@ -508,7 +508,7 @@ def check_metrics_and_alert():
 # scripts/run_embedding_experiment.py
 import mlflow
 from advisor.data_prep import prepare_test_data
-from advisor.vector_store import MilvusClient
+from advisor.vector_store import get_vector_store
 from advisor.evaluation import evaluate_retrieval
 
 def run_embedding_experiment(model_name: str, params: dict):
@@ -530,12 +530,12 @@ def run_embedding_experiment(model_name: str, params: dict):
         embeddings = generate_embeddings(test_queries, model_name)
         embedding_time = time.time() - start_time
         
-        # Store in Milvus
-        milvus_client = MilvusClient()
-        milvus_client.insert_embeddings(embeddings)
+        # Store in the configured vector store backend (pgvector)
+        vector_store = get_vector_store()
+        vector_store.insert_data("pyegeria", texts=test_queries, ids=None, metadata=None)
         
         # Evaluate retrieval
-        results = evaluate_retrieval(test_queries, ground_truth, milvus_client)
+        results = evaluate_retrieval(test_queries, ground_truth, vector_store)
         
         # Log metrics
         mlflow.log_metrics({

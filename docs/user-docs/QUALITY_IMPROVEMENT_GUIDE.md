@@ -1,5 +1,11 @@
 # Quality Improvement Guide for Egeria Advisor
 
+**This is a historical issues-analysis snapshot from early 2026, not a current guide.** The
+issues catalogued below were addressed in later phases — e.g. routing accuracy went from
+~60% to 100% on the test suite in Phase 7 (see `docs/PROJECT_SUMMARY.md`), and hallucination
+rate fell from ~80% to ~27% after the Phase 7b collection split and parameter tuning. Kept
+for reference on root-cause analysis; do not treat the issue list as current status.
+
 ## 🔍 Current Issues Analysis
 
 Based on testing, we've identified several critical quality issues:

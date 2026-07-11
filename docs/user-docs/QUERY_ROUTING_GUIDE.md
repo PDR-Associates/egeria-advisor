@@ -1,6 +1,6 @@
 # Egeria Advisor Query Routing Guide
 
-**Last Updated:** 2026-05-13
+**Last Updated:** 2026-07-11
 
 ## Overview
 
@@ -91,6 +91,8 @@ Applied *after* classification but *before* pipeline dispatch. **Skipped when `i
 | `command` | no template keyword | DrEgeriaActionAgent → MCP command execution |
 | `code_search` or `example` | method-discovery signals ("what methods", "what api", …) | ExamplesAgent — **API reference mode** → class/method table |
 | `code_search` or `example` | code-example signals | ExamplesAgent — **example mode** → runnable Python |
+| `code_intel` | — | `CodeIntelAgent` — structural SQL over the code symbol table, no RAG/LLM involved |
+| `create` | — | `CreateRouter` — classifies as a plan request (`PlanElicitor`), report spec request (`ReportSpecElicitor`), or ambiguous (Python/Dr.Egeria button choice) |
 | `explanation`, `best_practice`, `comparison`, `debugging`, `general` | — | DocAgent → conceptual answer from indexed docs |
 | *(fallback)* | — | RAG retrieval + LLM generation |
 
@@ -175,13 +177,19 @@ These go to DocAgent, which searches `egeria_concepts`, `egeria_general`, `egeri
 
 ## Using the Intent Override Buttons
 
+The intent bar in the current Web UI is: **Auto / Explain / Show me / Inspect / Run Report /
+Act / Create / Troubleshoot**. ("Report" was renamed "Run Report" and "Plan" was renamed
+"Create" in Phase 12; "Inspect" was added after Phase 11g.)
+
 | Button | Forced intent | Best used when |
 |--------|-------------|----------------|
 | **Auto** | *(classified)* | Default — role + signals determine the route |
 | **Explain** | `explanation` | You want a concept explained, not code |
 | **Show me** | `code_search` | You want Python code or an API reference listing |
-| **Report** | `report` | You want current live data; also used by sidebar |
+| **Inspect** | `code_intel` | You want structural facts about the codebase itself — class lists, inheritance, method→class lookup, complexity stats — via `CodeIntelAgent` over the SQLite symbol table, not RAG |
+| **Run Report** | `report` | You want current live data; also used by sidebar |
 | **Act** | `command` | You want Dr.Egeria to do something (or give you the command template) |
+| **Create** | `create` | You want to build a new governance plan or report spec; `CreateRouter` decides which (or asks) |
 | **Troubleshoot** | `debugging` | You're diagnosing an error or unexpected behaviour |
 
 ---

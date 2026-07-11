@@ -2,6 +2,15 @@
 
 > **Status:** v5 — Incorporates: routing defect analysis, negative routing guard, plan editor mode (direct command builder), command keyword index, action catalog gap analysis, Phase 11b completions (transcript viewer, Egeria context enrichment, partial execution detection, governance zone valid values).
 >
+> **Note (2026-07-11):** The core vision, design philosophy, and workflow described below are
+> still accurate and haven't changed. This design narrative predates several later phases
+> that extended the implementation without changing the underlying design principles —
+> report spec builder & parameter model (Phase 12), composite Examples Agent (Phase 12b),
+> and Plan Templates sidebar + natural-language reorder/relationship editing (Phase 13). See
+> `docs/PROJECT_SUMMARY.md` for those phases' details, and
+> `docs/design/RELATIONSHIP_LINKING_SCOPE.md` for the relationship-editing design that
+> extends section 5 (Plan Canvas) below.
+>
 > **What this is:** A design and phased implementation plan for a major new Egeria Advisor capability. The goal is to allow a user to describe a data management task in plain language, receive a complete, executable, and reviewable plan document, iterate on it conversationally and/or directly, execute it against Egeria, and receive a verified outcome report.
 
 ---

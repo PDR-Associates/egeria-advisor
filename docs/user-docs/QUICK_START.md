@@ -1,6 +1,6 @@
 # Egeria Advisor — Quick Start
 
-**Last Updated:** 2026-05-13
+**Last Updated:** 2026-07-11
 
 Get the web UI running and ask your first question in under five minutes.
 
@@ -41,7 +41,7 @@ curl -k https://localhost:9443/open-metadata/platform-services/users/garygeeke/s
 ## Start the Web UI
 
 ```bash
-cd /Users/dwolfson/localGit/egeria-v6/egeria-advisor
+cd /home/dwolfson/localGit/egeria-v6/egeria-advisor
 source activate_venv.sh
 python -m advisor.web.app
 # or: uvicorn advisor.web.app:app --reload --port 8880
@@ -76,20 +76,20 @@ If the page still does not load, check:
 ┌──────────────────────────────────────────────────────────────┐
 │  [Logo]  Egeria Advisor                           ●          │  ← Header (● = MCP status)
 ├───────────────────┬──────────────────────────────────────────┤
-│  Available        │                                          │
-│  Reports          │  [chat messages appear here]             │
-│  ▶ Glossary       │                                          │
+│ Reports|Plans|Recent│                                         │  ← tabbed sidebar
+│  ▶ Glossary       │  [chat messages appear here]              │
 │  ▶ Governance     │                                          │
 │  ▶ Projects       │  ─────────────────────────────────────  │
 │  ▶ ...            │  As:  Anyone  Developer  Data Engineer   │
-│  ───────────────  │        Steward  Governance               │
-│  Recent Queries   │  Intent: Auto  Explain  Show me          │
-│                   │          Report  Act  Troubleshoot        │
+│                    │        Steward  Governance               │
+│                    │  Intent: Auto Explain Show me Inspect    │
+│                    │    Run Report  Act  Create  Troubleshoot │
 │                   │  [Enter your question...]       [Send]   │
 └───────────────────┴──────────────────────────────────────────┘
 ```
 
-**Left sidebar:** Reports grouped by topic — click any report to open the Run modal.  
+**Left sidebar:** tabbed — **Reports** (grouped by topic, click to open the Run modal),
+**Plans** (drafts/inbox/outbox plus browsable saved Plan Templates), **Recent** (query history).  
 **As:** row: select your role (affects routing and response framing).  
 **Intent:** row: override automatic query classification.
 
@@ -165,8 +165,10 @@ each with `In Solution Blueprints` pre-filled with the blueprint's qualified nam
 | **Auto** | Default — role + query signals determine the route |
 | **Explain** | You want a concept explained, not code or data |
 | **Show me** | Force Python code / API reference (even without Developer role) |
-| **Report** | Force live data from your Egeria instance |
+| **Inspect** | Ask about the codebase's own structure — classes, inheritance, method locations, complexity — answered from a SQL symbol table, not RAG |
+| **Run Report** | Force live data from your Egeria instance |
 | **Act** | Force Dr.Egeria command template or execution |
+| **Create** | Build a new governance plan or report spec |
 | **Troubleshoot** | You're diagnosing an error |
 
 ---
@@ -222,6 +224,7 @@ egeria-advisor --agent
 | Response mentions methods that don't exist | Include the class name: "using GovernanceOfficer" |
 | MCP dot is red | Egeria server not reachable — report and action queries won't work |
 | "No relevant content found" | Check that collections are indexed: `python scripts/count_vectors.py` |
+| Answers reference content that seems missing, wrong, or inconsistent between collections | The downloaded repos, vector store, and config may have drifted apart — see [Repo Update Guide](REPO_UPDATE_GUIDE.md#full-reset) for `scripts/full_reset.sh`, which re-clones every source repo and re-ingests all collections from one consistent snapshot |
 | Plan creates wrong command type (e.g. Create Project instead of Create Solution Component) | The server may be running old code — restart it (see below) |
 | All plan steps show the same name | Start a **fresh** plan — don't resume an old draft from before a code update |
 

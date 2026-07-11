@@ -145,6 +145,16 @@ You can also respond conversationally:
 - **"remove step 2"** / **"remove step N"** — removes a step by number
 - **"steps 1 and 2 are duplicated"** — removes duplicates
 - **"that's wrong"** — asks which step to change
+- **"move step 3 to be the first step"** — reorder by ordinal or by name; works both before
+  and after the plan document is generated
+- **"make Campaign the parent of all other projects"** — establishes a Project Hierarchy
+  relationship across steps in bulk, without a separate Link command
+- **"Project 1 depends on Project 2 and 3"** — establishes Project Dependency relationships,
+  fanning out across multiple named targets
+
+These structural edits are deterministic (no LLM involved), so they apply reliably even on
+large plans. Other relationship families beyond Projects are being rolled out incrementally —
+see `docs/design/RELATIONSHIP_LINKING_SCOPE.md` for the current coverage and rollout order.
 
 ---
 
@@ -299,8 +309,11 @@ The outcome section shows:
 
 ## Multi-session continuity
 
-Plans persist between sessions. The **Plans** sidebar (left panel, middle section)
-lists all plans in your inbox and outbox.
+Plans persist between sessions. The left sidebar is tabbed — **Reports | Plans | Recent** —
+and automatically switches to the **Plans** tab whenever a draft is opened or created. The
+Plans tab lists drafts, inbox, and outbox plans, and includes a scrollable **Plan Templates**
+sub-section: saved templates are one click to start from ("start from this template") without
+needing to remember the chat phrase, with a delete button per template.
 
 - Click an **inbox** plan to restore it into the chat with its Execute button
 - Click an **outbox** plan to review the completed plan + outcome

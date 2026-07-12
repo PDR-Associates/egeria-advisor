@@ -208,6 +208,7 @@ dependency deleted Jul 2026).
 | `DocAgent` | `doc_agent.py` | `explanation` / `best_practice` / `comparison` / `debugging` / `general` — conceptual answers from indexed docs |
 | `ConversationAgent` | `conversation_agent.py` | Multi-turn sessions (BeeAI framework) |
 | `CLICommandAgent` | `cli_command_agent.py` | hey_egeria CLI command lookup and generation |
+| `CodeIntelAgent` | `code_intel_agent.py` | `code_intel` ("Inspect") — structural codebase facts (class info/docstring, inheritance, method→class lookup, hierarchy, stats) via live SQL over the `code_symbols`/`code_relationships` symbol table, not RAG |
 | `GovernancePlanAgent` | `governance_plan_agent.py` | `plan` queries — orchestrates full plan lifecycle: decompose → validate → generate → execute → outcome |
 | `OutcomeReporter` | `outcome_reporter.py` | Post-execution: selects and runs verification reports, synthesises outcome narrative, appends to plan document |
 

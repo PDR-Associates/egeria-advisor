@@ -1267,9 +1267,49 @@ coverage (non-test files only): classes 103/225 (46%), methods 1,905/2,234 (85%)
 157/224 (70%) — better than the test-code-skewed numbers suggested, though class docstrings
 still have real gaps worth a follow-up pass.
 
-**Not fixed (separate, smaller gap):** none of `CodeIntelAgent`'s tools return a class's own
-docstring — `get_class_hierarchy` only returns ancestors/descendants. "What is class X"
-questions get a real hierarchy now but still not the description text itself.
+**Follow-up gap (fixed in Phase 18b below):** at this point in the session, none of
+`CodeIntelAgent`'s tools returned a class's own docstring — `get_class_hierarchy` only
+returns ancestors/descendants. "What is class X" got a real hierarchy but not the
+description text itself.
+
+**Commits:** (this session).
+
+---
+
+### Phase 18b — `CodeIntelAgent` "what is class X" descriptions (Jul 11, 2026)
+
+**Theme:** two more issues surfaced testing the Phase 18 fix against `AutomatedCuration`.
+
+**1. No tool returned a class's own docstring.** Added `get_class_info(class_name,
+collection=None)` — looks up the class's own `code_symbols` row (docstring, file path, line
+range, signature) — and wired it into both the BeeAI tool list and `handle()`'s default
+keyword-dispatch branch (bare "what is X" / "describe X" / "tell me about X" queries), which
+now calls `get_class_info` **and** `get_class_hierarchy` together and combines both into the
+answer.
+
+**2. Class-name resolution failed for natural phrasing.** Class names are stored CamelCase
+(`AutomatedCuration`), but "what is the **Automated Curation** class" (spaces, how a person
+actually says it) got regex-split into `["Automated", "Curation"]`, and only the first token
+(`"Automated"`) was ever looked up — no match, empty context, technically-correct-but-useless
+"not found" answer. Added `_resolve_class_name()`, which tries the full word concatenation
+against `code_symbols` first, then falls back to individual words. Also switched all
+class-name lookups (`get_class_info`, `check_inheritance`, `get_class_hierarchy`) from exact
+match to `ILIKE` so casing variants (`"automatedcuration"`) resolve too.
+
+**3. Operational gotcha, not a code bug:** after both fixes landed, a live query through the
+already-running `uvicorn advisor.web.app:app` process (started earlier in the session, no
+`--reload` flag) still returned the old "not found" answer. Root cause: the running process
+had the pre-fix code loaded in memory, and `QueryCache` (`advisor/query_cache.py`) is a
+plain in-process dict with no invalidation on code change — a stale process silently serves
+both stale code *and* stale cached answers indefinitely. Restarting the server picks up new
+code and implicitly clears the cache (`QueryCache` isn't persisted to disk/Redis). Worth
+remembering when a fix "isn't taking effect" during live testing: check `ps aux | grep
+uvicorn` before assuming the code change is wrong.
+
+**Verified:** "what is the Automated Curation class", "tell me about the automated curation
+class", "what does Automated Curation do", and "what is the AutomatedCuration class" all now
+return the real docstring, file location, and inheritance chain — tested directly against the
+running server via `curl /api/query`.
 
 **Commits:** (this session).
 
@@ -1296,6 +1336,7 @@ questions get a real hierarchy now but still not the description text itself.
 - Phase 17 ✓ — "Show me" format disambiguation (CLI/Python/Dr.Egeria/Java recognition) + CLI ingestion gap fix (CLICommandAgent answers are now grounded in real extracted command data, not fabricated)
 - Phase 17b ✓ — Dr.Egeria given its own explicit route (was fallthrough-only); ambiguous "show me" now clarifies for every role, not just Data Steward/Governance
 - Phase 18 ✓ — fixed `code_symbols` population bug where the `pyegeria` collection's symbol table held only test-harness code (0 real SDK files); `Inspect` can now correctly answer questions about real pyegeria classes like `AutomatedCuration`
+- Phase 18b ✓ — `CodeIntelAgent` gained a `get_class_info` tool (returns a class's own docstring, not just its hierarchy) and space-separated/case-insensitive class-name resolution ("Automated Curation" → `AutomatedCuration`)
 
 **What's working end-to-end (Jul 6, 2026):**
 - Full plan lifecycle exercised live against a real Dr.Egeria MCP server + Egeria REST backend + Postgres for the first time (not just synthetic testing) — surfaced and fixed six real bugs in one session (SS-6 through SS-11, see "Recent work" above and `BACKLOG.md`), including a genuine event-loop-freezing hang in the MCP client

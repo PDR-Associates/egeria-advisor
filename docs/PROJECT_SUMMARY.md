@@ -1561,6 +1561,75 @@ session's task per the handed-off design brief.
 
 ---
 
+### Phase 22 — "Running a report times out": three timeout layers, then the real cause (Jul 12, 2026)
+
+**Theme:** running a report through Act reproducibly timed out ("The **Glossaries** report
+timed out (Egeria took too long)."). Chased this through three genuinely-real, genuinely-fixed
+configuration bugs before finding the actual root cause was none of them.
+
+**Bug 1 — MCP subprocess env didn't get the Phase 21 fix.** `advisor.mcp_config`'s
+env-var-priority resolver (Phase 21) covered `auth.py`/`report_pipeline.py`/`egeria_context.py`/
+`dr_egeria_agent.py`, but not the actual MCP *subprocess launch* — `MCPServerConfig.
+get_env_with_defaults()` (`advisor/mcp_client.py`) does `env = os.environ.copy(); env.
+update(self.env)`, and `self.env` is `config/mcp_servers.json`'s literal (still-localhost)
+`env` block, which unconditionally overwrites the parent's correct value. Confirmed via
+`/proc/<pid>/environ` on the actual subprocess. Fixed with `_resolve_server_env()` in
+`advisor/mcp_agent.py`, applied at `MCPConfig.from_file()`/`from_dict()` load time so the
+JSON's literal `EGERIA_VIEW_SERVER_URL`/`EGERIA_VIEW_SERVER` get overlaid with the resolved
+values before `MCPServerConfig` is even constructed.
+
+**Bug 2 — three independent ~30s timeout layers, only one of which was egeria-advisor's own.**
+Raising `config/mcp_servers.json`'s `tool_timeout` (now `ADVISOR_MCP_TOOL_TIMEOUT` env var,
+`advisor/mcp_agent.py::_resolve_tool_timeout()`) changed the observed failure time from 30s to
+~39s, not to 90s — proving a *second*, shorter timeout was now binding. Found it in a
+completely different codebase: `pyegeria/core/mcp_server.py:159` hardcodes
+`asyncio.wait_for(..., timeout=30)` around the `run_report` tool's execution — but the
+*version of that file actually being launched* (a separate dev checkout at
+`~/localGit/egeria-v6/egeria-python`, last committed 2026-05-18) doesn't even have the
+`PYEGERIA_MCP_REPORT_TIMEOUT` env-var override that a *newer* pip-installed pyegeria
+(6.0.16.3, sitting unused in egeria-advisor's own `.venv`) already supports. Fixed by
+repointing `config/mcp_servers.json`'s `pyegeria.command`/`args` to launch `python -m
+pyegeria.core.mcp_server` from egeria-advisor's own venv instead of the stale external
+checkout — immediately unlocking the already-fixed, already-configurable timeout. Even after
+that, the observed timeout only moved to ~40s at first because `PYEGERIA_MCP_REPORT_TIMEOUT`
+wasn't set yet; setting it (alongside a *third* layer, `PYEGERIA_TIMEOUT_SECONDS` — pyegeria's
+actual per-HTTP-request timeout, `pyegeria/core/config.py` → `_base_server_client.py`,
+overriding an also-hardcoded `httpx.Timeout(30.0)` client-constructor default in
+`_base_platform_client.py`) pushed the observed timeout to the full ~99s, confirming all three
+layers were now genuinely configured and working.
+
+**The real cause: none of the above.** Report execution *still* timed out at ~90s even for a
+report the user had just confirmed returns instantly (1 row) via a completely different client
+(Egeria Explorer, part of the Portal, against the same Egeria instance) — ruling out "Egeria is
+just slow" or "the report is big." Direct `curl`/`httpx` connectivity tests from this machine
+to `https://egeria.pdr-associates.com:9443` never completed a TCP connect at all (hard 15s
+timeout, `time_connect: 0.000000s`), while `https://localhost:9443` responded in ~20ms. Egeria
+itself runs on this same machine ("hedwig") — `ss -tlnp` confirmed something listening on
+`*:9443` locally, and `egeria.pdr-associates.com` resolves to an external IP that is not this
+machine's own address. **NAT hairpinning**: this machine cannot reach its own forwarded port
+via its public hostname/IP, even though external browsers reaching in from elsewhere have no
+such problem. Fixed by pointing `EGERIA_VIEW_SERVER_URL` back at `https://localhost:9443` —
+the public hostname remains correct for external clients (browsers via the Portal), just not
+for egeria-advisor's own server-side outbound calls, since it's co-located with Egeria on the
+same box.
+
+**Verified:** both "Glossaries" and "Data-Dictionaries" reports now execute successfully
+end-to-end (real table output, ~22s each — MCP/subprocess overhead, not a timeout) after
+switching back to `localhost:9443`, confirming this was the actual fix and the three timeout
+raises, while real and independently correct, were never actually the binding constraint once
+Egeria was reachable at all.
+
+**Kept:** the Phase 21 config-consolidation infrastructure and all three timeout env vars
+(`ADVISOR_MCP_TOOL_TIMEOUT`/`PYEGERIA_MCP_REPORT_TIMEOUT`/`PYEGERIA_TIMEOUT_SECONDS`, still set
+to 90s) remain in place — harmless for local Egeria, and genuinely necessary infrastructure for
+any future deployment where Egeria really is on a different machine. The `config/mcp_servers.json`
+subprocess-launch fix (using egeria-advisor's own installed pyegeria instead of a separate,
+staler dev checkout) is an unconditional improvement independent of this specific bug.
+
+**Commits:** (this session).
+
+---
+
 ## Current state and next steps (Jul 2026)
 
 **Phases complete:**
@@ -1586,6 +1655,7 @@ session's task per the handed-off design brief.
 - Phase 19 ✓ — the "Show me" format-disambiguation clarify no longer hijacks explicit non-"Show me" intents (Act/Run Report/Inspect/Explain/Troubleshoot/Create); gated behind `_AMBIGUOUS_ELIGIBLE_INTENTS` so Act's pre-existing report-spec matching is actually reachable
 - Phase 20 ✓ — new `egeria_type_registry.py` fixes Act's element-type extraction truncating multi-word Egeria type names ("external references" → "External" instead of `ExternalReference`; "data products" → `DigitalProduct` via an alias for the real Egeria type name)
 - Phase 21 ✓ — consolidated Egeria connection resolution into `advisor/mcp_config.py` (env vars first, then `config/mcp_servers.json`) so switching deployments (local Egeria vs. remote demo instance) is two `.env` lines; Portal SSO and CORS cross-origin access made configurable via `.env` too
+- Phase 22 ✓ — report execution timeouts fixed at three real layers (MCP subprocess env, stale pyegeria dev checkout vs. the already-fixed installed version, three independent ~30s timeout settings) before finding the actual cause was NAT hairpinning — Egeria runs on this same machine, so egeria-advisor must reach it via `localhost`, never its own public hostname
 
 **What's working end-to-end (Jul 6, 2026):**
 - Full plan lifecycle exercised live against a real Dr.Egeria MCP server + Egeria REST backend + Postgres for the first time (not just synthetic testing) — surfaced and fixed six real bugs in one session (SS-6 through SS-11, see "Recent work" above and `BACKLOG.md`), including a genuine event-loop-freezing hang in the MCP client

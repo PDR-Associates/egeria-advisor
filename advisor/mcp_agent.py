@@ -25,9 +25,58 @@ from advisor.mcp_client import (
 logger = logging.getLogger(__name__)
 
 
+def _resolve_server_env(name: str, env: Dict[str, str]) -> Dict[str, str]:
+    """
+    Overlay resolved Egeria connection values onto a server's env dict before the
+    MCP subprocess is spawned.
+
+    config/mcp_servers.json's "pyegeria" env block ships with EGERIA_VIEW_SERVER_URL/
+    EGERIA_VIEW_SERVER hardcoded to local Egeria defaults. advisor.mcp_config's
+    get_pyegeria_platform_config() (env vars first, then this same JSON) is the
+    single source of truth everywhere else in the app (auth.py, report_pipeline.py,
+    egeria_context.py, dr_egeria_agent.py) -- but MCPServerConfig.get_env_with_defaults()
+    (advisor/mcp_client.py) does `os.environ.copy(); env.update(self.env)`, so this
+    JSON's literal values would otherwise always win over a .env override when the
+    subprocess is actually launched, silently pointing report execution at the wrong
+    Egeria instance even after .env is updated. Patching it in here, at config-load
+    time, keeps get_env_with_defaults()'s general parent-env-as-fallback merge
+    behavior correct for any other future server while ensuring "pyegeria" always
+    gets the resolved connection.
+    """
+    if name != "pyegeria":
+        return env
+    from advisor.mcp_config import get_pyegeria_platform_config
+    conn = get_pyegeria_platform_config()
+    resolved = dict(env)
+    if conn["platform_url"]:
+        resolved["EGERIA_VIEW_SERVER_URL"] = conn["platform_url"]
+    if conn["view_server"]:
+        resolved["EGERIA_VIEW_SERVER"] = conn["view_server"]
+    return resolved
+
+
+def _resolve_tool_timeout(default: int) -> int:
+    """
+    ADVISOR_MCP_TOOL_TIMEOUT env var overrides config/mcp_servers.json's
+    settings.tool_timeout, same override-via-.env pattern as the Egeria
+    connection settings. Local Egeria can tolerate a short timeout; a remote
+    instance needs a more generous one for real network latency -- this was
+    the actual cause of reports timing out against a remote Egeria instance
+    even after the connection itself was pointed at the right host (30s,
+    the previous hardcoded default, wasn't enough round-trip time).
+    """
+    raw = os.environ.get("ADVISOR_MCP_TOOL_TIMEOUT", "")
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            logger.warning(f"Invalid ADVISOR_MCP_TOOL_TIMEOUT={raw!r}, using default {default}")
+    return default
+
+
 class MCPConfig:
     """MCP configuration manager."""
-    
+
     def __init__(
         self,
         servers: Dict[str, MCPServerConfig],
@@ -74,7 +123,7 @@ class MCPConfig:
             servers[name] = MCPServerConfig(
                 command=server_data.get("command"),
                 args=server_data.get("args", []),
-                env=server_data.get("env", {}),
+                env=_resolve_server_env(name, server_data.get("env", {})),
                 url=server_data.get("url"),
                 transport=server_data.get("transport", "stdio"),
                 headers=server_data.get("headers", {}),
@@ -87,7 +136,7 @@ class MCPConfig:
         return cls(
             servers=servers,
             auto_discover_tools=settings.get("auto_discover_tools", True),
-            tool_timeout=settings.get("tool_timeout", 30),
+            tool_timeout=_resolve_tool_timeout(settings.get("tool_timeout", 30)),
             max_concurrent_tools=settings.get("max_concurrent_tools", 5),
             enable_tool_caching=settings.get("enable_tool_caching", True),
             cache_ttl=settings.get("cache_ttl", 300)
@@ -109,7 +158,7 @@ class MCPConfig:
             servers[name] = MCPServerConfig(
                 command=server_data.get("command"),
                 args=server_data.get("args", []),
-                env=server_data.get("env", {}),
+                env=_resolve_server_env(name, server_data.get("env", {})),
                 url=server_data.get("url"),
                 transport=server_data.get("transport", "stdio"),
                 headers=server_data.get("headers", {}),
@@ -122,7 +171,7 @@ class MCPConfig:
         return cls(
             servers=servers,
             auto_discover_tools=settings.get("auto_discover_tools", True),
-            tool_timeout=settings.get("tool_timeout", 30),
+            tool_timeout=_resolve_tool_timeout(settings.get("tool_timeout", 30)),
             max_concurrent_tools=settings.get("max_concurrent_tools", 5),
             enable_tool_caching=settings.get("enable_tool_caching", True),
             cache_ttl=settings.get("cache_ttl", 300)

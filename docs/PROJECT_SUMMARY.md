@@ -1598,56 +1598,58 @@ overriding an also-hardcoded `httpx.Timeout(30.0)` client-constructor default in
 `_base_platform_client.py`) pushed the observed timeout to the full ~99s, confirming all three
 layers were now genuinely configured and working.
 
-**The real cause: none of the above.** Report execution *still* timed out at ~90s even for a
-report the user had just confirmed returns instantly (1 row) via a completely different client
-(Egeria Explorer, part of the Portal, against the same Egeria instance) — ruling out "Egeria is
-just slow" or "the report is big." Direct `curl`/`httpx` connectivity tests from this machine
-to `https://egeria.pdr-associates.com:9443` never completed a TCP connect at all (hard 15s
-timeout, `time_connect: 0.000000s`), while `https://localhost:9443` responded in ~20ms. Egeria
-itself runs on this same machine ("hedwig") — `ss -tlnp` confirmed something listening on
-`*:9443` locally, and `egeria.pdr-associates.com` resolves to an external IP that is not this
-machine's own address. **NAT hairpinning**: this machine cannot reach its own forwarded port
-via its public hostname/IP, even though external browsers reaching in from elsewhere have no
-such problem. Fixed by pointing `EGERIA_VIEW_SERVER_URL` back at `https://localhost:9443` —
-the public hostname remains correct for external clients (browsers via the Portal), just not
-for egeria-advisor's own server-side outbound calls, since it's co-located with Egeria on the
-same box.
+**First (wrong) conclusion: "Egeria is co-located, use localhost."** Report execution still
+timed out at ~90s even for a report the user had just confirmed returns instantly (1 row) via
+a completely different client (Egeria Explorer, part of the Portal) — ruling out "Egeria is
+just slow." Direct `curl`/`httpx` connectivity tests from this machine to
+`https://egeria.pdr-associates.com:9443` never completed a TCP connect at all (hard 15s
+timeout), while `https://localhost:9443` responded in ~20ms, and `ss -tlnp`/`docker ps`
+confirmed something real was listening on `*:9443` locally. Concluded "NAT hairpinning" —
+this machine can't reach its own forwarded port via its public hostname — and pointed
+`EGERIA_VIEW_SERVER_URL` at `localhost:9443` instead. Reports executed successfully
+end-to-end with this change (~22s, real table output), which looked like confirmation.
 
-**Verified:** both "Glossaries" and "Data-Dictionaries" reports now execute successfully
-end-to-end (real table output, ~22s each — MCP/subprocess overhead, not a timeout) after
-switching back to `localhost:9443`, confirming this was the actual fix and the three timeout
-raises, while real and independently correct, were never actually the binding constraint once
-Egeria was reachable at all.
+**This was wrong, and the user's pushback caught it.** The user correctly refused to accept
+"it returns data" as proof of same-server identity, and asked to compare a specific element's
+GUID instead — GUIDs are per-instance random UUIDs, so a match is near-conclusive and a
+mismatch is definitive. The GUID from `localhost:9443` did not match what the Portal showed
+for the same element. Root cause: this machine ("hedwig") separately runs its own **local**
+`egeria-quickstart` dev stack (`docker ps` showed `quickstart-egeria-main`, port-mapped
+`9443:9443`) — a genuinely different Egeria server, coincidentally seeded with the same
+standard sample content pack (`OpenMetadataDigitalProductsContentPack`), which is exactly why
+matching report *output* was misleading: same stock demo data, different server, different
+GUIDs. The user confirmed the real demo Egeria runs on a different machine entirely, not
+co-located with `egeria-advisor` at all — so there was never a hairpinning scenario to begin
+with. The actual reason `egeria.pdr-associates.com:9443` was unreachable: port `9443`
+forwarding had simply been dropped at the router (only `:8880` had been re-added earlier in
+this session) — restoring it made the public hostname connect instantly (~200ms) with a real
+response. Re-checked the GUID once more with forwarding restored and confirmed via the raw
+JSON: **it now matched** what the Portal shows. `EGERIA_VIEW_SERVER_URL` reverted to
+`https://egeria.pdr-associates.com:9443` — the original Phase 21 setting, which was correct
+all along; the intervening "fix" to `localhost` was itself the bug, just a plausible-looking
+one. Re-verified end-to-end: "Data-Dictionaries" report executes successfully in ~47s (real
+network latency to a genuinely remote server, comfortably inside the 90s timeouts).
+
+**Lesson, not just a fix:** when a connection to host A fails and host B "just works" and
+returns data that looks right, that is not proof B is the intended target — especially when
+sample/demo data is standardized (the same content pack loaded into every quickstart
+deployment). Verify identity with something instance-specific (a GUID, a creation timestamp,
+a server metadata-collection ID) before concluding "use B instead," not just "B responds."
 
 **Kept:** the Phase 21 config-consolidation infrastructure and all three timeout env vars
 (`ADVISOR_MCP_TOOL_TIMEOUT`/`PYEGERIA_MCP_REPORT_TIMEOUT`/`PYEGERIA_TIMEOUT_SECONDS`, still set
-to 90s) remain in place — harmless for local Egeria, and genuinely necessary infrastructure for
-any future deployment where Egeria really is on a different machine. The `config/mcp_servers.json`
-subprocess-launch fix (using egeria-advisor's own installed pyegeria instead of a separate,
-staler dev checkout) is an unconditional improvement independent of this specific bug.
+to 90s) remain in place — genuinely needed for the real network latency to the actual remote
+Egeria (~47s observed, most of that plausibly real Egeria-side processing time, not overhead).
+The `config/mcp_servers.json` subprocess-launch fix (using egeria-advisor's own installed
+pyegeria instead of a separate, staler dev checkout) is an unconditional improvement
+independent of this bug.
 
-**Follow-up: verified this doesn't create data or version inconsistency.** Pushed back on
-correctly — worth confirming rather than assuming. Two separate questions, both checked:
-
-1. *Does "local egeria-advisor" see different data than "remote" callers?* No — `egeria-advisor`
-   is a single running process; every request, whether it arrives via `localhost:8880` or the
-   forwarded `egeria.pdr-associates.com:8880`, hits that same process, which always makes the
-   same `localhost:9443` call to the same Egeria. There's no separate "local" vs. "remote"
-   deployment, just one server with one fixed upstream connection. Also confirmed
-   architecturally: the demo stack's own `egeria-quickstart.yaml` docker-compose maps Egeria's
-   container port as `9443:9443` onto the host, and *other* containers in the same stack
-   (`PyegeriaWebHandler`, e.g. Egeria Explorer) already connect via `EGERIA_VIEW_SERVER_URL:
-   https://host.docker.internal:9443` — Docker's own "reach the host machine" address,
-   functionally the same pattern as pointing `egeria-advisor` at `localhost:9443`. This is the
-   established pattern in this stack, not a one-off workaround.
-2. *Is pyegeria version drift real?* Yes — legitimate, separate concern. `egeria-advisor`'s
-   `pyproject.toml` only required `pyegeria>=6.0.16.1` (resolved to 6.0.16.3 installed), while
-   the Portal's `PyegeriaWebHandler/requirements.txt` requires `>=6.0.16.16`. Bumped
-   `egeria-advisor`'s floor to match and upgraded the installed package to 6.0.16.16. This
-   affects client-side feature/formatting parity (e.g. `run_report`'s available
-   `output_type`s), not the underlying Egeria data itself — same server, same data, regardless
-   of which pyegeria version reads it. Re-verified report execution still works after the
-   upgrade (~19s, real output).
+**Separately real and kept: pyegeria version drift.** `egeria-advisor`'s `pyproject.toml` only
+required `pyegeria>=6.0.16.1` (resolved to 6.0.16.3 installed), while the Portal's
+`PyegeriaWebHandler/requirements.txt` requires `>=6.0.16.16`. Bumped `egeria-advisor`'s floor
+to match and upgraded the installed package to 6.0.16.16 — this affects client-side
+feature/formatting parity (e.g. `run_report`'s available `output_type`s), not which Egeria
+server or data is used, but is worth keeping aligned regardless.
 
 **Commits:** (this session).
 
@@ -1678,7 +1680,7 @@ correctly — worth confirming rather than assuming. Two separate questions, bot
 - Phase 19 ✓ — the "Show me" format-disambiguation clarify no longer hijacks explicit non-"Show me" intents (Act/Run Report/Inspect/Explain/Troubleshoot/Create); gated behind `_AMBIGUOUS_ELIGIBLE_INTENTS` so Act's pre-existing report-spec matching is actually reachable
 - Phase 20 ✓ — new `egeria_type_registry.py` fixes Act's element-type extraction truncating multi-word Egeria type names ("external references" → "External" instead of `ExternalReference`; "data products" → `DigitalProduct` via an alias for the real Egeria type name)
 - Phase 21 ✓ — consolidated Egeria connection resolution into `advisor/mcp_config.py` (env vars first, then `config/mcp_servers.json`) so switching deployments (local Egeria vs. remote demo instance) is two `.env` lines; Portal SSO and CORS cross-origin access made configurable via `.env` too
-- Phase 22 ✓ — report execution timeouts fixed at three real layers (MCP subprocess env, stale pyegeria dev checkout vs. the already-fixed installed version, three independent ~30s timeout settings) before finding the actual cause was NAT hairpinning — Egeria runs on this same machine, so egeria-advisor must reach it via `localhost`, never its own public hostname
+- Phase 22 ✓ — report execution timeouts fixed at three real layers (MCP subprocess env, stale pyegeria dev checkout vs. the already-fixed installed version, three independent ~30s timeout settings); real root cause was a dropped router port-forward for `:9443`, not NAT hairpinning as first (wrongly) concluded — this machine runs its own separate local `egeria-quickstart` dev stack seeded with the same sample content, which made a GUID-mismatched wrong-server "fix" look correct until the user insisted on verifying with element GUIDs instead of matching output
 
 **What's working end-to-end (Jul 6, 2026):**
 - Full plan lifecycle exercised live against a real Dr.Egeria MCP server + Egeria REST backend + Postgres for the first time (not just synthetic testing) — surfaced and fixed six real bugs in one session (SS-6 through SS-11, see "Recent work" above and `BACKLOG.md`), including a genuine event-loop-freezing hang in the MCP client

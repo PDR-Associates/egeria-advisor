@@ -110,20 +110,18 @@ class EmbeddingGenerator:
         Returns:
             Device string: "cuda", "mps", "cpu", or ROCm device
         """
-        # Check for NVIDIA CUDA
+        # Check for NVIDIA CUDA or AMD ROCm — PyTorch's ROCm builds report AMD GPUs
+        # through the same torch.cuda.* API (there is no separate torch.hip namespace
+        # to check in current PyTorch), so both vendors are detected here;
+        # torch.version.hip is only set on ROCm builds and distinguishes which one it
+        # actually is, for logging purposes only.
         if torch.cuda.is_available():
             device_name = torch.cuda.get_device_name(0)
-            logger.info(f"✓ NVIDIA CUDA available: {device_name}")
+            if getattr(torch.version, "hip", None):
+                logger.info(f"✓ AMD ROCm available: {device_name} (ROCm {torch.version.hip})")
+            else:
+                logger.info(f"✓ NVIDIA CUDA available: {device_name}")
             return "cuda"
-        
-        # Check for AMD ROCm (HIP)
-        try:
-            if hasattr(torch, 'hip') and torch.hip.is_available():
-                device_count = torch.hip.device_count()
-                logger.info(f"✓ AMD ROCm available: {device_count} device(s)")
-                return "cuda"  # PyTorch uses "cuda" for ROCm too
-        except Exception as e:
-            logger.debug(f"ROCm check failed: {e}")
         
         # Check for Apple Metal (MPS)
         try:

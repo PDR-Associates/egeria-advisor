@@ -1,5 +1,19 @@
 # AMD AI Processor Optimization Guide
 
+**Update (2026-07-11):** this was successfully applied on this machine (AMD Radeon 890M /
+Strix Point iGPU). The `rocm5.7` wheel index below is stale — check
+`rocm-smi --version` / `cat /opt/rocm/.info/version` for your actual installed ROCm runtime
+version first, and match the PyTorch wheel index to it (this machine needed `rocm7.2`; PyTorch
+publishes wheels at `https://download.pytorch.org/whl/rocm{X.Y}` for whatever versions are
+current — check what's available with
+`curl -s https://download.pytorch.org/whl/torch/ | grep -o 'rocm[0-9.]*' | sort -u`).
+`torchaudio` was not installed on this machine and wasn't reinstalled — only
+`torch`/`torchvision` were needed. No `.env`/`config/advisor.yaml` device override was
+needed — `embeddings.device: auto` in `config/advisor.yaml` already picks up ROCm
+automatically once the right wheel is installed, since ROCm-flavored PyTorch reports GPUs
+through the same `torch.cuda.*` API as NVIDIA (verified: `torch.cuda.is_available()` returns
+`True` and `torch.cuda.get_device_name(0)` correctly returns `"AMD Radeon 890M"`).
+
 ## Overview
 
 Your AMD AI processor (likely Ryzen AI with NPU) can be optimized for better performance with machine learning workloads. Here's how to configure the Egeria Advisor to take advantage of it.

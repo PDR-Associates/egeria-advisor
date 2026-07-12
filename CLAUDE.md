@@ -99,11 +99,14 @@ User Query  [+ optional perspective + optional intent_override]
       │    └─ if 'general': LLMIntentClassifier ← zero-temp LLM call → refined intent
       │                      (LIVE_DATA/CODE_HELP/CONCEPT/WRITE_COMMAND/AMBIGUOUS)
       │
-      ├─ Role-aware routing (before pipeline dispatch, skipped when intent_override set)
-      │    ├─ developer|data_engineer + code/example/method signals
-      │    │    → ExamplesAgent (advisor/agents/examples_agent.py)
-      │    └─ data_steward|governance_officer + ambiguous example signals (no python keyword)
-      │         → clarification response (Python vs Dr.Egeria)
+      ├─ Format/role-aware routing (before pipeline dispatch, skipped when intent_override set)
+      │    ├─ explicit Dr.Egeria phrasing         → DrEgeriaTemplateAgent
+      │    ├─ explicit hey_egeria/CLI phrasing     → CLICommandAgent
+      │    ├─ explicit Java phrasing               → clarification (Java generation unsupported)
+      │    ├─ developer|data_engineer + explicit code/python signal
+      │    │    → ExamplesAgent (advisor/agents/examples_agent.py; CodeIntelAgent for structural code questions)
+      │    └─ any role + ambiguous "show me"/example signal (no explicit format signal)
+      │         → clarification response (Python vs CLI vs Dr.Egeria)
       │
       ├─ quantitative  → Analytics module (direct SQL answer)
       ├─ relationship  → RelationshipQueryHandler
@@ -312,7 +315,7 @@ Settings are managed via Pydantic models in `advisor/config.py`.
 
 10. **Dr.Egeria template lookup uses `_templates_root()`** which tries two layouts in order: `{root}/Templates/Dr-Egeria-Templates` (workspace layout) then `{root}/templates` (lower-case fallback). The root comes from `pyegeria.core.config.get_app_config().Environment.pyegeria_root` first, then `EGERIA_ROOT_PATH` / `PYEGERIA_ROOT_PATH` env vars.
 
-11. **Role-aware routing in `_process_query`** fires *before* pipeline dispatch and is skipped when `query_type_override` is set. Developer/Data Engineer + code/example/method-discovery signals → always route to ExamplesAgent. Data Steward/Governance + ambiguous example signals (no Python keyword) → return a clarification asking whether they want Python code or a Dr.Egeria template.
+11. **Format/role-aware routing in `PerspectiveRoutingEngine.route()`** (called from `_process_query`, before pipeline dispatch, skipped when `query_type_override` is set). Explicit format signals always short-circuit, regardless of role: Dr.Egeria phrasing ("dr egeria"/"dr. egeria"/"dr_egeria"/word-boundary `dre`) → `DrEgeriaTemplateAgent`; `hey_egeria`/CLI phrasing → `CLICommandAgent`; Java phrasing → clarification (no Java generation capability exists). Developer/Data Engineer + an *explicit* code/Python signal → `ExamplesAgent` (or `CodeIntelAgent` for structural questions like class hierarchies). Any role with only an ambiguous example/"show me" signal and no explicit format signal → 3-way clarification (Python / CLI / Dr.Egeria) — this is role-agnostic; Developer/Data Engineer no longer default straight to Python for a plain "show me X".
 
 12. **`routing.yaml` CRITICAL priority patterns** are checked before HIGH/MEDIUM patterns. Python/code example patterns in CRITICAL `example` ensure "give me a python example to create X" is classified before it can match HIGH `command` or `report` patterns. Method-discovery patterns ("what methods", "what api", "list methods", etc.) are CRITICAL `code_search` so they never fall to `general`.
 

@@ -89,8 +89,10 @@ User Query  [+ perspective + intent_override]
       ├─ QueryProcessor               ← pattern-match classifier (config/routing.yaml)
       │    └─ if 'general': LLM intent classifier → refines to code_search / report / command / …
       │
-      ├─ Role-aware routing (Developer|Data Engineer + code/example signals)
-      │    └─ → ExamplesAgent         ← bypasses pipeline before intent dispatch
+      ├─ Format/role-aware routing ("Show me" disambiguation, before intent dispatch)
+      │    ├─ explicit Dr.Egeria/CLI/Java phrasing → routes or clarifies directly
+      │    └─ Developer|Data Engineer + explicit code/python signal → ExamplesAgent
+      │        (ambiguous "show me" with no format signal → 3-way clarify, any role)
       │
       ├─ quantitative  → Analytics module (direct SQL)
       ├─ relationship  → Relationship graph handler

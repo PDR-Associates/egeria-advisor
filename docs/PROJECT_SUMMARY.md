@@ -266,6 +266,7 @@ The expand/collapse trigger on each command card was a tiny `▾` character. Rep
 - When a user with role Anyone, Data Steward, or Governance Officer asks an ambiguous example query (e.g. "show me how to create a collection") without a Python keyword, the routing layer returns a clarification response with two buttons: **Python example** and **Dr.Egeria template**.
 - Each button re-submits with the appropriate `intent_override`, avoiding the previous behaviour of silently picking one path.
 - Developer and Data Engineer roles still route directly to ExamplesAgent (no clarification).
+- *(Superseded by Phase 17/17b: the clarify is now 3-way — Python / CLI / Dr.Egeria — and applies to every role, including Developer/Data Engineer, unless the query has an explicit format signal.)*
 
 **Interrogative guard fix** ✓ (commit `afe12a5`)
 - Removed `'command'` from the interrogative guard's redirect condition. Previously "How do I create a Collection?" with `intent_override='command'` (from the clarification button) was silently redirected to DocAgent instead of DrEgeriaTemplateAgent. The guard now only overrides `plan` and `act` intents for interrogative queries.
@@ -1201,6 +1202,38 @@ the earlier fabricated `--create-glossary` syntax.
 
 ---
 
+### Phase 17b — Dr.Egeria added to "Show me" disambiguation; tech-role Python fast path removed (Jul 11, 2026)
+
+**Theme:** Phase 17 added explicit-signal routing for CLI and Java, but `dre_signals`
+("dr egeria"/"dr. egeria"/"dr_egeria") had no route of its own — it only suppressed the
+tech/governance overrides and relied on the base intent classifier happening to land on
+`command`, which wasn't guaranteed. Separately, Developer/Data Engineer roles still
+unconditionally fast-pathed *any* ambiguous "show me"/"example" query straight to Python
+with no clarify, even though CLI, Dr.Egeria, and (recognized-but-unsupported) Java are all
+now legitimate answers to "show me X" for those roles too.
+
+**Changes in `advisor/perspective_routing.py`:**
+- `dre_signals` is now a top-priority explicit route straight to `dre_template_agent`
+  (`rule_name: explicit_dre_signal`), matching the reliability guarantee `cli_signals` and
+  `java_signals` already had — checked first, ahead of CLI/Java, since it's the most specific
+  of the format signals. `rag_system.py` already had a `dre_template_agent` dispatch branch
+  wired up (added earlier for intent-based routing), so no dispatch-side changes were needed.
+- Tightened the bare `"dre"` substring match to a `\bdre\b` word-boundary regex — it used to
+  match inside ordinary words like "add**re**ss", which was harmless when the signal only
+  suppressed an override but became a real false-positive risk once it became a hard route.
+- The Developer/Data Engineer fast path now only fires on an *explicit* code/Python signal
+  (`code_signals`) — not on generic `example_signals` ("show me", "how do i", etc.). A plain
+  ambiguous "show me X" from any role, including Developer/Data Engineer, now gets the same
+  3-way clarify (Python / CLI / Dr.Egeria) that was previously Data Steward/Governance-only;
+  `rule_name` renamed from `governance_ambiguous_example_clarify` to `ambiguous_example_clarify`
+  to reflect that it's no longer role-gated. An explicit Python/code signal still bypasses the
+  clarify and routes straight to `examples_agent` (or `code_intel_agent` for structural
+  questions like class hierarchies) for every role, same as before.
+
+**Commits:** (this session).
+
+---
+
 ## Current state and next steps (Jul 2026)
 
 **Phases complete:**
@@ -1220,6 +1253,7 @@ the earlier fabricated `--create-glossary` syntax.
 - Phase 15 ✓ — MCP credential propagation (live Egeria calls use the signed-in user's own credentials, not a shared service account; singleton credential-caching bug fixed)
 - Phase 16 ✓ — Milvus removal (migrated remaining diagnostics/tests to pgvector, then deleted all Milvus code, config, scripts, and the pymilvus dependency)
 - Phase 17 ✓ — "Show me" format disambiguation (CLI/Python/Dr.Egeria/Java recognition) + CLI ingestion gap fix (CLICommandAgent answers are now grounded in real extracted command data, not fabricated)
+- Phase 17b ✓ — Dr.Egeria given its own explicit route (was fallthrough-only); ambiguous "show me" now clarifies for every role, not just Data Steward/Governance
 
 **What's working end-to-end (Jul 6, 2026):**
 - Full plan lifecycle exercised live against a real Dr.Egeria MCP server + Egeria REST backend + Postgres for the first time (not just synthetic testing) — surfaced and fixed six real bugs in one session (SS-6 through SS-11, see "Recent work" above and `BACKLOG.md`), including a genuine event-loop-freezing hang in the MCP client

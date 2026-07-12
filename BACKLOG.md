@@ -121,6 +121,31 @@ buttons generically, similar to how `renderIntentClarification()` already render
 
 ---
 
+### IB-9 — Supplement the Egeria type-name registry with a live type listing
+**Status:** open
+**Priority:** low
+**Scope:** `advisor/egeria_type_registry.py`
+
+`advisor/egeria_type_registry.py` (added to fix Act's element-type extraction dropping the
+second word of multi-word type names — "external references" → "External" instead of
+"ExternalReference") is currently built from the 75 distinct `target_type` values in
+`config/report_specs/report_specs_annotated.json` — a static, bundled list that's correct but
+only covers types that have a Dr.Egeria create template. It works without a live Egeria
+connection (the exact scenario that surfaced this bug — Egeria was unreachable at the time),
+but real Egeria has hundreds of open metadata types, most without a Dr.Egeria template.
+
+Consider adding an optional refresh path — a script (or lazy background call) that pulls the
+full type list from a live Egeria server via pyegeria (e.g. `EgeriaTech`'s type-listing
+methods) and merges it into the cached registry, falling back to the static list when Egeria
+isn't reachable. Also worth widening `resolve_type_name()`'s use beyond Act's
+`_extract_type_and_filter()` — e.g. `ReportSpecElicitor`, the Report Spec Builder's own
+element-type field, and anywhere else free-text type mentions get parsed — since it's a
+general-purpose "resolve fuzzy type phrase → canonical Egeria type name" utility, not
+Act-specific. The `_ALIASES` dict (currently just `"data product(s)"` → `DigitalProduct`, for
+the common industry-vs-Egeria terminology mismatch) should grow as more mismatches surface.
+
+---
+
 ## Report Spec Builder
 
 | # | Item | Status | Notes |

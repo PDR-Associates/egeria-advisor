@@ -1405,6 +1405,52 @@ the `_ACT_READ_RE` block) instead of the format clarify. "Show me" (`code_help`)
 
 ---
 
+### Phase 20 — Act element-type extraction truncated multi-word type names (Jul 12, 2026)
+
+**Theme:** with Phase 19's fix landed, Act correctly reached `_ACT_READ_RE` →
+`ReportPipeline` for "show me the external references" — but then failed with a real Egeria
+error: `type name External ... is not recognized`. `_extract_type_and_filter()` took only the
+*first* content word after the verb as the entity type ("external", dropping "references"),
+so multi-word Egeria type names were silently truncated before ever reaching Egeria. Same bug
+for "list Data Products" → "Data" (dropping "Products").
+
+**Added `advisor/egeria_type_registry.py`** — a cached registry of known Egeria type names,
+built from the 75 distinct `target_type` values in
+`config/report_specs/report_specs_annotated.json` (the same catalog the Dr.Egeria template
+annotations use). `resolve_type_name(words)` tries the longest word-prefix first (up to 4
+words) against the normalized registry, so "external references" → `ExternalReference` and
+"data products" → `DigitalProduct` resolve correctly instead of stopping at the first word.
+Normalization handles casing, spacing, and pluralization (including `-ies` → `-y`, e.g.
+"glossaries" → `Glossary`).
+
+**Real Egeria doesn't call it "Data Product."** Checked the actual Java source
+(`OpenMetadataType.java`): the type is `DigitalProduct`, not `DataProduct` — "data product" is
+common industry terminology that doesn't textually match Egeria's own naming. Added a small
+`_ALIASES` dict in the registry for this kind of mismatch (currently just this one entry;
+expected to grow as more surface).
+
+**`_extract_type_and_filter()` in `rag_system.py`** now collects all content words before the
+first separator (not just the first one) and resolves them through the registry, falling back
+to the old first-word heuristic when nothing matches (e.g. an ad-hoc type not in the static
+catalog). `search_string` extraction (the part after a separator like "named"/"where") is
+unchanged.
+
+**Verified** the extraction logic directly (replicated from the actual source): "show me the
+external references" → `("ExternalReference", "*")`, "list Data Products" → `("DigitalProduct",
+"*")`, "show glossaries named Inventory" → `("Glossary", "Inventory")` — all correct, with
+`search_string` extraction still intact. Could not fully verify end-to-end against a live
+Egeria server since `_ACT_READ_RE` gates on an authenticated Egeria session before reaching
+type extraction, and Egeria wasn't reachable in this environment.
+
+**Backlog:** added IB-9 — the registry is currently a static 75-type list (only types with a
+Dr.Egeria template); could be supplemented with a live Egeria type listing for full coverage,
+and `resolve_type_name()` is a general-purpose utility worth reusing beyond Act (e.g.
+ReportSpecElicitor, the Report Spec Builder's element-type field).
+
+**Commits:** (this session).
+
+---
+
 ## Current state and next steps (Jul 2026)
 
 **Phases complete:**
@@ -1428,6 +1474,7 @@ the `_ACT_READ_RE` block) instead of the format clarify. "Show me" (`code_help`)
 - Phase 18 ✓ — fixed `code_symbols` population bug where the `pyegeria` collection's symbol table held only test-harness code (0 real SDK files); `Inspect` can now correctly answer questions about real pyegeria classes like `AutomatedCuration`
 - Phase 18b ✓ — `CodeIntelAgent` gained a `get_class_info` tool (returns a class's own docstring, not just its hierarchy) and space-separated/case-insensitive class-name resolution ("Automated Curation" → `AutomatedCuration`)
 - Phase 19 ✓ — the "Show me" format-disambiguation clarify no longer hijacks explicit non-"Show me" intents (Act/Run Report/Inspect/Explain/Troubleshoot/Create); gated behind `_AMBIGUOUS_ELIGIBLE_INTENTS` so Act's pre-existing report-spec matching is actually reachable
+- Phase 20 ✓ — new `egeria_type_registry.py` fixes Act's element-type extraction truncating multi-word Egeria type names ("external references" → "External" instead of `ExternalReference`; "data products" → `DigitalProduct` via an alias for the real Egeria type name)
 
 **What's working end-to-end (Jul 6, 2026):**
 - Full plan lifecycle exercised live against a real Dr.Egeria MCP server + Egeria REST backend + Postgres for the first time (not just synthetic testing) — surfaced and fixed six real bugs in one session (SS-6 through SS-11, see "Recent work" above and `BACKLOG.md`), including a genuine event-loop-freezing hang in the MCP client

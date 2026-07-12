@@ -304,6 +304,8 @@ Settings are managed via Pydantic models in `advisor/config.py`.
 
 5. **`QuestionSpecIndex.search()` perspective filter** zeros out scores for specs whose `perspectives` list does not contain the selected role (or `"any"`). A `None` perspective disables filtering — all specs are eligible.
 
+5a. **Act's `_extract_type_and_filter()` resolves element types via `advisor/egeria_type_registry.py`**, not a bare first-content-word heuristic. `resolve_type_name(words)` tries the longest word-prefix (up to 4 words) against a cached registry built from `config/report_specs/report_specs_annotated.json`'s 75 `target_type` values, so multi-word type names ("external reference(s)", "data product(s)") resolve to their full canonical Egeria name (`ExternalReference`, `DigitalProduct`) instead of truncating to the first word. Falls back to the bare first word when nothing matches. Real Egeria calls it `DigitalProduct`, not `DataProduct` — common industry terminology doesn't always match Egeria's own type names; mismatches like this go in the registry's `_ALIASES` dict.
+
 ### Agent & Routing Design Rules
 
 6. **BeeAI `FunctionTool` objects (produced by `@tool`) have no `.func` attribute** — calling `my_tool.func(...)` raises `AttributeError`. Extract implementation into a `_<name>_raw()` plain function; the `@tool` wrapper delegates to it. Fallback methods import and call the raw function directly. See `_find_dre_template_raw`, `_search_egeria_content_raw`, `_get_egeria_symbol_raw` in `advisor/agents/tools.py`.

@@ -1358,22 +1358,33 @@ class RAGSystem:
                         _STOP.update(w.lower() for w in re.split(r'[\s\-_]', report_name))
 
                     tokens = re.findall(r"[A-Za-z0-9]+", query)
-                    # The first non-stop token before any separator is the entity type
-                    element_type, search_string = "", "*"
-                    past_verb = False
-                    past_separator = False
-                    for tok in tokens:
+
+                    # Content words before the first separator — candidate entity-type phrase.
+                    content_words = []
+                    separator_idx = len(tokens)
+                    for i, tok in enumerate(tokens):
                         tl = tok.lower()
-                        if tl in _VERB:
-                            past_verb = True
-                            continue
                         if tl in _SEPARATOR:
-                            past_separator = True
-                            continue
-                        if past_verb and not past_separator and not element_type:
-                            element_type = tok  # first content word = entity type
-                        elif past_separator and len(tok) > 2 and tl not in _STOP:
-                            search_string = tok  # word after separator = search filter
+                            separator_idx = i
+                            break
+                        if tl not in _VERB:
+                            content_words.append(tok)
+
+                    # Resolve against the known Egeria type-name registry first, trying the
+                    # longest matching phrase ("external reference(s)" -> ExternalReference,
+                    # "data product(s)" -> DigitalProduct) so multi-word type names aren't
+                    # truncated to their first word — which Egeria's findElements then rejects
+                    # as an unrecognized type. Falls back to the bare first word if the
+                    # registry has no match (e.g. an ad-hoc type not in the catalog).
+                    from advisor.egeria_type_registry import resolve_type_name
+                    element_type = resolve_type_name(content_words) or (content_words[0] if content_words else "")
+
+                    # search_string: first meaningful word after the separator.
+                    search_string = "*"
+                    for tok in tokens[separator_idx + 1:]:
+                        tl = tok.lower()
+                        if len(tok) > 2 and tl not in _STOP:
+                            search_string = tok
                             break
                     return element_type, search_string
 

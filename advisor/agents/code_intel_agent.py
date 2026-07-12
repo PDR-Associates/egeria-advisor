@@ -45,6 +45,42 @@ def get_class_for_method(method_name: str, collection: Optional[str] = None) -> 
     """
     return db.execute_query(sql, tuple(params))
 
+def get_class_info(class_name: str, collection: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Get a class's own definition: its docstring, file path, line numbers, and signature."""
+    db = get_db_manager()
+    where_clause = "WHERE kind = 'class' AND name = %s"
+    params = [class_name]
+    if collection:
+        where_clause += " AND collection = %s"
+        params.append(collection)
+        if collection == "pyegeria":
+            where_clause += """
+                AND file_path LIKE '%%/pyegeria/%%'
+                AND file_path NOT LIKE '%%/tests/%%'
+                AND file_path NOT LIKE '%%/my_egeria/%%'
+                AND file_path NOT LIKE '%%/md_processing/%%'
+                AND file_path NOT LIKE '%%/examples/%%'
+                AND file_path NOT LIKE '%%/commands/%%'
+            """
+    else:
+        where_clause += """
+            AND (language != 'python' OR (
+                file_path LIKE '%%/pyegeria/%%'
+                AND file_path NOT LIKE '%%/tests/%%'
+                AND file_path NOT LIKE '%%/my_egeria/%%'
+                AND file_path NOT LIKE '%%/md_processing/%%'
+                AND file_path NOT LIKE '%%/examples/%%'
+                AND file_path NOT LIKE '%%/commands/%%'
+            ))
+        """
+    sql = f"""
+        SELECT name, collection, file_path, start_line, end_line, signature, docstring, parent_class
+        FROM code_symbols
+        {where_clause}
+        ORDER BY collection
+    """
+    return db.execute_query(sql, tuple(params))
+
 def check_inheritance(class_a: str, class_b: str, collection: Optional[str] = None) -> Dict[str, Any]:
     """Check if class_a inherits from class_b (directly or recursively), returning the path if found."""
     db = get_db_manager()
@@ -271,11 +307,14 @@ class CodeIntelAgent(BaseAdvisorAgent):
             "structural relationships, inheritance, method containment, class listings, and statistics of the codebase.\n\n"
             "Workflow:\n"
             "1. Identify the structural question being asked:\n"
+            "   - If the user wants to know what a class is / does (a description or definition), call get_class_info.\n"
             "   - If the user wants to know where a method is defined, call get_class_for_method.\n"
             "   - If the user wants to check if class A inherits from class B, call check_inheritance.\n"
             "   - If the user wants the hierarchy of a class (parents/children), call get_class_hierarchy.\n"
             "   - If the user wants to list all classes in a collection, call list_classes.\n"
             "   - If the user wants overall statistics or line counts, call get_codebase_stats.\n"
+            "   - For a general 'what is X' about a class, call BOTH get_class_info and get_class_hierarchy "
+            "and combine the docstring with the hierarchy in your answer.\n"
             "2. Use the database results to form a clear, direct, and factual answer.\n\n"
             "Rules:\n"
             "- Ground all your answers strictly in the tool outputs.\n"
@@ -290,7 +329,7 @@ class CodeIntelAgent(BaseAdvisorAgent):
         )
 
     def tools(self) -> list:
-        return [get_class_for_method, check_inheritance, get_class_hierarchy, get_codebase_stats, list_classes]
+        return [get_class_info, get_class_for_method, check_inheritance, get_class_hierarchy, get_codebase_stats, list_classes]
 
     def handle(self, query: str) -> dict:
         logger.info(f"CodeIntelAgent handling query: {query}")
@@ -366,15 +405,31 @@ class CodeIntelAgent(BaseAdvisorAgent):
                 else:
                     context = "Could not identify method name for definition lookup."
             else:
-                # Default to class hierarchy lookup
+                # Default: bare class-name questions ("what is X", "describe X",
+                # "tell me about X class", "class hierarchy for X"). Fetch both the
+                # class's own definition (docstring) and its hierarchy — a "what is X"
+                # query wants the description, not just ancestors/descendants.
                 words = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', query)
-                ignore = {"hierarchy", "parents", "children", "ancestors", "descendants", "what", "is", "the", "for", "class", "show"}
+                ignore = {
+                    "hierarchy", "parents", "children", "ancestors", "descendants",
+                    "what", "is", "the", "for", "class", "show", "does", "do", "tell",
+                    "me", "about", "describe", "explain"
+                }
                 classes = [w for w in words if w.lower() not in ignore]
                 if classes:
-                    res = get_class_hierarchy(classes[0])
-                    context = f"Class Hierarchy for {classes[0]}:\n{res}"
+                    class_name = classes[0]
+                    info = get_class_info(class_name)
+                    hierarchy = get_class_hierarchy(class_name)
+                    parts = []
+                    if info:
+                        parts.append(f"Class Definition for {class_name}:\n{info}")
+                    else:
+                        parts.append(f"No class definition found for '{class_name}' in the indexed codebase.")
+                    if hierarchy["ancestors"] or hierarchy["descendants"]:
+                        parts.append(f"Class Hierarchy for {class_name}:\n{hierarchy}")
+                    context = "\n\n".join(parts)
                 else:
-                    context = "Could not identify class name for hierarchy lookup."
+                    context = "Could not identify class name for lookup."
         except Exception as e:
             logger.warning(f"CodeIntelAgent direct tool execution failed: {e}")
             context = f"Error querying codebase relationships: {e}"

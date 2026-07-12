@@ -1626,6 +1626,29 @@ any future deployment where Egeria really is on a different machine. The `config
 subprocess-launch fix (using egeria-advisor's own installed pyegeria instead of a separate,
 staler dev checkout) is an unconditional improvement independent of this specific bug.
 
+**Follow-up: verified this doesn't create data or version inconsistency.** Pushed back on
+correctly — worth confirming rather than assuming. Two separate questions, both checked:
+
+1. *Does "local egeria-advisor" see different data than "remote" callers?* No — `egeria-advisor`
+   is a single running process; every request, whether it arrives via `localhost:8880` or the
+   forwarded `egeria.pdr-associates.com:8880`, hits that same process, which always makes the
+   same `localhost:9443` call to the same Egeria. There's no separate "local" vs. "remote"
+   deployment, just one server with one fixed upstream connection. Also confirmed
+   architecturally: the demo stack's own `egeria-quickstart.yaml` docker-compose maps Egeria's
+   container port as `9443:9443` onto the host, and *other* containers in the same stack
+   (`PyegeriaWebHandler`, e.g. Egeria Explorer) already connect via `EGERIA_VIEW_SERVER_URL:
+   https://host.docker.internal:9443` — Docker's own "reach the host machine" address,
+   functionally the same pattern as pointing `egeria-advisor` at `localhost:9443`. This is the
+   established pattern in this stack, not a one-off workaround.
+2. *Is pyegeria version drift real?* Yes — legitimate, separate concern. `egeria-advisor`'s
+   `pyproject.toml` only required `pyegeria>=6.0.16.1` (resolved to 6.0.16.3 installed), while
+   the Portal's `PyegeriaWebHandler/requirements.txt` requires `>=6.0.16.16`. Bumped
+   `egeria-advisor`'s floor to match and upgraded the installed package to 6.0.16.16. This
+   affects client-side feature/formatting parity (e.g. `run_report`'s available
+   `output_type`s), not the underlying Egeria data itself — same server, same data, regardless
+   of which pyegeria version reads it. Re-verified report execution still works after the
+   upgrade (~19s, real output).
+
 **Commits:** (this session).
 
 ---

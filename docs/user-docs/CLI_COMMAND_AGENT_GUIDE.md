@@ -347,7 +347,7 @@ When new commands are added to pyegeria:
 python scripts/test_cli_parser.py
 
 # 2. Index commands
-python scripts/test_cli_indexer.py
+python scripts/index_cli_commands.py
 
 # 3. Verify
 python scripts/test_cli_agent.py

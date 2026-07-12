@@ -1179,7 +1179,7 @@ additively into the same `pyegeria_cli` table under a distinct id namespace (`cl
 the generic ingester's `file_path::name::line`), resolved via the existing
 `cli_commands`→`pyegeria_cli` table-name alias in `vector_store_pg.py`.
 - Ran `scripts/test_cli_parser.py` (110 `hey_egeria` commands extracted fresh from the
-  current `data/repos/egeria-python`) → `scripts/test_cli_indexer.py` (153 documents indexed,
+  current `data/repos/egeria-python`) → `scripts/index_cli_commands.py` (153 documents indexed,
   0 failures; `pyegeria_cli` went from 513 to 666 rows).
 - Also enriched `_generate_general_response()`'s LLM context: it was passing only a
   parameter *count* to the LLM, not the actual flag names — confirmed live that this still

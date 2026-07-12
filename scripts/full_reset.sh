@@ -81,7 +81,7 @@ echo "--- Step 4/4: Re-extracting and re-indexing hey_egeria CLI command metadat
 # CLICommandAgent (behind the "Show me" -> hey_egeria CLI routing) has no
 # grounded command syntax to draw from and will fabricate flags/arguments.
 python scripts/test_cli_parser.py
-python scripts/test_cli_indexer.py
+python scripts/index_cli_commands.py
 
 echo ""
 echo "=========================================="

@@ -34,6 +34,30 @@ def _resolve_class_name(words: List[str]) -> str:
             return rows[0]["name"]
     return joined
 
+def _relative_path(file_path: str) -> str:
+    """
+    Convert an indexed absolute file path to one relative to its source repo root
+    (e.g. ".../data/repos/egeria-python/pyegeria/omvs/x.py" -> "pyegeria/omvs/x.py").
+
+    All indexed source lives under data/repos/<repo-name>/... — strip everything up
+    to and including that <repo-name> segment. Falls back to the original path if
+    the marker isn't found (e.g. paths outside data/repos/).
+    """
+    marker = "data/repos/"
+    idx = file_path.find(marker)
+    if idx == -1:
+        return file_path
+    rest = file_path[idx + len(marker):]
+    parts = rest.split("/", 1)
+    return parts[1] if len(parts) == 2 else rest
+
+def _relativize_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Apply _relative_path() to the 'file_path' field of each row, in place."""
+    for row in rows:
+        if row.get("file_path"):
+            row["file_path"] = _relative_path(row["file_path"])
+    return rows
+
 # Tools to be exposed to the LLM / direct executor
 def get_class_for_method(method_name: str, collection: Optional[str] = None) -> List[Dict[str, Any]]:
     """Find the parent class(es) where a method is defined, returning file paths and line numbers."""
@@ -64,12 +88,12 @@ def get_class_for_method(method_name: str, collection: Optional[str] = None) -> 
             ))
         """
     sql = f"""
-        SELECT parent_class, collection, file_path, start_line, signature, docstring 
-        FROM code_symbols 
+        SELECT parent_class, collection, file_path, start_line, signature, docstring
+        FROM code_symbols
         {where_clause}
         ORDER BY parent_class
     """
-    return db.execute_query(sql, tuple(params))
+    return _relativize_rows(db.execute_query(sql, tuple(params)))
 
 def get_class_info(class_name: str, collection: Optional[str] = None) -> List[Dict[str, Any]]:
     """Get a class's own definition: its docstring, file path, line numbers, and signature."""
@@ -105,7 +129,7 @@ def get_class_info(class_name: str, collection: Optional[str] = None) -> List[Di
         {where_clause}
         ORDER BY collection
     """
-    return db.execute_query(sql, tuple(params))
+    return _relativize_rows(db.execute_query(sql, tuple(params)))
 
 def check_inheritance(class_a: str, class_b: str, collection: Optional[str] = None) -> Dict[str, Any]:
     """Check if class_a inherits from class_b (directly or recursively), returning the path if found."""
@@ -180,17 +204,10 @@ def list_classes(collection: Optional[str] = None) -> List[str]:
         ORDER BY name
     """
     rows = db.execute_query(sql, tuple(params))
-    
+
     results = []
     for r in rows:
-        name = r["name"]
-        path = r["file_path"]
-        for marker in ("/pyegeria/", "/egeria_java/"):
-            idx = path.find(marker)
-            if idx != -1:
-                path = path[idx+1:]
-                break
-        results.append(f"{name} (in {path})")
+        results.append(f"{r['name']} (in {_relative_path(r['file_path'])})")
     return results
 
 def get_class_hierarchy(class_name: str, collection: Optional[str] = None) -> Dict[str, Any]:

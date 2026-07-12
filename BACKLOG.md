@@ -102,6 +102,25 @@ The `act_result` response dict should include `matched_spec_id` (populated when 
 
 ---
 
+### IB-8 — Contextual "learn more" follow-up options after an Inspect answer
+**Status:** open  
+**Scope:** `advisor/agents/code_intel_agent.py`, `advisor/web/static/index.html`
+
+After a `CodeIntelAgent` answer, offer buttons for related follow-up questions instead of
+making the user retype a new query. E.g. after "what is class X":
+- **[Class hierarchy ▸]** — re-queries `get_class_hierarchy(X)`
+- **[Methods on X ▸]** — new query type: list methods defined on a given class (no existing
+  tool for this — `get_class_for_method` goes method→class, not class→methods; would need a
+  new `get_methods_for_class(class_name)` tool)
+- **[Who inherits from X ▸]** — re-queries `get_class_hierarchy(X)` descendants specifically
+
+Same conditional-buttons pattern as IB-7 (Act). The response dict would need a
+`follow_up_options` list (label + re-query text or intent_override) so the UI can render
+buttons generically, similar to how `renderIntentClarification()` already renders
+`candidates`/`candidate_intents` for the "Show me" disambiguation clarify.
+
+---
+
 ## Report Spec Builder
 
 | # | Item | Status | Notes |

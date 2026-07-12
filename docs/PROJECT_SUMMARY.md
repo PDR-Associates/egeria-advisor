@@ -1318,6 +1318,23 @@ back escaped `\n` literals instead of readable text. Added `_format_class_info()
 `_format_class_hierarchy()` to render clean text instead of `str(dict)`, and updated the
 system/user prompts to explicitly require the full signature and full docstring verbatim.
 
+**5. File paths in answers were absolute, not repo-relative.** `get_class_for_method`,
+`get_class_info`, and `list_classes` all returned the indexed file's full local disk path
+(`/home/dwolfson/localGit/.../data/repos/egeria-python/pyegeria/omvs/automated_curation.py`)
+— meaningless to anyone without this exact machine's directory layout, and `list_classes`'
+existing ad-hoc path-shortening (marker-matching on `/pyegeria/` or `/egeria_java/`) silently
+never fired for Java, since the real Java repo path has no `/egeria_java/` segment (that's
+only the *collection* name, not a directory) — it only worked for Python. Added a single
+`_relative_path()` helper that strips everything through `data/repos/<repo-name>/`, leaving a
+path relative to that source repo's root (`pyegeria/omvs/automated_curation.py`,
+`open-metadata-implementation/frameworks/.../X.java`), and applied it at the data-fetching
+source (`get_class_for_method`, `get_class_info`, `list_classes`) so both the direct `handle()`
+path and the BeeAI tool-calling path get relative paths consistently.
+
+**Backlog:** added IB-8 — contextual "learn more" follow-up buttons after an Inspect answer
+(e.g. "Class hierarchy ▸" / "Methods on X ▸" / "Who inherits from X ▸"), mirroring IB-7's
+conditional post-run buttons pattern for Act.
+
 **Verified:** "what is the Automated Curation class", "tell me about the automated curation
 class", "what does Automated Curation do", and "what is the AutomatedCuration class" all now
 return the real docstring, file location, and inheritance chain — tested directly against the

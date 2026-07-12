@@ -32,10 +32,24 @@ _SPEC_FILES = [
     Path(__file__).parent.parent.parent / "config" / "report_specs" / "report_specs_annotated.json",
 ]
 
+def _cors_origin_regex() -> str:
+    """
+    localhost is always allowed (local dev). ADVISOR_EXTRA_CORS_ORIGINS (.env,
+    comma-separated) adds extra exact origins — e.g. a Portal embedding this
+    Advisor from a different origin. Same-origin browser access (the SPA served
+    from the same host:port as the API) never needs this.
+    """
+    from advisor.config import settings
+    patterns = [r"https?://localhost(:\d+)?"]
+    extra = [o.strip() for o in settings.advisor_extra_cors_origins.split(",") if o.strip()]
+    patterns.extend(re.escape(origin) for origin in extra)
+    return "|".join(f"({p})" for p in patterns)
+
+
 app = FastAPI(title="Egeria Advisor", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https?://localhost(:\d+)?",
+    allow_origin_regex=_cors_origin_regex(),
     allow_methods=["*"],
     allow_headers=["*"],
     allow_credentials=True,

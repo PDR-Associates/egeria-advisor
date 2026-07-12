@@ -81,27 +81,19 @@ class EgeriaContext:
         """Read Egeria connection params.
 
         view_server/platform_url are static — same Egeria instance for everyone —
-        read from MCP server config first, env vars as fallback. user_id/user_pwd
-        come from the authenticated caller (self._egeria_credentials) via
+        resolved via advisor.mcp_config.get_pyegeria_platform_config() (env vars
+        first, then MCP server config). user_id/user_pwd come from the
+        authenticated caller (self._egeria_credentials) via
         advisor.auth.resolve_egeria_credentials, which itself falls back to the
         .env-backed service account when no per-request credentials are given.
         """
         from advisor.auth import resolve_egeria_credentials
+        from advisor.mcp_config import get_pyegeria_platform_config
         creds = resolve_egeria_credentials(self._egeria_credentials)
 
-        view_server = platform_url = ""
-        try:
-            p = Path(self._mcp_config_path)
-            if p.exists():
-                cfg = json.loads(p.read_text())
-                env = cfg.get("mcpServers", {}).get("pyegeria", {}).get("env", {})
-                view_server = env.get("EGERIA_VIEW_SERVER", "")
-                platform_url = env.get("EGERIA_VIEW_SERVER_URL", "")
-        except Exception:
-            pass
-        if not (view_server and platform_url):
-            view_server = view_server or os.environ.get("EGERIA_VIEW_SERVER", "")
-            platform_url = platform_url or os.environ.get("EGERIA_VIEW_SERVER_URL", "")
+        conn = get_pyegeria_platform_config(self._mcp_config_path)
+        view_server = conn["view_server"]
+        platform_url = conn["platform_url"]
         if not (view_server and platform_url):
             return None
         return {

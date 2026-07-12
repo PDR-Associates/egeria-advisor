@@ -346,35 +346,23 @@ class DrEgeriaActionAgent:
     def _get_egeria_conn(self, egeria_credentials: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         """Extract Egeria connection params for Dr.Egeria command execution.
 
-        url/server_name are static — same Egeria instance for everyone — and are
-        cached on self. user_id/user_pass are resolved FRESH on every call from
-        the caller's own credentials (see advisor.auth.resolve_egeria_credentials)
-        and are NEVER cached on self: this class is a process-wide singleton
-        (get_dr_egeria_agent()) shared across every user's requests, so caching
-        credentials here would leak the first caller's identity into every
-        subsequent user's actions for the life of the process.
-
-        Note: previously read a "dr-egeria" key from config/mcp_servers.json that
-        never existed there (only "pyegeria" is registered), so url/server_name
-        silently always fell back to hardcoded defaults. Fixed to read "pyegeria",
-        matching every other reader of this file (ReportPipeline, EgeriaContext).
+        url/server_name are static — same Egeria instance for everyone — resolved
+        via advisor.mcp_config.get_pyegeria_platform_config() (env vars first,
+        then config/mcp_servers.json) and cached on self. user_id/user_pass are
+        resolved FRESH on every call from the caller's own credentials (see
+        advisor.auth.resolve_egeria_credentials) and are NEVER cached on self:
+        this class is a process-wide singleton (get_dr_egeria_agent()) shared
+        across every user's requests, so caching credentials here would leak the
+        first caller's identity into every subsequent user's actions for the
+        life of the process.
         """
         if self._egeria_conn is None:
-            import json
-            try:
-                with open(self._config_path) as f:
-                    cfg = json.load(f)
-                dr_env = cfg.get("mcpServers", {}).get("pyegeria", {}).get("env", {})
-                self._egeria_conn = {
-                    "url": dr_env.get("EGERIA_VIEW_SERVER_URL", "https://localhost:9443"),
-                    "server_name": dr_env.get("EGERIA_VIEW_SERVER", "qs-view-server"),
-                }
-            except Exception as e:
-                logger.warning(f"Could not read MCP config for Egeria conn: {e}")
-                self._egeria_conn = {
-                    "url": "https://localhost:9443",
-                    "server_name": "qs-view-server",
-                }
+            from advisor.mcp_config import get_pyegeria_platform_config
+            conn = get_pyegeria_platform_config(self._config_path)
+            self._egeria_conn = {
+                "url": conn["platform_url"] or "https://localhost:9443",
+                "server_name": conn["view_server"] or "qs-view-server",
+            }
         from advisor.auth import resolve_egeria_credentials
         creds = resolve_egeria_credentials(egeria_credentials)
         return {**self._egeria_conn, "user_id": creds["user_id"], "user_pass": creds["password"]}

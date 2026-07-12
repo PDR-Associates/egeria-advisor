@@ -278,6 +278,16 @@ Key config sections: `pgvector`, `vector_store_backend`, `llm`, `embeddings`, `r
 
 Settings are managed via Pydantic models in `advisor/config.py`.
 
+### Deployment / Egeria Connection Configuration
+
+**Which Egeria instance the app talks to is resolved by `advisor/mcp_config.py::get_pyegeria_platform_config()`, not `advisor.config.settings`.** Priority: `EGERIA_VIEW_SERVER_URL`/`EGERIA_VIEW_SERVER` env vars (`.env`) first, then `config/mcp_servers.json`'s `mcpServers.pyegeria.env` block (which defaults to local Egeria at `https://localhost:9443`/`qs-view-server`). This is the single source every live-Egeria code path uses: `advisor.auth.validate_egeria_credentials` (login), `advisor.report_pipeline.ReportPipeline._read_pyegeria_connection` (report execution), `advisor.egeria_context.EgeriaContext._load_connection` (context enrichment), `advisor.agents.dr_egeria_agent.DrEgeriaActionAgent._get_egeria_conn` (Dr.Egeria actions/templates). To point a deployment at a different Egeria instance, set the two `.env` values — never edit the committed `config/mcp_servers.json` for this. (`advisor.config.settings` has no `egeria_platform_url`/`egeria_view_server` fields anymore — they were dead: declared but never read anywhere. `egeria_user`/`egeria_password` in `.env` are real, but only as the fallback service account `advisor.auth.resolve_egeria_credentials()` uses when a request has no logged-in session — most live-Egeria actions require login via `require_egeria_user()` and never hit this.)
+
+**Portal SSO** — `POST /api/auth/portal` (`advisor.auth.exchange_portal_token`) exchanges a short-lived JWT issued by an external Portal (shared HS256 secret, `ADVISOR_PORTAL_SECRET` env var or `config/advisor.yaml`'s `auth.portal.shared_secret`) for this Advisor's own session JWT — lets a Portal hand off an already-authenticated user without a second login. Blank/unset `ADVISOR_PORTAL_SECRET` disables it (endpoint returns 503).
+
+**Cross-origin access** — `advisor/web/app.py`'s CORS middleware always allows `localhost` (any port, for local dev) plus any origins listed in `ADVISOR_EXTRA_CORS_ORIGINS` (`.env`, comma-separated). Only needed when something calls this Advisor's API from a *different* origin (e.g. a Portal frontend); the SPA's own same-origin calls (served from the same host:port as the API) are never subject to CORS regardless of hostname.
+
+**External/forwarded access** — uvicorn defaults to binding `127.0.0.1` (loopback only). An SSH reverse tunnel terminating on this machine's own loopback works fine as-is; a router/NAT port-forward or a reverse proxy forwarding to this machine's real network interface needs `uvicorn advisor.web.app:app --host 0.0.0.0 --port 8880` (or the specific interface IP) to accept those connections at all.
+
 ### Report Spec Builder Design Rules
 
 **A. Lifecycle invariant — specs never leave the catalog on execute.** `move_to_outbox` writes a result snapshot `<spec_id>_executed_<ts>.md` to outbox but does NOT unlink the source from inbox. `retry` strips the `_executed_<ts>` suffix and calls `execute()` on `base_doc_id` directly; no file move is needed. `recover` just confirms the spec is in inbox.

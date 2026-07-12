@@ -225,10 +225,13 @@ def validate_egeria_credentials(user_id: str, password: str) -> bool:
     Falls back to checking against configured service account if Egeria is down.
     """
     try:
+        from advisor.mcp_config import get_pyegeria_platform_config
+        conn = get_pyegeria_platform_config()
+        view_server  = conn["view_server"]
+        platform_url = conn["platform_url"]
+
         cfg = json.loads(_MCP_PATH.read_text())
         env = cfg.get("mcpServers", {}).get("pyegeria", {}).get("env", {})
-        view_server  = env.get("EGERIA_VIEW_SERVER", "")
-        platform_url = env.get("EGERIA_VIEW_SERVER_URL", "")
         svc_user     = env.get("EGERIA_USER", "")
         svc_pwd      = env.get("EGERIA_PASSWORD", "")
 

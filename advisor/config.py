@@ -233,14 +233,21 @@ class AdvisorSettings(BaseSettings):
     # Active vector store backend — pgvector is the only supported backend
     vector_store_backend: str = Field(default="pgvector", alias="VECTOR_STORE_BACKEND")
 
-    # Egeria
-    egeria_platform_url: str = Field(
-        default="https://localhost:9443",
-        alias="EGERIA_PLATFORM_URL"
-    )
-    egeria_view_server: str = Field(default="view-server", alias="EGERIA_VIEW_SERVER")
+    # Egeria — the actual platform URL/view server are resolved via
+    # advisor.mcp_config.get_pyegeria_platform_config() (EGERIA_VIEW_SERVER_URL /
+    # EGERIA_VIEW_SERVER env vars, then config/mcp_servers.json), NOT read from
+    # here. egeria_user/egeria_password remain the .env-backed service-account
+    # fallback used by advisor.auth.resolve_egeria_credentials() when no
+    # per-request session credentials are present.
     egeria_user: str = Field(default="garygeeke", alias="EGERIA_USER")
     egeria_password: str = Field(default="secret", alias="EGERIA_PASSWORD")
+
+    # Comma-separated extra origins allowed to call the API cross-origin, on top of
+    # localhost (always allowed for local dev). Needed when this Advisor is embedded
+    # in/called from a Portal on a different origin — e.g.
+    # "https://egeria.pdr-associates.com". Same-origin browser access (the SPA served
+    # from the same host:port as the API) never needs this.
+    advisor_extra_cors_origins: str = Field(default="", alias="ADVISOR_EXTRA_CORS_ORIGINS")
 
     # Ollama
     ollama_base_url: str = Field(

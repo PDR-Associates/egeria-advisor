@@ -428,14 +428,13 @@ class ReportPipeline:
         service account when egeria_credentials is None (anonymous/background use).
         """
         from advisor.auth import resolve_egeria_credentials
+        from advisor.mcp_config import get_pyegeria_platform_config
         creds = resolve_egeria_credentials(egeria_credentials)
         try:
-            with open(self._config_path) as f:
-                cfg = json.load(f)
-            env = cfg.get("mcpServers", {}).get("pyegeria", {}).get("env", {})
+            conn = get_pyegeria_platform_config(self._config_path)
             return {
-                "view_server": env.get("EGERIA_VIEW_SERVER", ""),
-                "platform_url": env.get("EGERIA_VIEW_SERVER_URL", ""),
+                "view_server": conn["view_server"],
+                "platform_url": conn["platform_url"],
                 "user_id": creds["user_id"],
                 "user_pwd": creds["password"],
             }

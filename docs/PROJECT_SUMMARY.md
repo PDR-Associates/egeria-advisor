@@ -1451,6 +1451,69 @@ ReportSpecElicitor, the Report Spec Builder's element-type field).
 
 ---
 
+### Phase 21 — Configurable deployment: point this Advisor at a remote Egeria instance (Jul 12, 2026)
+
+**Theme:** tie the Advisor running on this machine ("hedwig") into the broader Egeria demo
+system at egeria.pdr-associates.com — port-forward :8880 to this machine's web UI, and point
+the app at Egeria running at egeria.pdr-associates.com:9443 instead of local Egeria. Investigated
+what actually governs the Egeria connection, since the obvious `.env` field turned out to be a
+red herring.
+
+**Found `.env`'s `EGERIA_PLATFORM_URL` is dead code** — declared in `advisor.config.settings`
+but `settings.egeria_platform_url` is never read anywhere in the app (confirmed via full-repo
+grep). The real authoritative source was `config/mcp_servers.json`'s
+`mcpServers.pyegeria.env.EGERIA_VIEW_SERVER_URL`/`EGERIA_VIEW_SERVER`, independently re-parsed
+by four different call sites (`advisor.auth.validate_egeria_credentials` — login validation;
+`advisor.report_pipeline.ReportPipeline._read_pyegeria_connection` — report execution;
+`advisor.egeria_context.EgeriaContext._load_connection` — context enrichment;
+`advisor.agents.dr_egeria_agent.DrEgeriaActionAgent._get_egeria_conn` — Dr.Egeria
+actions/templates), each with subtly different fallback logic (one already had an env-var
+fallback, three didn't).
+
+**Consolidated into one shared resolver: `advisor/mcp_config.py::get_pyegeria_platform_config()`.**
+Priority: `EGERIA_VIEW_SERVER_URL`/`EGERIA_VIEW_SERVER` env vars (`.env`) first, then
+`config/mcp_servers.json`'s defaults (which stay pointed at local Egeria, `localhost:9443`/
+`qs-view-server`, so a fresh clone still works out of the box with zero `.env` config). All
+four call sites now use this one function — switching deployments (local Egeria vs. this
+remote demo instance) is two `.env` lines, no JSON edits, and no more risk of the four readers
+drifting out of sync. Removed the dead `egeria_platform_url`/`egeria_view_server` fields from
+`advisor.config.settings` (both unused; `egeria_user`/`egeria_password` are real — the
+`.env`-backed service-account fallback for requests with no logged-in session).
+
+**Found the Portal-token exchange already exists and is fully wired up** —
+`POST /api/auth/portal` → `advisor.auth.exchange_portal_token()` — a Portal can already hand
+this Advisor a short-lived JWT (shared HS256 secret) to establish a session without a second
+login. It just needed the secret actually configured: `ADVISOR_PORTAL_SECRET` was already an
+env-var override point (`_portal_secret()`), so no code change was needed there, only wiring
+up the `.env` value once coordinated with the Portal.
+
+**Made CORS cross-origin access configurable** — `advisor/web/app.py`'s CORS middleware
+previously only allowed `localhost` origins (`allow_origin_regex=r"https?://localhost(:\d+)?"`).
+Same-origin SPA access (the UI served from the same host:port as the API) was never affected
+by this regardless of hostname, but a Portal on a *different* origin calling this Advisor's
+API directly would have been blocked. Added `ADVISOR_EXTRA_CORS_ORIGINS` (`.env`,
+comma-separated) — `_cors_origin_regex()` now builds the allow-list from localhost plus these
+extra exact origins.
+
+**Flagged (not a code change): uvicorn's bind address.** Defaults to `127.0.0.1`
+(loopback-only) with no explicit `--host` anywhere in the codebase. This deployment's
+port-forward is a router/NAT forward hitting the machine's real network interface, so it
+needs `uvicorn advisor.web.app:app --host 0.0.0.0 --port 8880` — an SSH reverse tunnel would
+have worked fine with the default loopback bind instead.
+
+**Verified:** restarted with the new `.env` values pointed at
+`https://egeria.pdr-associates.com:9443`; `POST /api/auth/login` made a real ~3s round-trip to
+the remote host (confirms `get_pyegeria_platform_config()` correctly resolved the remote URL
+across the whole stack) rather than an instant local no-op or connection error. Separately
+noted — not a bug in this repo — that `validate_egeria_credentials()` accepted bogus test
+credentials without error; `EgeriaTech.create_egeria_bearer_token()` doesn't appear to validate
+synchronously against this particular demo instance. Worth confirming with whoever runs the
+demo Egeria whether that's expected for a `qs-view-server`-style demo setup.
+
+**Commits:** (this session).
+
+---
+
 ## Current state and next steps (Jul 2026)
 
 **Phases complete:**
@@ -1475,6 +1538,7 @@ ReportSpecElicitor, the Report Spec Builder's element-type field).
 - Phase 18b ✓ — `CodeIntelAgent` gained a `get_class_info` tool (returns a class's own docstring, not just its hierarchy) and space-separated/case-insensitive class-name resolution ("Automated Curation" → `AutomatedCuration`)
 - Phase 19 ✓ — the "Show me" format-disambiguation clarify no longer hijacks explicit non-"Show me" intents (Act/Run Report/Inspect/Explain/Troubleshoot/Create); gated behind `_AMBIGUOUS_ELIGIBLE_INTENTS` so Act's pre-existing report-spec matching is actually reachable
 - Phase 20 ✓ — new `egeria_type_registry.py` fixes Act's element-type extraction truncating multi-word Egeria type names ("external references" → "External" instead of `ExternalReference`; "data products" → `DigitalProduct` via an alias for the real Egeria type name)
+- Phase 21 ✓ — consolidated Egeria connection resolution into `advisor/mcp_config.py` (env vars first, then `config/mcp_servers.json`) so switching deployments (local Egeria vs. remote demo instance) is two `.env` lines; Portal SSO and CORS cross-origin access made configurable via `.env` too
 
 **What's working end-to-end (Jul 6, 2026):**
 - Full plan lifecycle exercised live against a real Dr.Egeria MCP server + Egeria REST backend + Postgres for the first time (not just synthetic testing) — surfaced and fixed six real bugs in one session (SS-6 through SS-11, see "Recent work" above and `BACKLOG.md`), including a genuine event-loop-freezing hang in the MCP client

@@ -1306,6 +1306,18 @@ code and implicitly clears the cache (`QueryCache` isn't persisted to disk/Redis
 remembering when a fix "isn't taking effect" during live testing: check `ps aux | grep
 uvicorn` before assuming the code change is wrong.
 
+**4. Docstring detail was still thin after the above.** Two more compounding causes, found
+when asked to include more docstring/signature detail: (a) `code_symbol_store.py` truncated
+every docstring to 500 chars at write time ("cap to keep DB small") — `AutomatedCuration`'s
+docstring was already cut off mid-sentence in the DB itself, so no prompt change could recover
+it; raised the cap to 4000 chars and re-ingested `pyegeria` again. (b) The final generation
+prompt said "concise answer" with no instruction to preserve docstring/signature text, so the
+LLM compressed both away even when present in `context` — and the `context` string itself was
+a raw Python dict/list dump, so the one time the LLM did try to "quote it in full" it echoed
+back escaped `\n` literals instead of readable text. Added `_format_class_info()` /
+`_format_class_hierarchy()` to render clean text instead of `str(dict)`, and updated the
+system/user prompts to explicitly require the full signature and full docstring verbatim.
+
 **Verified:** "what is the Automated Curation class", "tell me about the automated curation
 class", "what does Automated Curation do", and "what is the AutomatedCuration class" all now
 return the real docstring, file location, and inheritance chain — tested directly against the

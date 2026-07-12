@@ -1532,6 +1532,31 @@ already handles a `#pt=<token>` URL hash fragment on page load (`checkUrlFragmen
 handed to the Portal-side session only needed to cover the Portal's own changes (mint the
 token, append it as `#pt=...` when opening the Advisor tab).
 
+**Confirmed how the Portal actually links to Advisor today.** Traced the real Portal source
+(`egeria-workspaces/compose-configs/egeria-quickstart/PyegeriaWebHandler/`) — the "Egeria
+Advisor" tile is a plain `newTab: true` link (`demo-portal.html::renderAppGrid`), not an
+iframe or embed, and there was no existing call to `/api/auth/portal` anywhere in that
+codebase — a corrected assumption from earlier in this session (had initially guessed the
+Portal called this Advisor cross-origin, which isn't how it actually works; CORS/
+`ADVISOR_EXTRA_CORS_ORIGINS` isn't actually exercised by this flow, since same-tab navigation
+is same-origin regardless of hostname). Also confirmed the Portal's own `JWT_SECRET`
+(`.env.demo`) is unrelated — it only signs the Portal's own `demo_token` session cookie
+(`demo_auth_handler.py::_make_jwt`), not anything handed to Egeria Advisor.
+
+Generated a fresh HS256 secret and set it as `ADVISOR_PORTAL_SECRET` in this machine's `.env`
+(gitignored, value not in this doc). Verified end-to-end: minted a real portal token with that
+secret and POSTed it to `/api/auth/portal` — returned a valid Advisor session token (HTTP 200,
+confirming the whole exchange path). Wrote and handed off a full design brief to a separate
+Claude session working on the Portal repo, covering the JWT claim shape, the shared secret,
+where in the Portal codebase to mint the token and construct the `#pt=` URL, and the
+`EGERIA_ADVISOR_URL` config check needed for external (non-localhost) users.
+
+**State as of this session's end:** `egeria-advisor`'s `.env` on this machine
+(`EGERIA_VIEW_SERVER_URL`) points at `https://egeria.pdr-associates.com:9443`
+(`qs-view-server`), confirmed live via `get_pyegeria_platform_config()` and the running
+server process. The Portal-side SSO wiring is not yet implemented — that's the other
+session's task per the handed-off design brief.
+
 **Commits:** (this session).
 
 ---

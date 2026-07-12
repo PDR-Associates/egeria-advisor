@@ -9,30 +9,36 @@ from advisor.agents.base import BaseAdvisorAgent
 from advisor.db_consolidated import get_db_manager
 
 
-def _resolve_class_name(words: List[str]) -> str:
+def _resolve_symbol_name(words: List[str], kinds: tuple = ("class",)) -> str:
     """
-    Resolve regex-split query words to the actual indexed class name.
+    Resolve regex-split query words to an actual indexed symbol name of the given kind(s).
 
-    Class names are stored CamelCase ("AutomatedCuration"), but users naturally type
-    them with spaces ("Automated Curation" -> words ["Automated", "Curation"]). Try
-    the full concatenation first (covers the common multi-word-CamelCase case), then
-    each individual word, checking existence case-insensitively against code_symbols.
-    Falls back to the concatenation (as a readable label for a "not found" message)
-    if nothing matches.
+    Class names are stored CamelCase ("AutomatedCuration"); method/function names are
+    snake_case ("create_glossary"). Users naturally type either with spaces
+    ("Automated Curation", "create glossary"). Try the full no-separator concatenation
+    (covers CamelCase) and the full underscore join (covers snake_case) first, then each
+    individual word, checking existence case-insensitively against code_symbols. Falls
+    back to the concatenation (as a readable label for a "not found" message) if nothing
+    matches.
     """
     if not words:
         return ""
     db = get_db_manager()
-    joined = "".join(words)
-    candidates = [joined] + [w for w in words if w != joined]
+    concat = "".join(words)
+    snake = "_".join(words)
+    candidates = []
+    for cand in (concat, snake, *words):
+        if cand not in candidates:
+            candidates.append(cand)
+    kind_clause = " OR ".join(["kind = %s"] * len(kinds))
     for cand in candidates:
         rows = db.execute_query(
-            "SELECT name FROM code_symbols WHERE kind = 'class' AND name ILIKE %s LIMIT 1",
-            (cand,)
+            f"SELECT name FROM code_symbols WHERE ({kind_clause}) AND name ILIKE %s LIMIT 1",
+            tuple(kinds) + (cand,)
         )
         if rows:
             return rows[0]["name"]
-    return joined
+    return concat
 
 def _relative_path(file_path: str) -> str:
     """
@@ -60,9 +66,9 @@ def _relativize_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 # Tools to be exposed to the LLM / direct executor
 def get_class_for_method(method_name: str, collection: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Find the parent class(es) where a method is defined, returning file paths and line numbers."""
+    """Find a method or standalone function's definition: parent class (if any), file path, line number, signature, and docstring."""
     db = get_db_manager()
-    where_clause = "WHERE kind = 'method' AND name = %s"
+    where_clause = "WHERE kind IN ('method', 'function') AND name ILIKE %s"
     params = [method_name]
     if collection:
         where_clause += " AND collection = %s"
@@ -88,7 +94,7 @@ def get_class_for_method(method_name: str, collection: Optional[str] = None) -> 
             ))
         """
     sql = f"""
-        SELECT parent_class, collection, file_path, start_line, signature, docstring
+        SELECT name, parent_class, collection, file_path, start_line, signature, docstring
         FROM code_symbols
         {where_clause}
         ORDER BY parent_class
@@ -356,6 +362,21 @@ def _format_class_info(info: List[Dict[str, Any]]) -> str:
         )
     return "\n\n".join(blocks)
 
+def _format_method_info(rows: List[Dict[str, Any]]) -> str:
+    """Render get_class_for_method() results as clean text (real newlines, not a dict repr)."""
+    blocks = []
+    for row in rows:
+        parent = row.get("parent_class") or None
+        header = f"Method: {row['name']} (in class {parent})" if parent else f"Function: {row['name']} (module-level, no parent class)"
+        blocks.append(
+            f"{header}\n"
+            f"Collection: {row['collection']}\n"
+            f"File: {row['file_path']} (line {row['start_line']})\n"
+            f"Signature: {row['signature']}\n"
+            f"Docstring:\n{row['docstring'] or '(no docstring)'}"
+        )
+    return "\n\n".join(blocks)
+
 def _format_class_hierarchy(hierarchy: Dict[str, Any]) -> str:
     """Render get_class_hierarchy() results as clean text (real newlines, not a dict repr)."""
     lines = [f"Class: {hierarchy['class_name']}"]
@@ -377,7 +398,8 @@ class CodeIntelAgent(BaseAdvisorAgent):
             "Workflow:\n"
             "1. Identify the structural question being asked:\n"
             "   - If the user wants to know what a class is / does (a description or definition), call get_class_info.\n"
-            "   - If the user wants to know where a method is defined, call get_class_for_method.\n"
+            "   - If the user wants to know what a method/function is/does, its signature, docstring, or where "
+            "it is defined, call get_class_for_method.\n"
             "   - If the user wants to check if class A inherits from class B, call check_inheritance.\n"
             "   - If the user wants the hierarchy of a class (parents/children), call get_class_hierarchy.\n"
             "   - If the user wants to list all classes in a collection, call list_classes.\n"
@@ -464,41 +486,54 @@ class CodeIntelAgent(BaseAdvisorAgent):
                 else:
                     context = "Could not identify class names for inheritance check."
             elif "method" in q_lower or "function" in q_lower or "defined in" in q_lower or "what class is" in q_lower or "in which class" in q_lower:
-                # Find method name
+                # Find method/function name — questions specifically about a method or
+                # function's own definition (signature, docstring, containing class).
                 words = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', query)
-                ignore = {"what", "class", "is", "method", "defined", "in", "function", "defined_in", "where", "find", "locate"}
+                ignore = {
+                    "what", "class", "is", "method", "defined", "in", "function",
+                    "defined_in", "where", "find", "locate", "does", "do", "the",
+                    "a", "an", "tell", "me", "about", "describe", "explain"
+                }
                 methods = [w for w in words if w.lower() not in ignore]
                 if methods:
-                    res = get_class_for_method(methods[0])
-                    context = f"Method Definition Lookup ({methods[0]}):\n{res}"
+                    method_name = _resolve_symbol_name(methods, ("method", "function"))
+                    res = get_class_for_method(method_name)
+                    if res:
+                        context = _format_method_info(res)
+                    else:
+                        context = f"No method or function named '{method_name}' found in the indexed codebase."
                 else:
                     context = "Could not identify method name for definition lookup."
             else:
-                # Default: bare class-name questions ("what is X", "describe X",
-                # "tell me about X class", "class hierarchy for X"). Fetch both the
-                # class's own definition (docstring) and its hierarchy — a "what is X"
-                # query wants the description, not just ancestors/descendants.
+                # Default: bare-name questions ("what is X", "describe X", "tell me
+                # about X", "class hierarchy for X"). X could be a class or a
+                # method/function — try class first (plus its hierarchy), and fall
+                # back to a method/function lookup if no class matches.
                 words = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', query)
                 ignore = {
                     "hierarchy", "parents", "children", "ancestors", "descendants",
                     "what", "is", "the", "for", "class", "show", "does", "do", "tell",
                     "me", "about", "describe", "explain"
                 }
-                classes = [w for w in words if w.lower() not in ignore]
-                if classes:
-                    class_name = _resolve_class_name(classes)
+                names = [w for w in words if w.lower() not in ignore]
+                if names:
+                    class_name = _resolve_symbol_name(names, ("class",))
                     info = get_class_info(class_name)
-                    hierarchy = get_class_hierarchy(class_name)
-                    parts = []
                     if info:
-                        parts.append(_format_class_info(info))
+                        parts = [_format_class_info(info)]
+                        hierarchy = get_class_hierarchy(class_name)
+                        if hierarchy["ancestors"] or hierarchy["descendants"]:
+                            parts.append(_format_class_hierarchy(hierarchy))
+                        context = "\n\n".join(parts)
                     else:
-                        parts.append(f"No class definition found for '{class_name}' in the indexed codebase.")
-                    if hierarchy["ancestors"] or hierarchy["descendants"]:
-                        parts.append(_format_class_hierarchy(hierarchy))
-                    context = "\n\n".join(parts)
+                        method_name = _resolve_symbol_name(names, ("method", "function"))
+                        method_info = get_class_for_method(method_name)
+                        if method_info:
+                            context = _format_method_info(method_info)
+                        else:
+                            context = f"No class, method, or function named '{class_name}' found in the indexed codebase."
                 else:
-                    context = "Could not identify class name for lookup."
+                    context = "Could not identify a class or method/function name for lookup."
         except Exception as e:
             logger.warning(f"CodeIntelAgent direct tool execution failed: {e}")
             context = f"Error querying codebase relationships: {e}"

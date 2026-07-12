@@ -1335,6 +1335,29 @@ path and the BeeAI tool-calling path get relative paths consistently.
 (e.g. "Class hierarchy ▸" / "Methods on X ▸" / "Who inherits from X ▸"), mirroring IB-7's
 conditional post-run buttons pattern for Act.
 
+**6. Method/function questions didn't reliably surface docstring/signature either.** The
+existing "method"/"function" keyword branch only worked when the query literally contained
+one of those words, always took `methods[0]` (the *first* extracted word, no name
+resolution), and formatted the result as a raw dict dump like the class-info bug fixed above.
+So "what does create_glossary do" (no "method"/"function" keyword) fell through to the
+class-only default branch and returned "not found" even though the method is indexed with a
+full docstring.
+
+Generalized `_resolve_class_name()` into `_resolve_symbol_name(words, kinds)`, which also
+tries an underscore join (`"create_glossary"` from `["create", "glossary"]`) alongside the
+existing no-separator join, covering snake_case method/function names typed with spaces.
+Added `_format_method_info()` for clean method/function rendering (parallel to
+`_format_class_info()`). The default branch now tries class resolution first, then falls
+back to method/function resolution if no class matches — so a bare "what is X" / "what does
+X do" works regardless of whether X is a class or a method, without the user needing to say
+"method" explicitly. `get_class_for_method()` was broadened from `kind = 'method'` to
+`kind IN ('method', 'function')` so module-level functions (not just class methods) resolve
+too, and its SELECT now includes `name` so results are self-labeled.
+
+**Verified:** "what is create_glossary", "what does create_glossary do", "what method is
+create glossary" (space-separated), and "what class is create_glossary defined in" all now
+return the full signature and docstring, tested directly against the running server.
+
 **Verified:** "what is the Automated Curation class", "tell me about the automated curation
 class", "what does Automated Curation do", and "what is the AutomatedCuration class" all now
 return the real docstring, file location, and inheritance chain — tested directly against the

@@ -762,13 +762,12 @@ class CodeIngester:
         
         logger.info(f"Found {len(files)} files matching {file_pattern}")
 
-        # Clear stale symbols for this collection before re-ingesting
-        if file_pattern.endswith((".py", ".java")):
-            try:
-                from advisor.code_symbol_store import get_symbol_store
-                get_symbol_store().clear_collection(self.collection_name)
-            except Exception as exc:
-                logger.warning(f"CodeSymbolStore clear failed: {exc}")
+        # NOTE: symbol-table clearing is done once per *collection* by the caller
+        # (scripts/ingest_collections.py), not here. Collections like 'pyegeria' have
+        # multiple source directories (["pyegeria", "tests"]) each ingested via a
+        # separate ingest_directory() call — clearing here on every call wiped out
+        # the previous directory's symbols each time, leaving only the last
+        # directory's files in code_symbols.
 
         # Process files individually to use Python parsing
         for idx, file_path in enumerate(files, 1):

@@ -175,7 +175,17 @@ def ingest_collection(
         description=collection.description,
         drop_if_exists=False
     )
-    
+
+    # Clear the code-symbol table once per collection, before the source-path loop
+    # below. ingest_directory() no longer clears it per-call — collections like
+    # 'pyegeria' have multiple source directories, and clearing per-call wiped out
+    # each earlier directory's symbols as soon as the next one was ingested.
+    try:
+        from advisor.code_symbol_store import get_symbol_store
+        get_symbol_store().clear_collection(collection.name)
+    except Exception as exc:
+        logger.warning(f"CodeSymbolStore clear failed: {exc}")
+
     # Create ingester
     ingester = CodeIngester(
         collection_name=collection.name,

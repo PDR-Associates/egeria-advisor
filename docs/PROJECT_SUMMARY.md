@@ -1234,6 +1234,47 @@ now legitimate answers to "show me X" for those roles too.
 
 ---
 
+### Phase 18 — `code_symbols` population bug: pyegeria collection was test-code-only (Jul 11, 2026)
+
+**Theme:** "Inspect" (`code_intel`) couldn't answer basic questions like "what is the
+AutomatedCuration class" even though it's a key pyegeria class with a full docstring.
+Traced to a real ingestion bug, not a parser quality issue — `CodeParser` correctly
+extracted 98 elements (including `AutomatedCuration`'s docstring) when tested directly.
+
+**Root cause:** the `pyegeria` collection config (`advisor/collection_config.py`) lists two
+source directories, `source_paths=["pyegeria", "tests"]`. `scripts/ingest_collections.py`
+calls `CodeIngester.ingest_directory()` once per source path, and `ingest_directory()`
+(`advisor/ingest_to_milvus.py`) used to call `get_symbol_store().clear_collection()`
+unconditionally on *every* call. Ingesting `pyegeria/` populated real SDK symbols; ingesting
+`tests/` right after wiped the entire `'pyegeria'` collection from `code_symbols` before
+inserting only test-harness symbols. Net effect verified against the live DB: 100% of the
+135 indexed files were under `tests/` — zero real SDK files, only 1 `inherits_from`
+relationship in the whole collection, and misleadingly low docstring-coverage numbers (they
+were measuring test code, not the SDK). `egeria_java` and `pyegeria_cli` were unaffected —
+both have only one source directory, so there's no second `ingest_directory()` call to wipe
+the first.
+
+**Fix:** moved the symbol-table clear out of `ingest_directory()` (called once per source
+path) and into `ingest_collection()` in `scripts/ingest_collections.py` (called once per
+*collection*, before the source-path loop, mirroring how the pgvector side already drops the
+collection once up front). Re-ran `python scripts/ingest_collections.py --collection
+pyegeria --force`.
+
+**Verified:** `code_symbols` for `pyegeria` now has 204 files, 69 non-test (up from 0);
+`AutomatedCuration` resolves with its docstring and a real ancestor chain (`ServerClient` →
+`BaseServerClient`); `inherits_from` relationships went from 1 to 212. Real docstring
+coverage (non-test files only): classes 103/225 (46%), methods 1,905/2,234 (85%), functions
+157/224 (70%) — better than the test-code-skewed numbers suggested, though class docstrings
+still have real gaps worth a follow-up pass.
+
+**Not fixed (separate, smaller gap):** none of `CodeIntelAgent`'s tools return a class's own
+docstring — `get_class_hierarchy` only returns ancestors/descendants. "What is class X"
+questions get a real hierarchy now but still not the description text itself.
+
+**Commits:** (this session).
+
+---
+
 ## Current state and next steps (Jul 2026)
 
 **Phases complete:**
@@ -1254,6 +1295,7 @@ now legitimate answers to "show me X" for those roles too.
 - Phase 16 ✓ — Milvus removal (migrated remaining diagnostics/tests to pgvector, then deleted all Milvus code, config, scripts, and the pymilvus dependency)
 - Phase 17 ✓ — "Show me" format disambiguation (CLI/Python/Dr.Egeria/Java recognition) + CLI ingestion gap fix (CLICommandAgent answers are now grounded in real extracted command data, not fabricated)
 - Phase 17b ✓ — Dr.Egeria given its own explicit route (was fallthrough-only); ambiguous "show me" now clarifies for every role, not just Data Steward/Governance
+- Phase 18 ✓ — fixed `code_symbols` population bug where the `pyegeria` collection's symbol table held only test-harness code (0 real SDK files); `Inspect` can now correctly answer questions about real pyegeria classes like `AutomatedCuration`
 
 **What's working end-to-end (Jul 6, 2026):**
 - Full plan lifecycle exercised live against a real Dr.Egeria MCP server + Egeria REST backend + Postgres for the first time (not just synthetic testing) — surfaced and fixed six real bugs in one session (SS-6 through SS-11, see "Recent work" above and `BACKLOG.md`), including a genuine event-loop-freezing hang in the MCP client

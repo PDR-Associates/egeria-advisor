@@ -62,13 +62,13 @@ Add:
 - Composite response: code example + related template + related report spec
 
 ### IB-4 — Expand `Inspect` to cover all repos
-**Status:** open  
+**Status:** open
+**Priority:** low
 **Scope:** `advisor/agents/` (code_intel agent or equivalent), vector indexing
 
-Currently pyegeria-only. Should cover:
-- egeria-workspaces FastAPI handlers, compose files
-- egeria-advisor source (the advisor itself)
-- egeria-java (already partially indexed in `egeria_java`)
+Currently pyegeria + egeria_java only. Should cover:
+- egeria-workspaces FastAPI handlers, compose files (low priority)
+- egeria-advisor source (the advisor itself) (low priority)
 
 Needs multi-repo search path; may require dedicated collections for workspaces and advisor code.
 

@@ -8,6 +8,32 @@ from loguru import logger
 from advisor.agents.base import BaseAdvisorAgent
 from advisor.db_consolidated import get_db_manager
 
+
+def _resolve_class_name(words: List[str]) -> str:
+    """
+    Resolve regex-split query words to the actual indexed class name.
+
+    Class names are stored CamelCase ("AutomatedCuration"), but users naturally type
+    them with spaces ("Automated Curation" -> words ["Automated", "Curation"]). Try
+    the full concatenation first (covers the common multi-word-CamelCase case), then
+    each individual word, checking existence case-insensitively against code_symbols.
+    Falls back to the concatenation (as a readable label for a "not found" message)
+    if nothing matches.
+    """
+    if not words:
+        return ""
+    db = get_db_manager()
+    joined = "".join(words)
+    candidates = [joined] + [w for w in words if w != joined]
+    for cand in candidates:
+        rows = db.execute_query(
+            "SELECT name FROM code_symbols WHERE kind = 'class' AND name ILIKE %s LIMIT 1",
+            (cand,)
+        )
+        if rows:
+            return rows[0]["name"]
+    return joined
+
 # Tools to be exposed to the LLM / direct executor
 def get_class_for_method(method_name: str, collection: Optional[str] = None) -> List[Dict[str, Any]]:
     """Find the parent class(es) where a method is defined, returning file paths and line numbers."""
@@ -48,7 +74,7 @@ def get_class_for_method(method_name: str, collection: Optional[str] = None) -> 
 def get_class_info(class_name: str, collection: Optional[str] = None) -> List[Dict[str, Any]]:
     """Get a class's own definition: its docstring, file path, line numbers, and signature."""
     db = get_db_manager()
-    where_clause = "WHERE kind = 'class' AND name = %s"
+    where_clause = "WHERE kind = 'class' AND name ILIKE %s"
     params = [class_name]
     if collection:
         where_clause += " AND collection = %s"
@@ -93,16 +119,16 @@ def check_inheritance(class_a: str, class_b: str, collection: Optional[str] = No
         WITH RECURSIVE inheritance_path AS (
             SELECT source_name, target_name, 1 AS depth, collection
             FROM code_relationships
-            WHERE relationship_type = 'inherits_from' AND source_name = %s {col_filter}
-            
+            WHERE relationship_type = 'inherits_from' AND source_name ILIKE %s {col_filter}
+
             UNION ALL
-            
+
             SELECT r.source_name, r.target_name, ip.depth + 1, r.collection
             FROM code_relationships r
             JOIN inheritance_path ip ON r.source_name = ip.target_name AND r.collection = ip.collection
             WHERE r.relationship_type = 'inherits_from' AND ip.depth < 10
         )
-        SELECT source_name, target_name, depth, collection FROM inheritance_path WHERE target_name = %s
+        SELECT source_name, target_name, depth, collection FROM inheritance_path WHERE target_name ILIKE %s
     """
     params = anchor_params + [class_b]
     rows = db.execute_query(sql, tuple(params))
@@ -176,7 +202,7 @@ def get_class_hierarchy(class_name: str, collection: Optional[str] = None) -> Di
         WITH RECURSIVE ancestors AS (
             SELECT source_name, target_name, 1 AS depth, collection
             FROM code_relationships
-            WHERE relationship_type = 'inherits_from' AND source_name = %s
+            WHERE relationship_type = 'inherits_from' AND source_name ILIKE %s
             UNION ALL
             SELECT r.source_name, r.target_name, a.depth + 1, r.collection
             FROM code_relationships r
@@ -191,7 +217,7 @@ def get_class_hierarchy(class_name: str, collection: Optional[str] = None) -> Di
             WITH RECURSIVE ancestors AS (
                 SELECT source_name, target_name, 1 AS depth, collection
                 FROM code_relationships
-                WHERE relationship_type = 'inherits_from' AND source_name = %s AND collection = %s
+                WHERE relationship_type = 'inherits_from' AND source_name ILIKE %s AND collection = %s
                 UNION ALL
                 SELECT r.source_name, r.target_name, a.depth + 1, r.collection
                 FROM code_relationships r
@@ -209,7 +235,7 @@ def get_class_hierarchy(class_name: str, collection: Optional[str] = None) -> Di
         WITH RECURSIVE descendants AS (
             SELECT source_name, target_name, 1 AS depth, collection
             FROM code_relationships
-            WHERE relationship_type = 'inherits_from' AND target_name = %s
+            WHERE relationship_type = 'inherits_from' AND target_name ILIKE %s
             UNION ALL
             SELECT r.source_name, r.target_name, d.depth + 1, r.collection
             FROM code_relationships r
@@ -224,7 +250,7 @@ def get_class_hierarchy(class_name: str, collection: Optional[str] = None) -> Di
             WITH RECURSIVE descendants AS (
                 SELECT source_name, target_name, 1 AS depth, collection
                 FROM code_relationships
-                WHERE relationship_type = 'inherits_from' AND target_name = %s AND collection = %s
+                WHERE relationship_type = 'inherits_from' AND target_name ILIKE %s AND collection = %s
                 UNION ALL
                 SELECT r.source_name, r.target_name, d.depth + 1, r.collection
                 FROM code_relationships r
@@ -417,7 +443,7 @@ class CodeIntelAgent(BaseAdvisorAgent):
                 }
                 classes = [w for w in words if w.lower() not in ignore]
                 if classes:
-                    class_name = classes[0]
+                    class_name = _resolve_class_name(classes)
                     info = get_class_info(class_name)
                     hierarchy = get_class_hierarchy(class_name)
                     parts = []

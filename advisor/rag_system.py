@@ -994,7 +994,7 @@ class RAGSystem:
         if routing_action["action"] == "clarify":
             return {
                 "query": user_query,
-                "response": "How would you like me to answer?",
+                "response": routing_action.get("clarify_message", "How would you like me to answer?"),
                 "query_type": "clarification",
                 "clarification_type": routing_action.get("clarification_type", "intent_choice"),
                 "candidates": routing_action["candidates"],
@@ -1015,7 +1015,30 @@ class RAGSystem:
 
         # Handle direct agent dispatches:
         agent_name = routing_action.get("agent")
-        
+
+        # CLI Command Agent — explicit hey_egeria/CLI requests (see PerspectiveRoutingEngine).
+        # Checked first, ahead of every intent-string branch below: the pattern classifier
+        # can tag a query like "show me the hey_egeria command to create a glossary" as
+        # intent="command" before role-aware routing ever runs, and the Dr.Egeria "command"
+        # branch further down (`... or intent == "command"`) would otherwise catch it first
+        # and wrongly require login for what's actually just a knowledge/example lookup.
+        if agent_name == "cli_command_agent" or intent == "cli_command":
+            logger.info(f"Routing query to CLICommandAgent")
+            try:
+                from advisor.agents.cli_command_agent import get_cli_command_agent
+                result = get_cli_command_agent().handle(user_query, perspective=perspective)
+                result.setdefault("routing_agent", "cli_command_agent")
+                result.update({
+                    "active_perspective": active_perspective,
+                    "applied_policy_rule": applied_policy_rule,
+                    "perspective_history": perspective_history,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                })
+                return result
+            except Exception as exc:
+                logger.warning(f"CLICommandAgent failed ({exc}), falling back to RAG")
+
         # Quantitative query shortcut
         if intent == 'quantitative':
             logger.info("Handling quantitative query with analytics module")

@@ -118,9 +118,20 @@ class CLICommandAgent(BaseAgent):
             response = self._generate_parameter_response(search_results, user_query)
         else:  # general
             response = self._generate_general_response(search_results, user_query)
-        
+
         return response
-    
+
+    def handle(self, query: str, perspective: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Web-facing entry point, matching the handle(query, perspective=None) -> dict
+        convention used by every other agent dispatched from advisor/rag_system.py
+        (ExamplesAgent, DocAgent, etc.). perspective is currently unused here — CLI
+        command answers don't vary by role — accepted for interface consistency.
+        """
+        from advisor.agents.examples_agent import _make_result
+        response_text = self.query(query)
+        return _make_result(query, response_text, "cli_command")
+
     def _classify_query(self, query: str) -> str:
         """
         Classify the type of CLI query.
@@ -526,5 +537,15 @@ I couldn't find any commands matching your query: "{query}"
         # Help text
         if param.get('help'):
             parts.append(f"\n  {param['help']}")
-        
+
         return " ".join(parts) + "\n"
+
+
+_cli_command_agent: Optional["CLICommandAgent"] = None
+
+
+def get_cli_command_agent() -> "CLICommandAgent":
+    global _cli_command_agent
+    if _cli_command_agent is None:
+        _cli_command_agent = CLICommandAgent()
+    return _cli_command_agent

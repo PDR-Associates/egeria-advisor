@@ -179,6 +179,57 @@ class PerspectiveRoutingEngine:
         ))
         example_signals = any(kw in query_lower for kw in ("example", "sample", "show me", "how do i", "how to"))
         dre_signals = any(sig in query_lower for sig in ("dr egeria", "dr. egeria", "dr_egeria", "dre"))
+        # Explicit CLI phrasing — tight, so it only fires when the user actually names
+        # the CLI, not on generic words ("command"/"cli" alone are too easily false
+        # positive, e.g. "command" appears in many Dr.Egeria/report phrasings too).
+        cli_signals = any(sig in query_lower for sig in (
+            "hey_egeria", "hey-egeria", "hey egeria",
+            "cli command", "command line", "command-line", "terminal command",
+        ))
+        # No Java example-generation capability exists anywhere in the system today —
+        # recognize the request and redirect rather than silently answering in Python.
+        java_signals = any(sig in query_lower for sig in (
+            "java example", "java code", "give me java", "java program", "in java",
+        ))
+
+        # Explicit CLI request — route directly to CLICommandAgent regardless of role.
+        # An explicit signal should always short-circuit ambiguity handling below.
+        if cli_signals:
+            return {
+                "action": "route",
+                "agent": "cli_command_agent",
+                "boosts": ["pyegeria_cli"],
+                "active_perspective": resolved_persp,
+                "applied_policy_rule": {
+                    "rule_name": "explicit_cli_signal",
+                    "description": "Explicit hey_egeria/CLI phrasing routes directly to CLICommandAgent"
+                },
+                "perspective_history": persp_history
+            }
+
+        # Explicit Java request — no Java example generation exists; offer the formats
+        # that do (Python, CLI, Dr.Egeria) instead of silently answering in the wrong
+        # language or fabricating Java that was never grounded in anything.
+        if java_signals and not dre_signals:
+            return {
+                "action": "clarify",
+                "clarification_type": "intent_choice",
+                "clarify_message": (
+                    "I can't generate Java examples yet. Here's what I can show you instead:"
+                ),
+                "candidates": [
+                    "🐍 Python / pyegeria example",
+                    "💻 hey_egeria CLI command",
+                    "📋 Dr.Egeria markdown template",
+                ],
+                "candidate_intents": ["code_help", "cli_command", "command"],
+                "active_perspective": resolved_persp,
+                "applied_policy_rule": {
+                    "rule_name": "java_not_supported_clarify",
+                    "description": "Java example request — not supported; offer the 3 supported formats"
+                },
+                "perspective_history": persp_history
+            }
 
         # Tech perspective requesting structural codebase info or examples
         if resolved_persp in tech_roles and (code_signals or example_signals) and not dre_signals:
@@ -207,19 +258,21 @@ class PerspectiveRoutingEngine:
             }
 
         # Governance perspective requesting ambiguous templates/examples
-        if resolved_persp in governance_roles and example_signals and not code_signals and not dre_signals:
+        if (resolved_persp in governance_roles and example_signals and not code_signals
+                and not dre_signals and not cli_signals and not java_signals):
             return {
                 "action": "clarify",
                 "clarification_type": "intent_choice",
                 "candidates": [
                     "🐍 Python / pyegeria example",
+                    "💻 hey_egeria CLI command",
                     "📋 Dr.Egeria markdown template"
                 ],
-                "candidate_intents": ["code_help", "command"],
+                "candidate_intents": ["code_help", "cli_command", "command"],
                 "active_perspective": resolved_persp,
                 "applied_policy_rule": {
                     "rule_name": "governance_ambiguous_example_clarify",
-                    "description": "Governance perspective + ambiguous example/sample asks to clarify between Python and Dr.Egeria"
+                    "description": "Governance perspective + ambiguous example/sample asks to clarify between Python, CLI, and Dr.Egeria"
                 },
                 "perspective_history": persp_history
             }

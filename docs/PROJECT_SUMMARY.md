@@ -1510,6 +1510,28 @@ credentials without error; `EgeriaTech.create_egeria_bearer_token()` doesn't app
 synchronously against this particular demo instance. Worth confirming with whoever runs the
 demo Egeria whether that's expected for a `qs-view-server`-style demo setup.
 
+**Follow-up: `.env` wasn't reliably loaded into `os.environ` at all.** Investigating why a
+freshly-generated `ADVISOR_PORTAL_SECRET` value in `.env` produced `503 Portal SSO is not
+configured` (while `EGERIA_VIEW_SERVER_URL` had worked moments earlier in a different process)
+revealed the real bug: `advisor.config`'s `Settings` uses pydantic-settings' `env_file=".env"`,
+which loads `.env` into the `Settings` *object* only — it never touches `os.environ`. Code that
+reads `os.environ.get(...)` directly (`advisor.auth`'s `_portal_secret()`/`_jwt_secret()`,
+`advisor.mcp_config`'s env-var priority check) only ever saw `.env` values by accident, if some
+unrelated module happened to call `load_dotenv()` first in that process (`advisor.embeddings`
+does, at import time; `advisor.report_pipeline` does too, but lazily inside a function) — order-
+and code-path-dependent, not a reliable guarantee. Fixed by adding an explicit `load_dotenv()`
+call at the top of `advisor/config.py`, guaranteed to run early since virtually everything
+imports `advisor.config`. Verified: minted a real HS256 portal token and POSTed it to
+`/api/auth/portal` — failed with 503 before this fix, returned a valid session token (HTTP 200)
+after.
+
+**Also found the Portal-SSO frontend piece already exists** — `advisor/web/static/auth.js`
+already handles a `#pt=<token>` URL hash fragment on page load (`checkUrlFragment()`) and a
+`postMessage`-based alternative (`listenForPortalMessage()`), both calling the same
+`/api/auth/portal` exchange. Nothing needed building on the Advisor side; the design brief
+handed to the Portal-side session only needed to cover the Portal's own changes (mint the
+token, append it as `#pt=...` when opening the Advisor tab).
+
 **Commits:** (this session).
 
 ---

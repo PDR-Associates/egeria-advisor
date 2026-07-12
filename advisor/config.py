@@ -1,4 +1,18 @@
 """Configuration management for Egeria Advisor."""
+from dotenv import load_dotenv
+
+# Must run before anything reads os.environ directly (advisor.auth's
+# ADVISOR_PORTAL_SECRET/ADVISOR_JWT_SECRET, advisor.mcp_config's
+# EGERIA_VIEW_SERVER_URL/EGERIA_VIEW_SERVER, etc.) — pydantic-settings'
+# env_file=".env" below only loads .env values into the Settings *object*,
+# it does NOT populate os.environ, so anything using os.environ.get(...)
+# directly would otherwise only see .env values by accident, depending on
+# whether some unrelated module (e.g. advisor.embeddings, which also calls
+# load_dotenv() for its own reasons) happened to import first in this
+# process. advisor.config is imported early enough by virtually everything
+# that calling it here makes .env reliably available everywhere.
+load_dotenv()
+
 import os
 from pathlib import Path
 from typing import Optional, Dict, Any

@@ -1367,6 +1367,44 @@ running server via `curl /api/query`.
 
 ---
 
+### Phase 19 — "Show me" format clarify was hijacking explicit non-"Show me" intents (Jul 12, 2026)
+
+**Theme:** Act + "show me the external references" returned the Python/CLI/Dr.Egeria format
+clarify — the same clarify meant for the ambiguous "Show me" experience — instead of looking
+for a matching report spec. Reported live: the user explicitly selected Act (`intent_override
+= "command"`), but the query text still contained "show me", which was enough to trigger the
+clarify regardless of which intent button was clicked.
+
+**Root cause:** `PerspectiveRoutingEngine.route()` is called unconditionally in
+`_process_query`, and its format-disambiguation branches (dre/cli/java signal routing, the
+tech-role code/Python fast path, the ambiguous-example clarify — all built in Phase 17/17b/18)
+only ever looked at the query *text*, never at `intent`. Rule 11 in `CLAUDE.md` had claimed
+this layer was "skipped when `query_type_override` is set" since before this session, but
+nothing in the code actually implemented that — the claim was aspirational/stale, not a
+description of real behavior. `BACKLOG.md` IB-2's Act read-verb → `ReportPipeline` matching
+(`_ACT_READ_RE`, matches `^show\b` etc., already correctly implemented and working) sits much
+further down in `_process_query`'s dispatch chain than the early `routing_action["action"] ==
+"clarify"` return — so the clarify intercepted the query before it could ever reach the
+already-correct Act logic.
+
+**Fix:** added `PerspectiveRoutingEngine._AMBIGUOUS_ELIGIBLE_INTENTS = {"code_help",
+"code_search", "example", "general", ""}` and wrapped the entire format-disambiguation
+section in `if intent in self._AMBIGUOUS_ELIGIBLE_INTENTS:`. An explicit `intent_override` for
+anything else (`command`/Act, `report`/Run Report, `code_intel`/Inspect,
+`explanation`/Explain, `debugging`/Troubleshoot, `plan`/`create`/Create) now skips the whole
+layer and falls straight to default policy routing — letting the query reach whatever
+dispatch logic that intent actually has (for Act, the pre-existing `_ACT_READ_RE` →
+`ReportPipeline.find_specs()` path).
+
+**Verified:** live query "show me the external references" with `intent_override: "command"`
+now returns `routing_agent: "auth_gate"` (Act's Egeria-auth-required gate, reached only via
+the `_ACT_READ_RE` block) instead of the format clarify. "Show me" (`code_help`) and Auto
+(no override) on an ambiguous query still correctly clarify — confirmed unaffected.
+
+**Commits:** (this session).
+
+---
+
 ## Current state and next steps (Jul 2026)
 
 **Phases complete:**
@@ -1389,6 +1427,7 @@ running server via `curl /api/query`.
 - Phase 17b ✓ — Dr.Egeria given its own explicit route (was fallthrough-only); ambiguous "show me" now clarifies for every role, not just Data Steward/Governance
 - Phase 18 ✓ — fixed `code_symbols` population bug where the `pyegeria` collection's symbol table held only test-harness code (0 real SDK files); `Inspect` can now correctly answer questions about real pyegeria classes like `AutomatedCuration`
 - Phase 18b ✓ — `CodeIntelAgent` gained a `get_class_info` tool (returns a class's own docstring, not just its hierarchy) and space-separated/case-insensitive class-name resolution ("Automated Curation" → `AutomatedCuration`)
+- Phase 19 ✓ — the "Show me" format-disambiguation clarify no longer hijacks explicit non-"Show me" intents (Act/Run Report/Inspect/Explain/Troubleshoot/Create); gated behind `_AMBIGUOUS_ELIGIBLE_INTENTS` so Act's pre-existing report-spec matching is actually reachable
 
 **What's working end-to-end (Jul 6, 2026):**
 - Full plan lifecycle exercised live against a real Dr.Egeria MCP server + Egeria REST backend + Postgres for the first time (not just synthetic testing) — surfaced and fixed six real bugs in one session (SS-6 through SS-11, see "Recent work" above and `BACKLOG.md`), including a genuine event-loop-freezing hang in the MCP client

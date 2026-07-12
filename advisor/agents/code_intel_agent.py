@@ -326,6 +326,32 @@ def get_codebase_stats(collection: Optional[str] = None) -> Dict[str, Any]:
         stats["total_loc"] += loc
         
     return stats
+
+def _format_class_info(info: List[Dict[str, Any]]) -> str:
+    """Render get_class_info() results as clean text (real newlines, not a dict repr)."""
+    blocks = []
+    for row in info:
+        blocks.append(
+            f"Class: {row['name']} (collection: {row['collection']})\n"
+            f"File: {row['file_path']} (lines {row['start_line']}-{row['end_line']})\n"
+            f"Signature: {row['signature']}\n"
+            f"Docstring:\n{row['docstring'] or '(no docstring)'}"
+        )
+    return "\n\n".join(blocks)
+
+def _format_class_hierarchy(hierarchy: Dict[str, Any]) -> str:
+    """Render get_class_hierarchy() results as clean text (real newlines, not a dict repr)."""
+    lines = [f"Class: {hierarchy['class_name']}"]
+    if hierarchy["ancestors"]:
+        lines.append("Ancestors (parents):")
+        for a in sorted(hierarchy["ancestors"], key=lambda x: x["depth"]):
+            lines.append(f"  - {a['class_name']} (depth {a['depth']}, collection {a['collection']})")
+    if hierarchy["descendants"]:
+        lines.append("Descendants (children):")
+        for d in sorted(hierarchy["descendants"], key=lambda x: x["depth"]):
+            lines.append(f"  - {d['class_name']} (depth {d['depth']}, collection {d['collection']})")
+    return "\n".join(lines)
+
 class CodeIntelAgent(BaseAdvisorAgent):
     def system_prompt(self) -> str:
         return (
@@ -448,11 +474,11 @@ class CodeIntelAgent(BaseAdvisorAgent):
                     hierarchy = get_class_hierarchy(class_name)
                     parts = []
                     if info:
-                        parts.append(f"Class Definition for {class_name}:\n{info}")
+                        parts.append(_format_class_info(info))
                     else:
                         parts.append(f"No class definition found for '{class_name}' in the indexed codebase.")
                     if hierarchy["ancestors"] or hierarchy["descendants"]:
-                        parts.append(f"Class Hierarchy for {class_name}:\n{hierarchy}")
+                        parts.append(_format_class_hierarchy(hierarchy))
                     context = "\n\n".join(parts)
                 else:
                     context = "Could not identify class name for lookup."
@@ -466,17 +492,21 @@ class CodeIntelAgent(BaseAdvisorAgent):
             "explicitly — do not invent information.\n"
             "CRITICAL: Do NOT output or guess external GitHub repository URLs, website links, or directory paths "
             "unless they are explicitly present in the provided query results. Be very clear and output specific "
-            "file paths and line numbers."
+            "file paths and line numbers.\n"
+            "When a 'signature' field is present in the query results, always include it verbatim (e.g. in a "
+            "code block). When a 'docstring' field is present, quote it in full — do not paraphrase or "
+            "summarize it down to one sentence; the user wants the actual documented description, not a gloss."
         )
-        
+
         prompt = (
             f"Query Results:\n{context}\n\n"
             f"Question: {query}\n\n"
-            "Provide a concise maintainer-oriented answer."
+            "Provide a maintainer-oriented answer. Include the full signature and full docstring text from the "
+            "query results verbatim where present, plus file path and line numbers."
         )
-        
+
         try:
-            response = get_ollama_client().generate(prompt, system=system, max_tokens=1000)
+            response = get_ollama_client().generate(prompt, system=system, max_tokens=1500)
         except Exception as exc:
             response = f"Unable to generate response: {exc}"
             

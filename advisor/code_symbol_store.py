@@ -42,7 +42,7 @@ class CodeSymbolStore:
                 el.name,
                 qname,
                 el.signature or "",
-                (el.docstring or "")[:500],  # cap to keep DB small
+                (el.docstring or "")[:4000],  # generous cap — guards against pathological outliers, not real docstrings
                 el.parent_class or "",
                 el.return_type or "",
                 el.line_number,

@@ -1139,7 +1139,65 @@ four ported scripts run clean against live pgvector data; `test_end_to_end.py --
 from 2 failures to 37/40 passing with zero failures; web server restarts clean and a live
 query works.
 
-**Commits:** (this session, following Phase 15).
+**Commits:** `e2ac1cc`.
+
+### Phase 17 — "Show me" format disambiguation + CLI ingestion gap (Jul 11, 2026)
+
+**Theme:** "Show me" meant "give me Python" almost unconditionally. `ExamplesAgent`'s
+generation prompts unconditionally instructed the LLM to write Python even when
+`pyegeria_cli` content was retrieved; `CLICommandAgent` existed and worked from the
+standalone CLI / BeeAI conversational pipeline but was never reachable from the web UI;
+`PerspectiveRoutingEngine.route()` only ever offered Data Steward/Governance roles a 2-way
+Python-vs-Dr.Egeria clarify, and Developer/Data Engineer roles were never offered anything
+but Python regardless of phrasing.
+
+**Routing layer** ✓ (commit `da6c7cc`)
+- `CLICommandAgent.handle()` + `get_cli_command_agent()` singleton added, matching the
+  convention every other web-facing agent uses.
+- New `cli_signals`/`java_signals` detection in `PerspectiveRoutingEngine.route()`: explicit
+  `hey_egeria`/CLI phrasing now routes directly to `CLICommandAgent` regardless of role;
+  explicit Java requests get an honest "not supported yet" redirect to the three formats
+  that do exist (Python / CLI / Dr.Egeria) instead of a silent wrong-language answer; the
+  governance-role clarify is now 3-way instead of 2-way.
+- Placement bug found and fixed during verification: the pattern classifier tags CLI-phrased
+  "create X" queries as `intent="command"` before role-aware routing even runs, and an
+  earlier `... or intent == "command"` check in `rag_system.py`'s dispatch chain was
+  catching them first and wrongly requiring login. Fixed by moving the CLI dispatch check to
+  the top of the chain, ahead of every intent-string branch.
+
+**CLI ingestion gap** ✓ — routing now reached `CLICommandAgent` correctly, but its answers
+were still fabricated (`hey_egeria --create-glossary <glossaryName>` — not a real command).
+Root cause: `CLICommandAgent._extract_command_data()` depends on a `metadata['command_data']`
+JSON field that a purpose-built extractor/indexer pair
+(`advisor/data_prep/cli_parser.py::CLICommandExtractor`,
+`advisor/data_prep/cli_indexer.py::CLICommandIndexer`) was designed to populate — fully
+built, verified to extract accurate real data (confirmed against `create_glossary`'s actual
+10 click-decorated parameters) — but never wired into the main ingestion pipeline
+(`scripts/ingest_collections.py` populates `pyegeria_cli` with generic AST code chunks
+instead). The two pipelines are non-destructive to each other: `CLICommandIndexer` writes
+additively into the same `pyegeria_cli` table under a distinct id namespace (`cli_cmd_*` vs
+the generic ingester's `file_path::name::line`), resolved via the existing
+`cli_commands`→`pyegeria_cli` table-name alias in `vector_store_pg.py`.
+- Ran `scripts/test_cli_parser.py` (110 `hey_egeria` commands extracted fresh from the
+  current `data/repos/egeria-python`) → `scripts/test_cli_indexer.py` (153 documents indexed,
+  0 failures; `pyegeria_cli` went from 513 to 666 rows).
+- Also enriched `_generate_general_response()`'s LLM context: it was passing only a
+  parameter *count* to the LLM, not the actual flag names — confirmed live that this still
+  produced a partially-fabricated invocation (a stray positional arg) even with real
+  `command_data` available. Now includes actual parameter names/required-status/defaults,
+  plus an explicit "use ONLY what's listed" instruction matching `ExamplesAgent`'s pattern.
+- Wired both scripts into `scripts/full_reset.sh` as step 4/4 (after collection ingestion,
+  since it must run after the `--force` table-recreate in step 3, not before) so this stays
+  fresh automatically going forward instead of silently drifting again.
+- `dr_egeria` command extraction in the same extractor found 0 results — not a regression to
+  fix; Dr.Egeria template lookup is already served correctly by `DrEgeriaTemplateAgent`'s
+  separate filesystem scan, unrelated to this agent.
+
+**Verified:** live query "show me the hey_egeria command to create a glossary" now returns
+`hey_egeria create_glossary --name "My New Glossary"` (real command, real flag) instead of
+the earlier fabricated `--create-glossary` syntax.
+
+**Commits:** (this session).
 
 ---
 
@@ -1161,6 +1219,7 @@ query works.
 - Phase 14 ✓ — data pipeline sync (repos/vector store/config brought back into alignment), silent Python ingestion data-loss bug found and fixed
 - Phase 15 ✓ — MCP credential propagation (live Egeria calls use the signed-in user's own credentials, not a shared service account; singleton credential-caching bug fixed)
 - Phase 16 ✓ — Milvus removal (migrated remaining diagnostics/tests to pgvector, then deleted all Milvus code, config, scripts, and the pymilvus dependency)
+- Phase 17 ✓ — "Show me" format disambiguation (CLI/Python/Dr.Egeria/Java recognition) + CLI ingestion gap fix (CLICommandAgent answers are now grounded in real extracted command data, not fabricated)
 
 **What's working end-to-end (Jul 6, 2026):**
 - Full plan lifecycle exercised live against a real Dr.Egeria MCP server + Egeria REST backend + Postgres for the first time (not just synthetic testing) — surfaced and fixed six real bugs in one session (SS-6 through SS-11, see "Recent work" above and `BACKLOG.md`), including a genuine event-loop-freezing hang in the MCP client

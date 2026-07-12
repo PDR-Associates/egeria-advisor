@@ -34,6 +34,7 @@ echo "=========================================="
 echo "This will:"
 echo "  1. Delete and re-clone: ${REPOS[*]}"
 echo "  2. Drop and re-ingest all enabled pgvector collections"
+echo "  3. Re-extract and re-index structured hey_egeria CLI command metadata"
 echo ""
 echo "This does NOT touch MLflow runs, query cache, or feedback data."
 echo ""
@@ -66,8 +67,21 @@ echo "--- Step 2/3: Cloning all repos fresh ---"
 python scripts/clone_repos.py --phase all
 
 echo ""
-echo "--- Step 3/3: Re-ingesting all enabled collections ---"
+echo "--- Step 3/4: Re-ingesting all enabled collections ---"
 python scripts/ingest_collections.py --phase all --force
+
+echo ""
+echo "--- Step 4/4: Re-extracting and re-indexing hey_egeria CLI command metadata ---"
+# Must run AFTER step 3: ingest_collections.py --force drops and recreates the
+# pyegeria_cli table (generic AST code chunks), which would wipe these
+# CLI-specific structured documents (command name/parameters/usage) if indexed
+# first. This step is additive on top of the generic chunks (distinct id
+# namespace, cli_cmd_* vs the generic ingester's file_path::name::line ids) —
+# it does not remove or replace anything step 3 wrote. Without this step,
+# CLICommandAgent (behind the "Show me" -> hey_egeria CLI routing) has no
+# grounded command syntax to draw from and will fabricate flags/arguments.
+python scripts/test_cli_parser.py
+python scripts/test_cli_indexer.py
 
 echo ""
 echo "=========================================="

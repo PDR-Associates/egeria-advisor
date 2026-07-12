@@ -391,16 +391,33 @@ class CLICommandAgent(BaseAgent):
                 context_parts.append(f"Description: {cmd_data.get('description', 'N/A')}")
                 context_parts.append(f"Type: {cmd_data.get('type', 'N/A')}")
                 context_parts.append(f"Category: {cmd_data.get('category', 'N/A')}")
-                
+
+                # Include the actual flag names/required-status, not just a count —
+                # without this the LLM has no real syntax to draw from and guesses
+                # (confirmed live: produced a fabricated positional arg when only a
+                # parameter count was given).
                 params = cmd_data.get('parameters', [])
                 if params:
-                    context_parts.append(f"Parameters: {len(params)}")
+                    param_lines = []
+                    for p in params:
+                        name = p.get('name', '')
+                        req = 'required' if p.get('required') else 'optional'
+                        default = p.get('default')
+                        default_part = f", default={default!r}" if default is not None else ""
+                        param_lines.append(f"  {name} ({req}{default_part}): {p.get('help', '')}")
+                    context_parts.append(f"Parameters ({len(params)}):")
+                    context_parts.extend(param_lines)
                 context_parts.append("")
-        
+
         context = "\n".join(context_parts)
-        
+
         # Generate response using LLM
         prompt = f"""You are a helpful assistant for Egeria CLI commands.
+
+STRICT: Use ONLY the command name and parameter names/flags listed in "Available Commands"
+below — do not invent flags, positional arguments, or syntax that doesn't appear there. If
+the context doesn't include enough detail to show a full invocation, say so rather than
+guessing.
 
 User Question: {query}
 

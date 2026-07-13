@@ -56,6 +56,14 @@ class CommandKeywordIndex:
         self._built = True
         logger.debug(f"CommandKeywordIndex: {len(self._entries)} entries loaded")
 
+    def invalidate(self) -> None:
+        """Clear the built index so the next lookup rescans the catalog YAML +
+        template filesystem. Call after new Dr.Egeria template files have been
+        added/synced so a running process picks them up without a restart.
+        Wired to POST /api/admin/maintenance/refresh_templates."""
+        self._built = False
+        self._entries = []
+
     def _load_catalog(self) -> None:
         catalog_path = Path(__file__).parent.parent / "config" / "dr_egeria_actions.yaml"
         try:

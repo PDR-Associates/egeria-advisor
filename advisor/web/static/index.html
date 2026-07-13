@@ -333,6 +333,10 @@
         class="hidden px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 text-xs font-semibold transition-colors disabled:opacity-40"
         title="Save changes to the plan document" disabled
         onclick="PlanCanvas.save()">Save</button>
+      <button id="pcanvas-recover-btn"
+        class="hidden px-2 py-1 rounded bg-amber-700 hover:bg-amber-600 text-white text-xs font-semibold transition-colors"
+        title="This plan has already been executed — recover it to inbox to edit, validate, and re-execute"
+        onclick="PlanCanvas.recover()">↩ Recover to edit</button>
       <button id="pcanvas-validate-btn"
         class="hidden px-2 py-1 rounded bg-sky-800 hover:bg-sky-700 text-white text-xs font-semibold transition-colors"
         title="Validate the plan without executing it">✓ Validate</button>
@@ -1229,18 +1233,29 @@ async function loadDrafts() {
         : 'text-amber-400/70 hover:bg-amber-900/20 hover:text-amber-300');
     btn.title = `${d.title}\nPhase: ${d.phase_label || d.phase}`;
     const label = (d.title && d.title !== '(untitled)') ? d.title : d.draft_id;
-    btn.textContent = (isActive ? '▸ ' : '') + (label.length > 30 ? label.slice(0, 29) + '…' : label);
+    // No manual character slicing here — the CSS `truncate` class above already
+    // ellipsizes to whatever width is available, so widening the sidebar (or the
+    // phase badge shrinking) reveals more of the title instead of it being
+    // permanently capped at a fixed character count regardless of column width.
+    btn.textContent = (isActive ? '▸ ' : '') + label;
 
     btn.onclick = () => {
-      if (isActive) return; // already active
-      appendMessage('you', `Resume draft ${d.draft_id}`);
-      submitQuery(`resume draft ${d.draft_id}`, { intent_override: 'plan' });
+      // Always (re)open directly via the canvas API rather than routing through
+      // a fake "resume draft" chat message — that round-trip depended on
+      // draft_id being threaded correctly through submitQuery/_process_query,
+      // which it wasn't always, and a stale isActive flag (e.g. after
+      // sessionStorage restored _activeDraftId from a prior session where the
+      // canvas never actually rendered) made re-clicking a silent no-op with
+      // no way to recover except reloading the whole page.
+      PlanCanvas.open(d.draft_id);
     };
     row.appendChild(btn);
 
-    // Phase badge
+    // Phase badge — max-w is a %, not a fixed px, so it grows with the sidebar
+    // when resized; text-slate-400 (not -600) keeps it readable against the
+    // dark sidebar background while still reading as secondary to the title.
     const phase = document.createElement('span');
-    phase.className = 'shrink-0 text-slate-600 text-xs truncate max-w-[60px]';
+    phase.className = 'shrink-0 text-slate-400 text-xs truncate max-w-[45%]';
     phase.textContent = (d.phase_label || d.phase || '').replace('elicit_', 'Q&A:').replace('_', '');
     row.appendChild(phase);
 
@@ -2335,6 +2350,14 @@ function initCanvasButtons() {
       const result = await r.json();
       const wrap = appendMessage('assistant', result.response || '', {});
       _applyQueryResult(`execute the plan ${docId}`, result, wrap);
+      // Execution moves the plan to outbox under a new "_executed_<ts>" doc_id —
+      // without re-pointing the open canvas at it, pcanvas-title keeps the old
+      // (now-gone) inbox docId, so any further edit + Save 404s ("not found in
+      // inbox") even though the canvas still looks perfectly editable.
+      if (result.doc_id && result.doc_id !== docId) {
+        await PlanCanvas.openDocument(result.doc_id, _ctx?.draft_id || null);
+        loadPlans();
+      }
     } catch (e) {
       appendMessage('assistant', `**Error:** ${e.message}`);
     } finally {
@@ -3430,9 +3453,9 @@ function initReportCanvasResize() {
   </div>
 </div>
 
-<script src="/static/artifact_canvas.js?v=20260629i"></script>
-<script src="/static/plan_canvas.js?v=20260629i"></script>
-<script src="/static/plan_editor.js?v=20260629i"></script>
+<script src="/static/artifact_canvas.js?v=20260713a"></script>
+<script src="/static/plan_canvas.js?v=20260713b"></script>
+<script src="/static/plan_editor.js?v=20260713a"></script>
 <script src="/static/report_spec_canvas.js?v=20260629i"></script>
 </body>
 </html>

@@ -257,26 +257,47 @@ def _is_runnable_spec(name: str) -> bool:
 
 
 def _load_report_catalog(include_dre: bool = False) -> Dict[str, List[str]]:
-    """Return {topic: [spec_name, ...]} from spec JSON files, runnable specs only."""
+    """Return {topic: [spec_name, ...]}, runnable specs only.
+
+    Primary source is pyegeria's own in-process report registry
+    (get_report_registry(), which already combines built-ins, generated,
+    config-loaded, and runtime-registered specs) — report specs are not all
+    produced by the dr-egeria-command-sync JSON pipeline, so the catalog must
+    not be JSON-file-only. The bundled JSON files below still supplement this
+    for any name the registry doesn't (yet) know about, and are read fresh on
+    every call, so a live-updated JSON file needs no server restart either.
+    """
     catalog: Dict[str, List[str]] = {}
     seen: set = set()
+
+    def _add(name: str) -> None:
+        if name in seen:
+            return
+        seen.add(name)
+        if not include_dre and _is_dre(name):
+            return
+        if not _is_runnable_spec(name):
+            return
+        topic = _topic_for(name)
+        catalog.setdefault(topic, []).append(name)
+
+    try:
+        from pyegeria.view.base_report_formats import get_report_registry
+        for name in get_report_registry().keys():
+            _add(name)
+    except Exception as exc:
+        logger.debug(f"_load_report_catalog: pyegeria registry unavailable — {exc}")
+
     for path in _SPEC_FILES:
         if not path.exists():
             continue
         try:
             data = json.loads(path.read_text())
             for name in data:
-                if name in seen:
-                    continue
-                seen.add(name)
-                if not include_dre and _is_dre(name):
-                    continue
-                if not _is_runnable_spec(name):
-                    continue
-                topic = _topic_for(name)
-                catalog.setdefault(topic, []).append(name)
+                _add(name)
         except Exception as exc:
             logger.warning(f"Failed to load {path}: {exc}")
+
     # Sort within each topic
     for topic in catalog:
         catalog[topic].sort()
@@ -670,15 +691,18 @@ async def export_plan_report(doc_id: str) -> Response:
 
 
 @app.put("/api/plans/{doc_id}")
-async def save_plan(doc_id: str, body: Dict[str, Any]) -> Dict[str, str]:
+async def save_plan(request: Request, doc_id: str, body: Dict[str, Any]) -> Dict[str, str]:
     """Save updated plan content to inbox (with automatic version backup)."""
     from fastapi import HTTPException
+    from advisor.auth import get_current_user
     from advisor.governance_docs import get_doc_manager
     content = body.get("content", "")
     if not content:
         raise HTTPException(status_code=400, detail="content required")
+    user = get_current_user(request)
+    edited_by = (user or {}).get("sub")
     dm = get_doc_manager()
-    ok = dm.update(doc_id, content)
+    ok = dm.update(doc_id, content, edited_by=edited_by)
     if not ok:
         raise HTTPException(status_code=404, detail=f"Plan {doc_id!r} not found in inbox")
     return {"status": "ok"}
@@ -911,32 +935,61 @@ async def list_drafts() -> Dict[str, Any]:
 
 @app.get("/api/drafts/{draft_id}")
 async def get_draft(draft_id: str) -> Dict[str, Any]:
-    """Return a single draft spec by ID (for the Plan Canvas)."""
-    from fastapi import HTTPException
-    from advisor.governance_draft import get_draft_manager
-    spec = get_draft_manager().load(draft_id)
-    if spec is None:
-        raise HTTPException(status_code=404, detail=f"Draft {draft_id!r} not found")
-    return spec
+    """Return a single draft spec by ID (for the Plan Canvas).
 
-
-@app.patch("/api/drafts/{draft_id}/commands")
-async def patch_draft_commands(draft_id: str, body: Dict[str, Any]) -> Dict[str, str]:
-    """Update commands and answers in a draft (called by Plan Canvas on reorder/add/remove/edit)."""
+    Self-heals doc_id via resolve_live_doc_id() before returning — every
+    frontend consumer of this endpoint (Plan Canvas's open(), the Active
+    Drafts sidebar) gets a repaired pointer automatically, with no
+    frontend-side staleness handling required.
+    """
     from fastapi import HTTPException
     from advisor.governance_draft import get_draft_manager
     dm = get_draft_manager()
     spec = dm.load(draft_id)
     if spec is None:
         raise HTTPException(status_code=404, detail=f"Draft {draft_id!r} not found")
+    resolved = dm.resolve_live_doc_id(draft_id, spec=spec)
+    if resolved != spec.get("doc_id"):
+        spec["doc_id"] = resolved
+    return spec
+
+
+@app.patch("/api/drafts/{draft_id}/commands")
+async def patch_draft_commands(request: Request, draft_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Update commands and answers in a draft (called by Plan Canvas on reorder/add/remove/edit).
+
+    Runs the edited command list through validate_commands() with resort=False —
+    warnings (dedup, superseded removal, missing-container insertion, etc.) are
+    returned to the caller instead of being silently dropped. resort=False is
+    required here specifically: this endpoint fires on every drag-reorder, and
+    re-sorting by priority would silently undo a manual reorder.
+    """
+    from fastapi import HTTPException
+    from advisor.auth import get_current_user
+    from advisor.governance_draft import get_draft_manager
+    from advisor.plan_validator import validate_commands
+    user = get_current_user(request)
+    edited_by = (user or {}).get("sub")
+    dm = get_draft_manager()
+    spec = dm.load(draft_id)
+    if spec is None:
+        raise HTTPException(status_code=404, detail=f"Draft {draft_id!r} not found")
+    warnings: List[str] = []
     if "commands" in body:
-        spec["commands_identified"] = body["commands"]
+        fixed_commands, spec["answers"], warnings = validate_commands(
+            body["commands"], spec.get("answers", {}), resort=False
+        )
+        spec["commands_identified"] = fixed_commands
     if "answers" in body:
         spec["answers"] = body["answers"]
     dm.save(spec)
 
-    # Sync edits to the generated markdown plan document if it exists
-    doc_id = spec.get("doc_id")
+    # Sync edits to the generated markdown plan document if it exists.
+    # resolve_live_doc_id self-heals a stale doc_id (e.g. after an execution
+    # renamed the file) — without it, doc_manager.load() below would silently
+    # return None and this whole sync would no-op, saving the draft's JSON
+    # but never reaching the actual document, with no error surfaced anywhere.
+    doc_id = dm.resolve_live_doc_id(draft_id, spec=spec)
     if doc_id:
         try:
             from advisor.governance_docs import get_doc_manager
@@ -950,16 +1003,28 @@ async def patch_draft_commands(draft_id: str, body: Dict[str, Any]) -> Dict[str,
                     answers_key = cmd.get("_answers_key") or cmd["action"]
                     if "pre_filled" in cmd:
                         spec.setdefault("answers", {})[answers_key] = dict(cmd["pre_filled"])
-                dm.save(spec)
 
                 elicitor = get_plan_elicitor()
                 new_content = elicitor._rebuild_command_sequence(spec, current_content)
-                doc_manager.update(doc_id, new_content)
-                logger.info(f"Regenerated and updated plan document {doc_id} to match canvas edits")
+                synced_doc_id = dm.sync_document(draft_id, spec, new_content, edited_by=edited_by)
+                if synced_doc_id:
+                    logger.info(f"Regenerated and updated plan document {synced_doc_id} to match canvas edits")
+                else:
+                    logger.warning(f"Could not sync plan document for draft {draft_id!r} — doc_id unresolved")
+            else:
+                logger.warning(
+                    f"Plan document {doc_id!r} for draft {draft_id!r} could not be loaded "
+                    f"even after doc_id resolution — canvas edits were saved to the draft "
+                    f"only, not the document."
+                )
         except Exception as exc:
             logger.error(f"Failed to update plan document {doc_id} on patch: {exc}", exc_info=True)
 
-    return {"status": "ok"}
+    response: Dict[str, Any] = {"status": "ok"}
+    if warnings:
+        response["warnings"] = warnings
+        response["commands"] = spec["commands_identified"]
+    return response
 
 
 @app.delete("/api/drafts/{draft_id}")

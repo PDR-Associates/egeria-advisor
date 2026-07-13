@@ -816,7 +816,33 @@ async function _savePlanEdits() {
     btn.textContent = '✓ Saved';
     setTimeout(() => { btn.textContent = 'Save'; btn.disabled = false; }, 1500);
   } catch (e) {
-    alert(`Save failed: ${e.message}`);
+    // Usually means the plan moved out from under this editor — e.g. executed
+    // from another tab or via chat since it was opened. Resolve the current
+    // doc_id via the draft (self-heals server-side) and reopen rather than
+    // leaving a dead editor pointed at a doc_id that no longer exists — don't
+    // blind-retry the write itself, which could clobber whatever changed it.
+    if (_ped.draft_id) {
+      alert(
+        `Save failed: ${e.message}\n\n` +
+        `This can happen if the plan changed elsewhere (e.g. executed in another ` +
+        `tab) since this editor was opened. Reopening with the current version — ` +
+        `your last edit was not saved and may need to be redone.`
+      );
+      const draftId = _ped.draft_id;
+      try {
+        const dr = await fetch(`/api/drafts/${encodeURIComponent(draftId)}`, { headers: Auth.getHeaders() });
+        const freshDocId = dr.ok ? (await dr.json()).doc_id : null;
+        if (freshDocId) {
+          await openPlanEditor(freshDocId, draftId);
+        } else {
+          closePlanEditor();
+        }
+      } catch {
+        closePlanEditor();
+      }
+    } else {
+      alert(`Save failed: ${e.message}`);
+    }
     btn.textContent = 'Save'; btn.disabled = false;
   }
 }

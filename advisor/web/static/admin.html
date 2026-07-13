@@ -170,6 +170,14 @@
             class="maint-btn">🗑 Clear Query Cache</button>
           <button onclick="maintenance('invalidate_index')"
             class="maint-btn">⟳ Invalidate Spec Index</button>
+          <button onclick="maintenance('refresh_templates')"
+            class="maint-btn">↺ Refresh Dr.Egeria Templates</button>
+          <button onclick="maintenance('check_draft_doc_ids')"
+            title="Report drafts whose doc_id points at a plan file that no longer exists (see browser console for detail)"
+            class="maint-btn">🔍 Check Draft Doc IDs</button>
+          <button onclick="maintenance('repair_draft_doc_ids')"
+            title="Repair stale draft doc_ids by finding the newest matching outbox file"
+            class="maint-btn">🔧 Repair Draft Doc IDs</button>
         </div>
         <div id="maint-msg" class="text-xs text-emerald-400 hidden mt-2"></div>
       </div>
@@ -387,6 +395,9 @@ async function maintenance(action) {
   msg.textContent = data.message || data.status;
   msg.className = `text-xs mt-2 ${data.status === 'ok' ? 'text-emerald-400' : 'text-red-400'}`;
   msg.classList.remove('hidden');
+  // check/repair_draft_doc_ids return a per-draft report — log it for detail
+  // beyond the one-line summary shown in the UI.
+  if (data.report) console.table(data.report);
   setTimeout(() => msg.classList.add('hidden'), 4000);
 }
 

@@ -150,6 +150,131 @@ class DraftManager:
         logger.info(f"DraftManager: updated {draft_id!r}.doc_id -> {new_doc_id!r}")
         return True
 
+    def _find_repair_candidate(self, doc_id: str) -> Optional[str]:
+        """
+        Search outbox for the newest file sharing doc_id's pre-"_executed_"
+        base name — the file a stale doc_id most likely got renamed to by a
+        (re-)execution. Returns None if nothing matches.
+
+        Filenames are fixed-width timestamps, so lexicographic sort is
+        chronological — the last match is the most recent execution.
+        """
+        from advisor.governance_docs import get_doc_manager
+        outbox_dir = get_doc_manager()._paths["outbox"]
+        base_id = re.sub(r'_executed_\d{8}_\d{6}$', '', doc_id)
+        candidates = sorted(outbox_dir.glob(f"{base_id}_executed_*.md"))
+        return candidates[-1].stem if candidates else None
+
+    def resolve_live_doc_id(
+        self, draft_id: str, spec: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """
+        Return draft_id's current doc_id, self-healing it in place if it's
+        gone stale (see _find_repair_candidate). Every caller that's about to
+        load/edit/execute a draft's document should resolve through here
+        instead of reading spec["doc_id"] directly — that direct-read pattern
+        is what let a stale pointer (created whenever a plan is executed
+        through a path that doesn't thread draft_id all the way to
+        GovernancePlanAgent.execute()) go unnoticed at each new call site.
+        See BACKLOG.md.
+
+        Pass spec if already loaded, to avoid a redundant disk read. Returns
+        None if the draft doesn't exist or has no document yet. If the id is
+        stale and no confident replacement is found, returns the original
+        (stale) id unchanged — the caller's existing "not found" handling
+        still applies for genuinely-deleted documents.
+        """
+        from advisor.governance_docs import get_doc_manager
+        if spec is None:
+            spec = self.load(draft_id)
+        if spec is None:
+            return None
+        doc_id = spec.get("doc_id")
+        if not doc_id:
+            return None
+        if get_doc_manager().folder_of(doc_id) is not None:
+            return doc_id
+        new_doc_id = self._find_repair_candidate(doc_id)
+        if new_doc_id:
+            self.update_doc_id(draft_id, new_doc_id)
+            return new_doc_id
+        return doc_id
+
+    def sync_document(
+        self, draft_id: str, spec: Dict[str, Any], new_content: str,
+        edited_by: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        Write new_content to draft_id's live plan document and persist the
+        (possibly-mutated) spec together, as one operation.
+
+        Replaces the "doc_manager.update(...) then separately dm.save(spec)"
+        pattern repeated across plan_elicitor.py/app.py — the two calls were
+        easy to get out of sync (e.g. saving the spec but silently skipping
+        the document write when doc_id had gone stale, with no error
+        surfaced). Resolves the live doc_id first, so a repaired id is
+        reflected in both the write and the saved spec.
+
+        Returns the doc_id actually written to, or None if there's no
+        document yet or the write failed (document genuinely missing).
+        """
+        from advisor.governance_docs import get_doc_manager
+        doc_id = self.resolve_live_doc_id(draft_id, spec=spec)
+        if not doc_id:
+            return None
+        if not get_doc_manager().update(doc_id, new_content, edited_by=edited_by):
+            return None
+        spec["doc_id"] = doc_id
+        self.save(spec)
+        return doc_id
+
+    def check_doc_ids(self, repair: bool = False) -> List[Dict[str, Any]]:
+        """
+        Find drafts whose doc_id no longer points at a real inbox/outbox file.
+
+        This happens when a plan is executed (or re-executed) through a code
+        path that doesn't thread draft_id through to
+        GovernancePlanAgent.execute() — each execution renames the file with a
+        fresh "_executed_<ts>" suffix, so a draft whose doc_id was never
+        updated is left pointing at a filename that's since been superseded.
+        See update_doc_id() and BACKLOG.md.
+
+        For each stale draft, uses the same repair heuristic as
+        resolve_live_doc_id() and repairs it in place when repair=True and an
+        unambiguous candidate is found.
+
+        Returns a list of {draft_id, doc_id, status, new_doc_id?} — status is
+        one of "ok", "no_doc" (never generated — nothing to check), "repaired",
+        or "unresolved" (stale but no confident replacement found; needs a
+        human to look, e.g. via Recover from the plan's version history).
+        """
+        from advisor.governance_docs import get_doc_manager
+        doc_manager = get_doc_manager()
+
+        report: List[Dict[str, Any]] = []
+        for path in sorted(self._root.glob("*.json")):
+            draft_id = path.stem
+            spec = self.load(draft_id)
+            if spec is None:
+                continue
+            doc_id = spec.get("doc_id")
+            if not doc_id:
+                report.append({"draft_id": draft_id, "doc_id": None, "status": "no_doc"})
+                continue
+            if doc_manager.load(doc_id) is not None:
+                report.append({"draft_id": draft_id, "doc_id": doc_id, "status": "ok"})
+                continue
+
+            entry: Dict[str, Any] = {"draft_id": draft_id, "doc_id": doc_id, "status": "unresolved"}
+            new_doc_id = self._find_repair_candidate(doc_id)
+            if new_doc_id:
+                entry["new_doc_id"] = new_doc_id
+                if repair:
+                    self.update_doc_id(draft_id, new_doc_id)
+                    entry["status"] = "repaired"
+            report.append(entry)
+        return report
+
     def delete(self, draft_id: str) -> bool:
         """Delete a draft. Returns True if found and deleted."""
         p = self._path(draft_id)

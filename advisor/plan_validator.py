@@ -33,6 +33,7 @@ from advisor.action_catalog import get_action_catalog
 def validate_commands(
     commands: List[Dict[str, Any]],
     answers: Optional[Dict[str, Any]] = None,
+    resort: bool = True,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any], List[str]]:
     """
     Apply all validation rules to a command list.
@@ -42,6 +43,11 @@ def validate_commands(
 
     warnings is a list of human-readable messages describing changes made.
     The caller can surface these in the confirm_commands response.
+
+    resort: whether to apply rule 4 (topological priority sort). Pass False
+    for callers that must preserve the caller-supplied order — e.g. the Plan
+    Canvas reorder PATCH, where re-sorting would silently undo a manual
+    drag-reorder. Default True matches the original decomposition behavior.
     """
     if answers is None:
         answers = {}
@@ -63,7 +69,8 @@ def validate_commands(
     commands, w = _ensure_role_before_appointment(commands)
     warnings.extend(w)
 
-    commands = _sort_by_priority(commands)
+    if resort:
+        commands = _sort_by_priority(commands)
 
     logger.debug(
         f"plan_validator: {len(commands)} commands after validation; "

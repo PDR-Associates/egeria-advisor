@@ -261,11 +261,16 @@ class PlanElicitor:
         phase = spec.get("phase", "confirm_commands")
 
         # Draft/document desync check: "generate", "refine", and "template_offer"
-        # all assume spec["doc_id"] points at a live, editable document. If that
-        # document was trashed or purged out from under this draft, surface a
-        # clear message instead of letting the phase handler fail or misbehave
-        # (e.g. _apply_change silently writing to a document that's no longer there).
-        doc_id = spec.get("doc_id")
+        # all assume spec["doc_id"] points at a live, editable document. Resolve
+        # first — a stale-but-repairable doc_id (the common case: an execution
+        # renamed the file and this draft's pointer was never updated) should
+        # self-heal here rather than falsely reporting the plan as permanently
+        # deleted. If that fails too, surface a clear message instead of letting
+        # the phase handler fail or misbehave (e.g. _apply_change silently
+        # writing to a document that's no longer there).
+        doc_id = dm.resolve_live_doc_id(draft_id, spec=spec)
+        if doc_id != spec.get("doc_id"):
+            spec["doc_id"] = doc_id
         if phase in ("generate", "refine", "template_offer") and doc_id:
             from advisor.governance_docs import get_doc_manager
             folder = get_doc_manager().folder_of(doc_id)
@@ -296,9 +301,9 @@ class PlanElicitor:
         elif phase == "elicit_optional":
             result = self._handle_elicit_optional(spec, user_response)
         elif phase == "generate":
-            result = self._handle_post_generate(spec, user_response)
+            result = self._handle_post_generate(spec, user_response, egeria_credentials=egeria_credentials)
         elif phase == "refine":
-            result = self._handle_refine(spec, user_response)
+            result = self._handle_refine(spec, user_response, egeria_credentials=egeria_credentials)
         elif phase == "template_offer":
             result = self._handle_template_offer(spec, user_response)
         else:
@@ -402,6 +407,7 @@ class PlanElicitor:
         spec = dm.load(draft_id)
         if spec is None:
             return _error_result(draft_id, f"Draft `{draft_id}` not found.")
+        spec["doc_id"] = dm.resolve_live_doc_id(draft_id, spec=spec)
         return self._build_resume_response(spec)
 
     def restart_qa(self, draft_id: str) -> Dict[str, Any]:
@@ -1173,7 +1179,10 @@ class PlanElicitor:
 
         return self._build_post_generate_response(spec, doc_content=doc_content)
 
-    def _handle_post_generate(self, spec: Dict, user_response: str) -> Dict[str, Any]:
+    def _handle_post_generate(
+        self, spec: Dict, user_response: str,
+        egeria_credentials: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
         """User has seen the generated plan — check if they want changes."""
         low = user_response.lower().strip()
         dm = get_draft_manager()
@@ -1191,7 +1200,7 @@ class PlanElicitor:
             return self._build_template_offer_response(spec)
 
         # Treat this as a refinement request
-        return self._handle_refine(spec, user_response)
+        return self._handle_refine(spec, user_response, egeria_credentials=egeria_credentials)
 
     def _rebuild_command_sequence(self, spec: Dict, current_content: str) -> str:
         """
@@ -1223,20 +1232,25 @@ class PlanElicitor:
             new_content += "\n\n" + outcome
         return new_content
 
-    def _handle_refine(self, spec: Dict, user_response: str) -> Dict[str, Any]:
+    def _handle_refine(
+        self, spec: Dict, user_response: str,
+        egeria_credentials: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
         """Parse a natural-language change request and update the plan document."""
         from advisor.governance_docs import get_doc_manager
         from advisor.llm_client import get_planning_llm
 
         dm = get_draft_manager()
-        doc_id = spec.get("doc_id")
+        doc_id = dm.resolve_live_doc_id(spec["draft_id"], spec=spec)
         if not doc_id:
             return _error_result(spec["draft_id"], "No plan document found — please generate the plan first.")
 
         doc_manager = get_doc_manager()
         current_content = doc_manager.load(doc_id)
         if not current_content:
-            return _error_result(spec["draft_id"], f"Plan document `{doc_id}` not found in inbox.")
+            return _error_result(spec["draft_id"], f"Plan document `{doc_id}` not found.")
+
+        edited_by = (egeria_credentials or {}).get("user_id")
 
         low = user_response.lower().strip()
         done_signals = ("looks good", "that's good", "good", "perfect", "great", "done",
@@ -1258,14 +1272,13 @@ class PlanElicitor:
             if reordered is not None:
                 spec["commands_identified"] = reordered
                 new_content = self._rebuild_command_sequence(spec, current_content)
-                doc_manager.update(doc_id, new_content)
-                dm.save(spec)
+                synced_doc_id = dm.sync_document(spec["draft_id"], spec, new_content, edited_by=edited_by)
                 return _clarification_result(
                     spec,
                     "Done — I've reordered the steps and updated the canvas. Describe "
                     "another change, or use **Validate** / **Execute** on the canvas when ready.",
                     can_go_back=False, nav=[],
-                    extra={"doc_id": doc_id},
+                    extra={"doc_id": synced_doc_id or doc_id},
                 )
             return _clarification_result(
                 spec,
@@ -1285,14 +1298,13 @@ class PlanElicitor:
         if note is not None:
             from advisor.governance_docs import _replace_title
             new_content = _replace_title(current_content, spec["title"])
-            doc_manager.update(doc_id, new_content)
-            dm.save(spec)
+            synced_doc_id = dm.sync_document(spec["draft_id"], spec, new_content, edited_by=edited_by)
             return _clarification_result(
                 spec,
                 f"{note} The canvas has been updated. Describe another change, or use "
                 "**Validate** / **Execute** on the canvas when ready.",
                 can_go_back=False, nav=[],
-                extra={"doc_id": doc_id},
+                extra={"doc_id": synced_doc_id or doc_id},
             )
 
         # Project hierarchy / dependency requests — same deterministic handlers
@@ -1301,27 +1313,25 @@ class PlanElicitor:
         note = self._apply_hierarchy_request(spec, user_response)
         if note is not None:
             new_content = self._rebuild_command_sequence(spec, current_content)
-            doc_manager.update(doc_id, new_content)
-            dm.save(spec)
+            synced_doc_id = dm.sync_document(spec["draft_id"], spec, new_content, edited_by=edited_by)
             return _clarification_result(
                 spec,
                 f"{note} The canvas has been updated. Describe another change, or use "
                 "**Validate** / **Execute** on the canvas when ready.",
                 can_go_back=False, nav=[],
-                extra={"doc_id": doc_id},
+                extra={"doc_id": synced_doc_id or doc_id},
             )
 
         note = self._apply_dependency_request(spec, user_response)
         if note is not None:
             new_content = self._rebuild_command_sequence(spec, current_content)
-            doc_manager.update(doc_id, new_content)
-            dm.save(spec)
+            synced_doc_id = dm.sync_document(spec["draft_id"], spec, new_content, edited_by=edited_by)
             return _clarification_result(
                 spec,
                 f"{note} The canvas has been updated. Describe another change, or use "
                 "**Validate** / **Execute** on the canvas when ready.",
                 can_go_back=False, nav=[],
-                extra={"doc_id": doc_id},
+                extra={"doc_id": synced_doc_id or doc_id},
             )
 
         # Guard: if the request looks like a single-word command or an affirmation
@@ -1349,10 +1359,9 @@ class PlanElicitor:
         updated_content = self._apply_change(current_content, user_response, llm)
 
         if updated_content and updated_content != current_content:
-            doc_manager.update(doc_id, updated_content)
             spec["phase"] = "refine"
             spec["phase_label"] = _PHASE_LABELS["refine"]
-            dm.save(spec)
+            synced_doc_id = dm.sync_document(spec["draft_id"], spec, updated_content, edited_by=edited_by)
             nc = len(re.findall(r"^## [^#]", updated_content, re.MULTILINE))
             return _clarification_result(
                 spec,
@@ -1360,7 +1369,7 @@ class PlanElicitor:
                 "or use **Validate** / **Execute** on the canvas when ready.",
                 can_go_back=False,
                 nav=[],
-                extra={"doc_id": doc_id},
+                extra={"doc_id": synced_doc_id or doc_id},
             )
         else:
             return _clarification_result(

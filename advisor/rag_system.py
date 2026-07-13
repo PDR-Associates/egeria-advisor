@@ -816,7 +816,12 @@ class RAGSystem:
                 doc_id = spec.get("doc_id") if spec else None
                 if doc_id:
                     logger.info(f"Draft execute command detected — executing plan {doc_id}")
-                    return agent.execute(doc_id, egeria_credentials=egeria_credentials)
+                    # draft_id must be threaded through so execute() updates this
+                    # draft's stored doc_id to the new post-execution outbox id —
+                    # otherwise the draft is left pointing at a doc_id that gets
+                    # renamed out from under it (inbox -> outbox always appends a
+                    # fresh "_executed_<ts>" suffix), and reopening it later 404s.
+                    return agent.execute(doc_id, draft_id=draft_id, egeria_credentials=egeria_credentials)
                 else:
                     return {
                         "query": user_query,

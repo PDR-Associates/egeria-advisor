@@ -121,6 +121,42 @@ def _replace_title(content: str, new_title: str) -> str:
     return f"# {new_title}\n\n" + content
 
 
+def _set_header_field(content: str, label: str, value: str) -> tuple[str, bool]:
+    """
+    Replace `**{label}:** <value>` in the document header with a new value.
+    A field's value ends at the next bold marker (2+ spaces then `**`, the
+    separator _compose_document uses between header fields) or end of line.
+    Returns (new_content, found) — found=False means the label isn't present.
+    """
+    pattern = re.compile(rf'(\*\*{re.escape(label)}:\*\*\s*)([^\n]*?)(?=  +\*\*|\n)')
+    new_content, n = pattern.subn(lambda m: m.group(1) + value, content, count=1)
+    return new_content, n > 0
+
+
+def touch_edit_header(content: str, editor: str) -> str:
+    """
+    Update a plan document's '**Last edited:**' / '**Last edited by:**' header
+    fields to the current time and the given user, on every save.
+
+    This is a lightweight "who touched this doc last" hint for the plan
+    authoring UI, not a substitute for real audit history — Egeria itself
+    tracks full version history server-side once elements are actually
+    created/updated there.
+    """
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    content, _ = _set_header_field(content, "Last edited", now)
+    content, found = _set_header_field(content, "Last edited by", editor)
+    if not found:
+        # Documents composed before "Last edited by" existed — add it right
+        # after "Created by: <value>" on the same header line.
+        content, _ = re.subn(
+            r'(\*\*Created by:\*\*\s*[^\n]*?)(  +\*\*|\n)',
+            rf'\g<1>   **Last edited by:** {editor}\g<2>',
+            content, count=1,
+        )
+    return content
+
+
 _VERSION_NOTE_RE = re.compile(r'^<!--\s*version_note:\s*(.*?)\s*-->\n')
 
 
@@ -319,17 +355,23 @@ class DocumentManager:
             return path.read_text(encoding="utf-8")
         return None
 
-    def update(self, doc_id: str, content: str) -> bool:
+    def update(self, doc_id: str, content: str, edited_by: Optional[str] = None) -> bool:
         """
         Overwrite a plan document in place (inbox only — executed docs are immutable).
 
-        Saves a versioned backup to versions/ before overwriting.
+        Saves a versioned backup to versions/ before overwriting. When edited_by
+        is given, stamps the document header's "Last edited"/"Last edited by"
+        fields with the current time and that user — see touch_edit_header().
+        Pass edited_by=None for internal/automated rewrites (e.g. refreshing
+        resolved values post-execution) that aren't a user-initiated edit.
         Returns True on success.
         """
         path = self._paths["inbox"] / f"{doc_id}.md"
         if not path.exists():
             logger.warning(f"DocumentManager.update: {doc_id!r} not in inbox")
             return False
+        if edited_by:
+            content = touch_edit_header(content, edited_by)
         self._save_version(doc_id, path.read_text(encoding="utf-8"), new_content=content)
         path.write_text(content, encoding="utf-8")
         logger.info(f"DocumentManager: updated {path}")

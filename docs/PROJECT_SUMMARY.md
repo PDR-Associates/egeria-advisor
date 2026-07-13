@@ -1746,6 +1746,41 @@ each with its own auto-generated Qualified Name.
 
 ---
 
+### Phase 24 — HTTP + HTTPS served together (Jul 12, 2026)
+
+**Theme:** offer the web UI over HTTPS as well as plain HTTP, using a wildcard cert for
+pdr-associates.com. The cert wasn't placed on this machine yet at the time of this work — no
+existing process-manager/start script for the web app either (it had been run ad-hoc via a
+bare `uvicorn` command all session) — so this pass builds the config/launcher ready to go the
+moment the cert lands, rather than blocking on it.
+
+**`scripts/run_web.sh`** — always starts plain HTTP (`ADVISOR_HTTP_PORT`, default 8880); starts
+HTTPS (`ADVISOR_HTTPS_PORT`, default 8443) too only when `ADVISOR_SSL_CERTFILE`/
+`ADVISOR_SSL_KEYFILE` are both set in `.env` to files that actually exist, otherwise HTTPS is
+silently skipped (plain HTTP-only, e.g. local dev with no cert). uvicorn serves exactly one
+scheme per process, so "both HTTP and HTTPS" means two `uvicorn` processes (both serving the
+same `advisor.web.app:app`), started and torn down together by one script (`trap cleanup EXIT
+INT TERM` kills both if either exits or the script is interrupted).
+
+**Verified before the real cert existed** — generated a throwaway self-signed test cert
+(`openssl req -x509 ...`, `CN=test.local`, 1-day validity), ran the script against alternate
+ports (18880/18443) so the actual running production instance on 8880 was undisturbed, and
+confirmed: HTTP returns 200, HTTPS returns 200 over genuine TLS (`curl -v`'s reported
+`subject: CN=test.local` proves it's really terminating TLS, not just listening on the port),
+and the production instance was unaffected throughout. Test cert and processes cleaned up
+after.
+
+**Still needed from the user:** place the real wildcard cert/key files somewhere on this
+machine and set `ADVISOR_SSL_CERTFILE`/`ADVISOR_SSL_KEYFILE` in `.env` (currently commented
+out, pointing at placeholder paths) to the real locations — at that point `scripts/run_web.sh`
+starts serving HTTPS with no further code changes. External port-forwarding for the HTTPS
+port (443 → whatever `ADVISOR_HTTPS_PORT` is set to) is also the user's own router
+configuration, same as the existing `:8880`/`:9443` forwards from earlier phases.
+
+**Commits:** (this session).
+
+---
+
 ## Current state and next steps (Jul 2026)
 
 **Phases complete:**
@@ -1773,6 +1808,7 @@ each with its own auto-generated Qualified Name.
 - Phase 21 ✓ — consolidated Egeria connection resolution into `advisor/mcp_config.py` (env vars first, then `config/mcp_servers.json`) so switching deployments (local Egeria vs. remote demo instance) is two `.env` lines; Portal SSO and CORS cross-origin access made configurable via `.env` too
 - Phase 22 ✓ — report execution timeouts fixed at three real layers (MCP subprocess env, stale pyegeria dev checkout vs. the already-fixed installed version, three independent ~30s timeout settings); real root cause was a dropped router port-forward for `:9443`, not NAT hairpinning as first (wrongly) concluded — this machine runs its own separate local `egeria-quickstart` dev stack seeded with the same sample content, which made a GUID-mismatched wrong-server "fix" look correct until the user insisted on verifying with element GUIDs instead of matching output
 - Phase 23 ✓ — Create/plan entity-type recognition generalized from a hardcoded ~10-type list to the full ~126-command keyword index, at both the CreateRouter and entity-extraction layers; fixed a recurring "keyword search scoped to the whole query, not just the type phrase" bug that let an unrelated proper noun in the name win over the real type; fixed a latent minimum-length gap in the shared `CommandKeywordIndex` that could produce confident-looking wrong guesses for unrecognized input; fixed plan-refinement's addition path wrongly deduplicating by bare action type instead of (action, display_name), which silently discarded legitimate repeated-action additions ("also create an external reference for a different site")
+- Phase 24 ✓ — `scripts/run_web.sh` serves HTTP and HTTPS together (two uvicorn processes sharing the same app); HTTPS activates automatically once `ADVISOR_SSL_CERTFILE`/`ADVISOR_SSL_KEYFILE` are set in `.env` — verified with a throwaway self-signed cert ahead of the real wildcard cert being placed
 
 **What's working end-to-end (Jul 6, 2026):**
 - Full plan lifecycle exercised live against a real Dr.Egeria MCP server + Egeria REST backend + Postgres for the first time (not just synthetic testing) — surfaced and fixed six real bugs in one session (SS-6 through SS-11, see "Recent work" above and `BACKLOG.md`), including a genuine event-loop-freezing hang in the MCP client

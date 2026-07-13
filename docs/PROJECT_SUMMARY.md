@@ -1724,6 +1724,24 @@ safely falls back to the generic default instead of a wrong confident guess. Liv
 plan step with auto-generated Qualified Name, including a transparent "I interpreted X as Y" note
 for the lower-confidence plural-phrasing case.
 
+**Follow-up bug in a different file, found immediately by continuing the same session as a
+plan refinement.** With the External Reference plan drafted, "also create an external
+reference for the PDR web site" (a second, differently-named instance of the same action)
+returned "I wasn't sure how to update the plan from that." `_extract_entities_patterns`
+correctly resolved this in isolation — the bug was in `plan_elicitor.py`'s addition-handling
+(`_handle_confirm_commands`), which filtered new commands by `action not in existing_actions`
+(bare action type), with only `"Create Project"` special-cased to allow multiples. Since the
+plan already had one `Create External Reference` step, the second one was silently discarded
+as a false "duplicate," `added` ended up empty, and the code fell through to the generic
+"couldn't parse" message. `advisor/plan_validator.py::_deduplicate()` — already called right
+after this filter — compares `(action, display_name)` pairs, not bare action, so the
+premature filter was both redundant and *stricter* than the correct logic already downstream.
+Fixed by matching that same `(action, display_name)` comparison, removing the "Create
+Project"-only special case entirely (every action type now allows multiple distinctly-named
+instances, same as Create Project always did). Verified end-to-end: initial plan → follow-up
+"also create..." → plan now correctly has two distinct `Create External Reference` steps,
+each with its own auto-generated Qualified Name.
+
 **Commits:** (this session).
 
 ---
@@ -1754,7 +1772,7 @@ for the lower-confidence plural-phrasing case.
 - Phase 20 ✓ — new `egeria_type_registry.py` fixes Act's element-type extraction truncating multi-word Egeria type names ("external references" → "External" instead of `ExternalReference`; "data products" → `DigitalProduct` via an alias for the real Egeria type name)
 - Phase 21 ✓ — consolidated Egeria connection resolution into `advisor/mcp_config.py` (env vars first, then `config/mcp_servers.json`) so switching deployments (local Egeria vs. remote demo instance) is two `.env` lines; Portal SSO and CORS cross-origin access made configurable via `.env` too
 - Phase 22 ✓ — report execution timeouts fixed at three real layers (MCP subprocess env, stale pyegeria dev checkout vs. the already-fixed installed version, three independent ~30s timeout settings); real root cause was a dropped router port-forward for `:9443`, not NAT hairpinning as first (wrongly) concluded — this machine runs its own separate local `egeria-quickstart` dev stack seeded with the same sample content, which made a GUID-mismatched wrong-server "fix" look correct until the user insisted on verifying with element GUIDs instead of matching output
-- Phase 23 ✓ — Create/plan entity-type recognition generalized from a hardcoded ~10-type list to the full ~126-command keyword index, at both the CreateRouter and entity-extraction layers; fixed a recurring "keyword search scoped to the whole query, not just the type phrase" bug that let an unrelated proper noun in the name win over the real type; fixed a latent minimum-length gap in the shared `CommandKeywordIndex` that could produce confident-looking wrong guesses for unrecognized input
+- Phase 23 ✓ — Create/plan entity-type recognition generalized from a hardcoded ~10-type list to the full ~126-command keyword index, at both the CreateRouter and entity-extraction layers; fixed a recurring "keyword search scoped to the whole query, not just the type phrase" bug that let an unrelated proper noun in the name win over the real type; fixed a latent minimum-length gap in the shared `CommandKeywordIndex` that could produce confident-looking wrong guesses for unrecognized input; fixed plan-refinement's addition path wrongly deduplicating by bare action type instead of (action, display_name), which silently discarded legitimate repeated-action additions ("also create an external reference for a different site")
 
 **What's working end-to-end (Jul 6, 2026):**
 - Full plan lifecycle exercised live against a real Dr.Egeria MCP server + Egeria REST backend + Postgres for the first time (not just synthetic testing) — surfaced and fixed six real bugs in one session (SS-6 through SS-11, see "Recent work" above and `BACKLOG.md`), including a genuine event-loop-freezing hang in the MCP client

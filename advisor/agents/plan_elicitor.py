@@ -649,15 +649,25 @@ class PlanElicitor:
                     "placeholders": {},
                 })
 
-            # Sub-projects: multiple "Create Project" commands are allowed (different names)
-            # For all other actions, skip duplicates
+            # Skip genuine duplicates only: same action AND same display_name already in
+            # the plan. Matches validate_commands()'s _deduplicate() exactly (same
+            # (action, display_name) key) — deliberately NOT "same action type", which
+            # used to wrongly block e.g. a second "Create External Reference" step for a
+            # different name ("also create an external reference for the PDR web site"
+            # was silently discarded because the plan already had one External Reference,
+            # even though they're for two different sites). "Create Project" needed no
+            # special-casing once this was fixed the general way — every action type now
+            # allows multiple distinctly-named instances the same way Create Project always did.
+            existing_keys = {
+                (c["action"], (c.get("display_name") or "").strip().lower())
+                for c in spec["commands_identified"]
+            }
             added = []
-            existing_actions = {c["action"] for c in spec["commands_identified"]}
             for cmd in new_commands:
-                if cmd["action"] == "Create Project":
-                    added.append(cmd)   # always add — each is a distinct named project
-                elif cmd["action"] not in existing_actions:
+                key = (cmd["action"], (cmd.get("display_name") or "").strip().lower())
+                if key not in existing_keys:
                     added.append(cmd)
+                    existing_keys.add(key)
 
             if added:
                 for cmd in added:

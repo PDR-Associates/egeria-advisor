@@ -1777,6 +1777,23 @@ starts serving HTTPS with no further code changes. External port-forwarding for 
 port (443 → whatever `ADVISOR_HTTPS_PORT` is set to) is also the user's own router
 configuration, same as the existing `:8880`/`:9443` forwards from earlier phases.
 
+**Follow-up: real cert placed, wired up, and verified.** Files landed in `config/certs/`
+(added to `.gitignore` as a whole directory — never committed, holds the private key).
+`server.crt` (subject `CN=egeria.pdr-associates.com`, SAN also covers `home.wolfsonnet.com`,
+issued by Let's Encrypt R13, valid through 2026-08-22) + `server-ca.crt` (the R13 intermediate)
+concatenated into `config/certs/fullchain.pem` — a naive `cat server.crt server-ca.crt` produced
+a malformed PEM at first (`server.crt` has no trailing newline, so the two `-----END
+CERTIFICATE-----`/`-----BEGIN CERTIFICATE-----` markers ran together on one line); fixed by
+inserting a newline between them. Verified `server.key` actually matches `server.crt`'s public
+key before wiring anything up (`openssl x509 -pubkey` vs. `openssl rsa -pubout`, byte-for-byte
+identical). `.env` updated to the real absolute paths. Restarted via `scripts/run_web.sh`
+(replacing the ad-hoc bare-uvicorn process used throughout this session) and verified both
+ports live: HTTP 200, HTTPS 200 with `curl -v` confirming the served cert's actual subject/issuer
+match the real Let's Encrypt cert, not the earlier self-signed test one. HTTPS via the public
+hostname (`egeria.pdr-associates.com:8443`) currently times out — expected, since external
+port-forwarding for `:8443` hasn't been configured yet (same class of gap as the `:9443`
+Egeria connectivity issue from Phase 22, now on a different port).
+
 **Commits:** (this session).
 
 ---

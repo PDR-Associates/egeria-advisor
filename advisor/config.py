@@ -1,4 +1,18 @@
 """Configuration management for Egeria Advisor."""
+from dotenv import load_dotenv
+
+# Must run before anything reads os.environ directly (advisor.auth's
+# ADVISOR_PORTAL_SECRET/ADVISOR_JWT_SECRET, advisor.mcp_config's
+# EGERIA_VIEW_SERVER_URL/EGERIA_VIEW_SERVER, etc.) — pydantic-settings'
+# env_file=".env" below only loads .env values into the Settings *object*,
+# it does NOT populate os.environ, so anything using os.environ.get(...)
+# directly would otherwise only see .env values by accident, depending on
+# whether some unrelated module (e.g. advisor.embeddings, which also calls
+# load_dotenv() for its own reasons) happened to import first in this
+# process. advisor.config is imported early enough by virtually everything
+# that calling it here makes .env reliably available everywhere.
+load_dotenv()
+
 import os
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -40,7 +54,7 @@ class DataSourceConfig(BaseModel):
 class VectorStoreConfig(BaseModel):
     """Vector store configuration."""
     host: str = "localhost"
-    port: int = 19530
+    port: int = 5442
     collections: list[str] = ["code_elements", "examples", "documentation"]
 
 
@@ -221,12 +235,6 @@ class AdvisorSettings(BaseSettings):
         extra="ignore"
     )
 
-    # Milvus
-    milvus_host: str = Field(default="localhost", alias="MILVUS_HOST")
-    milvus_port: int = Field(default=19530, alias="MILVUS_PORT")
-    milvus_user: str = Field(default="", alias="MILVUS_USER")
-    milvus_password: str = Field(default="", alias="MILVUS_PASSWORD")
-
     # pgvector
     pgvector_host: str = Field(default="localhost", alias="PGVECTOR_HOST")
     pgvector_port: int = Field(default=5442, alias="PGVECTOR_PORT")
@@ -236,17 +244,24 @@ class AdvisorSettings(BaseSettings):
     pgvector_max_connections: int = Field(default=10, alias="PGVECTOR_MAX_CONNECTIONS")
     pgvector_ef_search: int = Field(default=128, alias="PGVECTOR_EF_SEARCH")
 
-    # Active vector store backend: "milvus" or "pgvector"
-    vector_store_backend: str = Field(default="milvus", alias="VECTOR_STORE_BACKEND")
+    # Active vector store backend — pgvector is the only supported backend
+    vector_store_backend: str = Field(default="pgvector", alias="VECTOR_STORE_BACKEND")
 
-    # Egeria
-    egeria_platform_url: str = Field(
-        default="https://localhost:9443",
-        alias="EGERIA_PLATFORM_URL"
-    )
-    egeria_view_server: str = Field(default="view-server", alias="EGERIA_VIEW_SERVER")
+    # Egeria — the actual platform URL/view server are resolved via
+    # advisor.mcp_config.get_pyegeria_platform_config() (EGERIA_VIEW_SERVER_URL /
+    # EGERIA_VIEW_SERVER env vars, then config/mcp_servers.json), NOT read from
+    # here. egeria_user/egeria_password remain the .env-backed service-account
+    # fallback used by advisor.auth.resolve_egeria_credentials() when no
+    # per-request session credentials are present.
     egeria_user: str = Field(default="garygeeke", alias="EGERIA_USER")
     egeria_password: str = Field(default="secret", alias="EGERIA_PASSWORD")
+
+    # Comma-separated extra origins allowed to call the API cross-origin, on top of
+    # localhost (always allowed for local dev). Needed when this Advisor is embedded
+    # in/called from a Portal on a different origin — e.g.
+    # "https://egeria.pdr-associates.com". Same-origin browser access (the SPA served
+    # from the same host:port as the API) never needs this.
+    advisor_extra_cors_origins: str = Field(default="", alias="ADVISOR_EXTRA_CORS_ORIGINS")
 
     # Ollama
     ollama_base_url: str = Field(

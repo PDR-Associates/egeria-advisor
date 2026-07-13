@@ -524,7 +524,7 @@ def sync_collection_health(retriever, collector):
                 )
                 collector.record_collection_health(health)
             except Exception as e:
-                # Only log as debug to avoid noise if Milvus isn't fully ready
+                # Only log as debug to avoid noise if the vector store isn't fully ready
                 logger.debug(f"Could not get stats for collection {collection.name}: {e}")
                 
         logger.debug("Successfully synced collection health metrics")

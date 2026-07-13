@@ -1,7 +1,7 @@
 # Egeria Advisor — Project Summary: Phases, Capabilities, Lessons Learned
 
-**Last updated:** 2026-06-25  
-**Repository:** `/Users/dwolfson/localGit/egeria-v6/egeria-advisor`  
+**Last updated:** 2026-07-11  
+**Repository:** `/home/dwolfson/localGit/egeria-v6/egeria-advisor`  
 **GitHub:** `https://github.com/dwolfson/egeria-advisor`
 
 ---
@@ -13,7 +13,7 @@ A local RAG (Retrieval-Augmented Generation) system that provides intelligent as
 **Stack:**
 - Python 3.12+, FastAPI, pgvector @ `localhost:5442`, Ollama @ `localhost:11434`
 - Web UI: single-page app served by FastAPI @ `localhost:8880`
-- ~88,900 indexed entities across 9 vector collections
+- ~92,400 indexed entities across 9 vector collections
 - ~33,000 lines of Python
 
 ---
@@ -266,6 +266,7 @@ The expand/collapse trigger on each command card was a tiny `▾` character. Rep
 - When a user with role Anyone, Data Steward, or Governance Officer asks an ambiguous example query (e.g. "show me how to create a collection") without a Python keyword, the routing layer returns a clarification response with two buttons: **Python example** and **Dr.Egeria template**.
 - Each button re-submits with the appropriate `intent_override`, avoiding the previous behaviour of silently picking one path.
 - Developer and Data Engineer roles still route directly to ExamplesAgent (no clarification).
+- *(Superseded by Phase 17/17b: the clarify is now 3-way — Python / CLI / Dr.Egeria — and applies to every role, including Developer/Data Engineer, unless the query has an explicit format signal.)*
 
 **Interrogative guard fix** ✓ (commit `afe12a5`)
 - Removed `'command'` from the interrogative guard's redirect condition. Previously "How do I create a Collection?" with `intent_override='command'` (from the clarification button) was silently redirected to DocAgent instead of DrEgeriaTemplateAgent. The guard now only overrides `plan` and `act` intents for interrogative queries.
@@ -519,19 +520,19 @@ flowchart LR
 ## Current capabilities
 
 ### Query / RAG
-- **Explain** — conceptual answers from indexed Egeria docs (9 collections, ~88,900 entities)
+- **Explain** — conceptual answers from indexed Egeria docs (9 collections, ~92,400 entities)
 - **Show me / Code** — runnable Python examples; API reference (ExamplesAgent)
 - **Report** — live data from Egeria via MCP report specs (200+ reports); all three invocation paths (sidebar, typed name, plain chat) reliable
 - **Act** — Dr.Egeria command execution and template lookup; template responses offer plan CTA
 - **Plan** — LGCI multi-step plan generation (see above)
 - **Troubleshoot** — debugging guidance
-- **Structural code questions** — "how many classes are in pyegeria?", "list methods on AssetManager", "most complex methods in egeria_java" answered via live SQL from symbol store (no LLM hallucination)
+- **Inspect / structural code questions** — "how many classes are in pyegeria?", "list methods on AssetManager", "most complex methods in egeria_java", "does X inherit from Y?" answered via live SQL from the symbol store (no LLM hallucination); dedicated `CodeIntelAgent` (`advisor/agents/code_intel_agent.py`) behind the **Inspect** intent button
 
 ### Web UI (http://localhost:8880)
 - Chat with markdown rendering, source citations, 👍/👎 feedback
 - Left sidebar: tabbed — **Reports** (grouped by topic, spec-specific format picker) | **Plans** (drafts/inbox/outbox) | **Recent Queries**; auto-switches to Plans on plan activity
 - Role selector (As:) — Anyone / Developer / Data Engineer / Data Steward / Governance
-- Intent override (Auto / Explain / Show me / Report / Act / Plan / Troubleshoot)
+- Intent override (Auto / Explain / Show me / Inspect / Run Report / Act / Create / Troubleshoot) — "Report" and "Plan" were renamed "Run Report" and "Create" in Phase 12; "Inspect" (→ `CodeIntelAgent`) is a dedicated maintainer-facing button added after Phase 11g's ad-hoc structural-query routing, covering method→class lookup, inheritance checks, class hierarchy, and codebase stats over the SQLite symbol table
 - **Plan Canvas** — persistent split-view panel alongside chat when a plan is active:
   - Drag-to-reorder command cards
   - Expand cards for field editing (Basic/Advanced toggle)
@@ -620,6 +621,21 @@ The catalog grew to 42 entries by adding entries only when scenarios were tested
 
 Using a 32B model for narrative generation / refinement while keeping 8B for high-volume Q&A gives much better plan document quality without sacrificing RAG latency.
 
+### 11. A silent per-file catch-all can hide a systemic ingestion bug indefinitely
+
+`ingest_file()`'s top-level `try/except` logged a warning and returned `(0, 0, [])`
+on any error, which is reasonable for a genuinely bad file (syntax error) but also
+swallowed a duplicate-id upsert conflict that was dropping every class-containing
+Python file's chunks, silently, on every ingestion run since Mar 2026. Because the
+bug reproduced the same (wrong) row counts every time, there was no obvious signal
+that anything was missing — the numbers looked "stable," not "broken." It only
+surfaced when a full reset re-ran ingestion with error output actually being read.
+
+**Fix:** don't let a per-item catch-all fully absorb an error class that indicates a
+structural bug (duplicate ids from double-parsing an AST) rather than bad input.
+When re-running any bulk ingestion/reset, grep the log for `ERROR` before trusting
+the "N files ingested" summary line.
+
 ---
 
 ## Architecture overview (current)
@@ -652,7 +668,7 @@ Plan Editor (builder mode):
   → same canvas + execution path as conversational mode
 ```
 
-**Vector collections (9 active, ~88,900 entities):**
+**Vector collections (9 active, ~92,400 entities):**
 `pyegeria`, `pyegeria_cli`, `pyegeria_drE`, `egeria_java`, `egeria_concepts`,
 `egeria_types`, `egeria_general`, `egeria_workspaces`, `egeria_templates`
 
@@ -701,7 +717,10 @@ config/
   routing.yaml               — query classification patterns
 scripts/
   backfill_code_symbols.py   — Populate symbol table from existing source repos (no pgvector re-index)
-  count_vectors.py           — Count indexed entities per collection
+  full_reset.sh              — Re-clone all source repos + force re-ingest all collections from one consistent snapshot
+  clone_repos.py             — Clone/update the 4 source repos into data/repos/
+  ingest_collections.py      — Ingest one/all collections from data/repos/ into pgvector
+  count_vectors.py           — Count indexed entities per pgvector collection
   test_end_to_end.py         — E2E test suite
 docs/
   literate-governance-plan.md — LGCI design (v5, comprehensive)
@@ -973,6 +992,861 @@ groundwork exists so far — no dedicated UI:
 - New basic-tier `Sub-Projects` field on `Create Project`/`Campaign`/`Personal Project`/
   `Study Project`/`Task` — the PC-1 workaround above depends on this
 
+### Phase 14 — Data pipeline sync + silent ingestion data-loss fix (Jul 11, 2026)
+
+**Theme:** The three layers that define what the RAG system actually knows —
+downloaded source repos (`data/repos/`), the pgvector store, and
+`config/advisor.yaml` — had drifted out of sync with each other, and a
+latent bug in Python ingestion was silently dropping most of the content in
+every class-containing file, on every ingestion run to date.
+
+**Diagnosed drift** ✓
+- `data/repos/` had only `egeria-python` checked out; the `egeria` (Java),
+  `egeria-docs`, and `egeria-workspaces` checkouts used to build the
+  `egeria_java`, `egeria_workspaces`, `egeria_concepts`, `egeria_types`, and
+  `egeria_general` collections had been deleted from disk after ingestion —
+  those collections' vector data was orphaned from any source on disk.
+- `egeria-python` itself had drifted internally: it was refreshed on
+  2026-07-10 and `pyegeria`/`pyegeria_cli`/`pyegeria_drE` were re-ingested
+  same day, but `egeria_templates` — sourced from the same repo's
+  `sample-data/templates/` — was last ingested 2026-07-01, so it reflected
+  the pre-refresh state.
+- `config/advisor.yaml`'s `data_sources.egeria_python_path` was a leftover
+  macOS path (`/Users/dwolfson/...`) that doesn't exist on this machine —
+  dead config, silently bypassed by working fallback paths in
+  `advisor/config.py`, but first in the resolution order.
+
+**`scripts/full_reset.sh`** ✓ (new, reusable)
+- Deletes and re-clones all 4 source repos via `scripts/clone_repos.py --phase all`, then force
+  re-ingests every enabled pgvector collection via `scripts/ingest_collections.py --phase all --force`
+  from that single consistent snapshot, then verifies row counts.
+- Fixed `config/advisor.yaml`'s `egeria_python_path` to point at the real
+  `data/repos/egeria-python` checkout instead of the stale macOS path.
+
+**Root-caused a real, pre-existing data-loss bug found while re-running the reset** ✓
+- The reset run logged 166 `ON CONFLICT DO UPDATE command cannot affect row
+  a second time` Postgres errors, concentrated in `pyegeria` (138),
+  `egeria_workspaces` (8), `pyegeria_drE` (16), `pyegeria_cli` (4) — all
+  Python-parsed collections.
+- Root cause: `advisor/data_prep/code_parser.py`'s `parse_file()` used
+  `ast.walk(tree)` to find every `FunctionDef`/`AsyncFunctionDef` node
+  (producing a "function" element for each), *and separately* looped over
+  each `ClassDef`'s body to parse its methods again (producing a "method"
+  element for the same node). Both elements share the same id
+  (`file_path::name::line_number` in `ingest_to_milvus.py`), so any
+  class-containing file produced a batch with duplicate ids. Postgres's
+  upsert rejects a batch that updates the same row twice, so the whole
+  file's insert failed — and `ingest_file()`'s catch-all silently returned
+  `(0, 0, [])`, so the file just vanished from the collection with only a
+  logged warning easy to miss in a long ingestion run.
+- Because this has been true since AST-based Python ingestion was
+  introduced (Mar 8, per Phase 7b), every prior ingestion of `pyegeria`,
+  `pyegeria_cli`, `pyegeria_drE`, and the Python portion of
+  `egeria_workspaces` silently lost most class-containing files — this
+  reset reproduced the exact same (undercounted) row counts as before the
+  reset, which is what surfaced it.
+- **Fix:** `parse_file()` now builds a `parent_class_of` map from a single
+  pass over `ClassDef` nodes first, then visits every function/method node
+  exactly once via `ast.walk(tree)`, looking up `parent_class` from the map.
+  No behavior change to the extracted data (methods are still tagged with
+  `parent_class`), just no more duplicate elements.
+- Re-ingested the 4 affected collections after the fix; row counts jumped
+  significantly now that entire files are no longer being dropped:
+
+  | Collection | Before fix | After fix |
+  |---|---|---|
+  | `pyegeria` | 3,338 | 6,234 (+87%) |
+  | `pyegeria_cli` | 466 | 513 |
+  | `pyegeria_drE` | 266 | 487 (+83%) |
+  | `egeria_workspaces` | 15,519 | 15,700 |
+
+**Commits:** `d4d29ff` — `scripts/full_reset.sh` (new), `advisor/data_prep/code_parser.py`
+(bug fix), `config/advisor.yaml` (path fix), `scripts/count_vectors.py` (pgvector port).
+
+### Phase 15 — MCP credential propagation (Jul 11, 2026)
+
+**Theme:** Every live Egeria call (reports, Dr.Egeria actions, plan execution) ran as one
+static service account regardless of who was logged in. `/api/query` extracted the real
+`egeria_user`/`egeria_password` from the JWT but only forwarded the username downstream —
+the password never left that function. Everything below it fell back to
+`config/mcp_servers.json`'s `EGERIA_USER`/`EGERIA_PASSWORD`, which on this machine were
+literal unresolved template placeholders (`"{EGERIA_USER}"`) that had never been substituted
+anywhere in the codebase.
+
+**Root cause and fix** ✓
+- New `get_egeria_credentials()`/`resolve_egeria_credentials()` in `advisor/auth.py` — the
+  single fallback point (real per-user creds when present, else the `.env`-backed service
+  account via `advisor.config.settings`, never the broken `mcp_servers.json` placeholders).
+- Threaded as `egeria_credentials: Optional[Dict[str,str]]` through the same pattern already
+  used for `user_id`: `app.py` → `RAGSystem.query()`/`_process_query()` →
+  `ReportPipeline`/`DrEgeriaActionAgent`/`GovernancePlanAgent`/`PlanElicitor`/`EgeriaContext`.
+- Fixed two bugs found while wiring this up: `DrEgeriaActionAgent` (a process-wide singleton)
+  was caching credentials on `self`, which would have leaked one user's identity into a
+  concurrent user's actions — verified fixed live with a synthetic two-identity test; and it
+  was reading a `"dr-egeria"` config key that never existed, always falling back to hardcoded
+  `erinoverview`/`secret`.
+- Previously-unauthenticated live-Egeria endpoints (`/api/plans/*/execute|validate|retry|rerun`,
+  `/api/reports/docs/*/execute|retry`, `/api/templates/*/fields`, `/api/egeria/zones`) now
+  hard-require login. `/api/query`/`/api/query/stream` keep their existing anonymous-friendly
+  soft-fallback behavior.
+- Login form now prefills the username field from `.env` (`GET /api/auth/defaults`) for local-
+  dev convenience; password intentionally excluded from that unauthenticated endpoint.
+
+**Known remaining gap (separate from this fix):** plans, drafts, and report specs still live
+in one shared, unscoped filesystem tree (`~/egeria-plans/`, `~/egeria-reports/`) — any user
+can see or act on any other user's documents by ID. Tracked as `BACKLOG.md` SS-4 (priority:
+medium); full design in `docs/design/SESSION_AND_INTERACTION_STATE.md`.
+
+**Commits:** `f23b690`.
+
+### Phase 16 — Milvus removal (Jul 11, 2026)
+
+**Theme:** pgvector has been the active vector store backend since Phase 10 (Apr 2026), but
+`advisor/vector_store.py` was still a complete Milvus implementation with a module-level
+`from pymilvus import ...` — making pymilvus a hard import-time dependency of the entire app
+even though the runtime path always went through pgvector. Two Explore agents mapped every
+Milvus reference across 30+ files before any code changed.
+
+**Migrated first, then removed** ✓
+- Ported the still-useful pieces to pgvector: `scripts/test_end_to_end.py`'s Vector Store
+  test category (was hardcoded to pymilvus, failing outright against the real backend —
+  now 3/3 pass), `scripts/collect_collection_health.py` (feeds the admin dashboard),
+  `scripts/diagnose_retrieval.py`, and `scripts/test_metadata_filtering.py`'s schema check.
+- Deleted `MultiCollectionStore.get_collection_stats()` — dead code (zero callers) with a
+  latent Milvus-only bug (`self.vector_store.get_collection(name).num_entities`, silently
+  swallowed by a broad `except`); the real, correct, callers-having path
+  (`metrics_collector.py` → `PgVectorStore.get_collection_stats()`) was unaffected.
+- Gutted `advisor/vector_store.py` down to a thin factory function — `MilvusVectorStore` and
+  the `pymilvus` import are gone; `get_vector_store()` now defaults to `pgvector` instead of
+  silently falling back to a nonexistent Milvus backend.
+- Removed `milvus_host`/`milvus_port`/`milvus_user`/`milvus_password` from `advisor/config.py`;
+  `vector_store_backend` now defaults to `"pgvector"`.
+- Deleted `pymilvus` from `pyproject.toml` and actually uninstalled it from the venv.
+- Deleted 9 one-off Milvus migration/diagnostic scripts whose job was long done:
+  `migrate_milvus_to_pgvector.py`, `verify_pgvector_migration.py`, `check_collection_manager.py`,
+  `check_projectmanager.py`, `migrate_pyegeria_to_scalar_fields.py`,
+  `recreate_pyegeria_with_scalar_fields.py`, `simple_reingest_pyegeria.py` (+ its `.sh`
+  wrapper), `check_ingestion_status.py` (redundant with `count_vectors.py`).
+- Stripped cosmetic Milvus wording from ~20 remaining files' comments/docstrings; two of them
+  (`test_setup.py`, `test_vector_store_caching.py`) referenced the just-deleted
+  `settings.milvus_host`/`milvus_port` config fields and would have thrown `AttributeError` —
+  fixed as part of the same pass, not just reworded.
+- `advisor/ingest_to_milvus.py` was **not** renamed — confirmed zero pymilvus dependency
+  (purely backend-agnostic via `get_vector_store()`), and a rename would cascade through 4
+  live import sites for a cosmetic-only win. Flagged as an optional fast-follow.
+
+**Verified:** fresh process import confirms `pymilvus` never loads; `count_vectors.py` and all
+four ported scripts run clean against live pgvector data; `test_end_to_end.py --quick` went
+from 2 failures to 37/40 passing with zero failures; web server restarts clean and a live
+query works.
+
+**Commits:** `e2ac1cc`.
+
+### Phase 17 — "Show me" format disambiguation + CLI ingestion gap (Jul 11, 2026)
+
+**Theme:** "Show me" meant "give me Python" almost unconditionally. `ExamplesAgent`'s
+generation prompts unconditionally instructed the LLM to write Python even when
+`pyegeria_cli` content was retrieved; `CLICommandAgent` existed and worked from the
+standalone CLI / BeeAI conversational pipeline but was never reachable from the web UI;
+`PerspectiveRoutingEngine.route()` only ever offered Data Steward/Governance roles a 2-way
+Python-vs-Dr.Egeria clarify, and Developer/Data Engineer roles were never offered anything
+but Python regardless of phrasing.
+
+**Routing layer** ✓ (commit `da6c7cc`)
+- `CLICommandAgent.handle()` + `get_cli_command_agent()` singleton added, matching the
+  convention every other web-facing agent uses.
+- New `cli_signals`/`java_signals` detection in `PerspectiveRoutingEngine.route()`: explicit
+  `hey_egeria`/CLI phrasing now routes directly to `CLICommandAgent` regardless of role;
+  explicit Java requests get an honest "not supported yet" redirect to the three formats
+  that do exist (Python / CLI / Dr.Egeria) instead of a silent wrong-language answer; the
+  governance-role clarify is now 3-way instead of 2-way.
+- Placement bug found and fixed during verification: the pattern classifier tags CLI-phrased
+  "create X" queries as `intent="command"` before role-aware routing even runs, and an
+  earlier `... or intent == "command"` check in `rag_system.py`'s dispatch chain was
+  catching them first and wrongly requiring login. Fixed by moving the CLI dispatch check to
+  the top of the chain, ahead of every intent-string branch.
+
+**CLI ingestion gap** ✓ — routing now reached `CLICommandAgent` correctly, but its answers
+were still fabricated (`hey_egeria --create-glossary <glossaryName>` — not a real command).
+Root cause: `CLICommandAgent._extract_command_data()` depends on a `metadata['command_data']`
+JSON field that a purpose-built extractor/indexer pair
+(`advisor/data_prep/cli_parser.py::CLICommandExtractor`,
+`advisor/data_prep/cli_indexer.py::CLICommandIndexer`) was designed to populate — fully
+built, verified to extract accurate real data (confirmed against `create_glossary`'s actual
+10 click-decorated parameters) — but never wired into the main ingestion pipeline
+(`scripts/ingest_collections.py` populates `pyegeria_cli` with generic AST code chunks
+instead). The two pipelines are non-destructive to each other: `CLICommandIndexer` writes
+additively into the same `pyegeria_cli` table under a distinct id namespace (`cli_cmd_*` vs
+the generic ingester's `file_path::name::line`), resolved via the existing
+`cli_commands`→`pyegeria_cli` table-name alias in `vector_store_pg.py`.
+- Ran `scripts/test_cli_parser.py` (110 `hey_egeria` commands extracted fresh from the
+  current `data/repos/egeria-python`) → `scripts/index_cli_commands.py` (153 documents indexed,
+  0 failures; `pyegeria_cli` went from 513 to 666 rows).
+- Also enriched `_generate_general_response()`'s LLM context: it was passing only a
+  parameter *count* to the LLM, not the actual flag names — confirmed live that this still
+  produced a partially-fabricated invocation (a stray positional arg) even with real
+  `command_data` available. Now includes actual parameter names/required-status/defaults,
+  plus an explicit "use ONLY what's listed" instruction matching `ExamplesAgent`'s pattern.
+- Wired both scripts into `scripts/full_reset.sh` as step 4/4 (after collection ingestion,
+  since it must run after the `--force` table-recreate in step 3, not before) so this stays
+  fresh automatically going forward instead of silently drifting again.
+- `dr_egeria` command extraction in the same extractor found 0 results — not a regression to
+  fix; Dr.Egeria template lookup is already served correctly by `DrEgeriaTemplateAgent`'s
+  separate filesystem scan, unrelated to this agent.
+
+**Verified:** live query "show me the hey_egeria command to create a glossary" now returns
+`hey_egeria create_glossary --name "My New Glossary"` (real command, real flag) instead of
+the earlier fabricated `--create-glossary` syntax.
+
+**Commits:** (this session).
+
+---
+
+### Phase 17b — Dr.Egeria added to "Show me" disambiguation; tech-role Python fast path removed (Jul 11, 2026)
+
+**Theme:** Phase 17 added explicit-signal routing for CLI and Java, but `dre_signals`
+("dr egeria"/"dr. egeria"/"dr_egeria") had no route of its own — it only suppressed the
+tech/governance overrides and relied on the base intent classifier happening to land on
+`command`, which wasn't guaranteed. Separately, Developer/Data Engineer roles still
+unconditionally fast-pathed *any* ambiguous "show me"/"example" query straight to Python
+with no clarify, even though CLI, Dr.Egeria, and (recognized-but-unsupported) Java are all
+now legitimate answers to "show me X" for those roles too.
+
+**Changes in `advisor/perspective_routing.py`:**
+- `dre_signals` is now a top-priority explicit route straight to `dre_template_agent`
+  (`rule_name: explicit_dre_signal`), matching the reliability guarantee `cli_signals` and
+  `java_signals` already had — checked first, ahead of CLI/Java, since it's the most specific
+  of the format signals. `rag_system.py` already had a `dre_template_agent` dispatch branch
+  wired up (added earlier for intent-based routing), so no dispatch-side changes were needed.
+- Tightened the bare `"dre"` substring match to a `\bdre\b` word-boundary regex — it used to
+  match inside ordinary words like "add**re**ss", which was harmless when the signal only
+  suppressed an override but became a real false-positive risk once it became a hard route.
+- The Developer/Data Engineer fast path now only fires on an *explicit* code/Python signal
+  (`code_signals`) — not on generic `example_signals` ("show me", "how do i", etc.). A plain
+  ambiguous "show me X" from any role, including Developer/Data Engineer, now gets the same
+  3-way clarify (Python / CLI / Dr.Egeria) that was previously Data Steward/Governance-only;
+  `rule_name` renamed from `governance_ambiguous_example_clarify` to `ambiguous_example_clarify`
+  to reflect that it's no longer role-gated. An explicit Python/code signal still bypasses the
+  clarify and routes straight to `examples_agent` (or `code_intel_agent` for structural
+  questions like class hierarchies) for every role, same as before.
+
+**Commits:** (this session).
+
+---
+
+### Phase 18 — `code_symbols` population bug: pyegeria collection was test-code-only (Jul 11, 2026)
+
+**Theme:** "Inspect" (`code_intel`) couldn't answer basic questions like "what is the
+AutomatedCuration class" even though it's a key pyegeria class with a full docstring.
+Traced to a real ingestion bug, not a parser quality issue — `CodeParser` correctly
+extracted 98 elements (including `AutomatedCuration`'s docstring) when tested directly.
+
+**Root cause:** the `pyegeria` collection config (`advisor/collection_config.py`) lists two
+source directories, `source_paths=["pyegeria", "tests"]`. `scripts/ingest_collections.py`
+calls `CodeIngester.ingest_directory()` once per source path, and `ingest_directory()`
+(`advisor/ingest_to_milvus.py`) used to call `get_symbol_store().clear_collection()`
+unconditionally on *every* call. Ingesting `pyegeria/` populated real SDK symbols; ingesting
+`tests/` right after wiped the entire `'pyegeria'` collection from `code_symbols` before
+inserting only test-harness symbols. Net effect verified against the live DB: 100% of the
+135 indexed files were under `tests/` — zero real SDK files, only 1 `inherits_from`
+relationship in the whole collection, and misleadingly low docstring-coverage numbers (they
+were measuring test code, not the SDK). `egeria_java` and `pyegeria_cli` were unaffected —
+both have only one source directory, so there's no second `ingest_directory()` call to wipe
+the first.
+
+**Fix:** moved the symbol-table clear out of `ingest_directory()` (called once per source
+path) and into `ingest_collection()` in `scripts/ingest_collections.py` (called once per
+*collection*, before the source-path loop, mirroring how the pgvector side already drops the
+collection once up front). Re-ran `python scripts/ingest_collections.py --collection
+pyegeria --force`.
+
+**Verified:** `code_symbols` for `pyegeria` now has 204 files, 69 non-test (up from 0);
+`AutomatedCuration` resolves with its docstring and a real ancestor chain (`ServerClient` →
+`BaseServerClient`); `inherits_from` relationships went from 1 to 212. Real docstring
+coverage (non-test files only): classes 103/225 (46%), methods 1,905/2,234 (85%), functions
+157/224 (70%) — better than the test-code-skewed numbers suggested, though class docstrings
+still have real gaps worth a follow-up pass.
+
+**Follow-up gap (fixed in Phase 18b below):** at this point in the session, none of
+`CodeIntelAgent`'s tools returned a class's own docstring — `get_class_hierarchy` only
+returns ancestors/descendants. "What is class X" got a real hierarchy but not the
+description text itself.
+
+**Commits:** (this session).
+
+---
+
+### Phase 18b — `CodeIntelAgent` "what is class X" descriptions (Jul 11, 2026)
+
+**Theme:** two more issues surfaced testing the Phase 18 fix against `AutomatedCuration`.
+
+**1. No tool returned a class's own docstring.** Added `get_class_info(class_name,
+collection=None)` — looks up the class's own `code_symbols` row (docstring, file path, line
+range, signature) — and wired it into both the BeeAI tool list and `handle()`'s default
+keyword-dispatch branch (bare "what is X" / "describe X" / "tell me about X" queries), which
+now calls `get_class_info` **and** `get_class_hierarchy` together and combines both into the
+answer.
+
+**2. Class-name resolution failed for natural phrasing.** Class names are stored CamelCase
+(`AutomatedCuration`), but "what is the **Automated Curation** class" (spaces, how a person
+actually says it) got regex-split into `["Automated", "Curation"]`, and only the first token
+(`"Automated"`) was ever looked up — no match, empty context, technically-correct-but-useless
+"not found" answer. Added `_resolve_class_name()`, which tries the full word concatenation
+against `code_symbols` first, then falls back to individual words. Also switched all
+class-name lookups (`get_class_info`, `check_inheritance`, `get_class_hierarchy`) from exact
+match to `ILIKE` so casing variants (`"automatedcuration"`) resolve too.
+
+**3. Operational gotcha, not a code bug:** after both fixes landed, a live query through the
+already-running `uvicorn advisor.web.app:app` process (started earlier in the session, no
+`--reload` flag) still returned the old "not found" answer. Root cause: the running process
+had the pre-fix code loaded in memory, and `QueryCache` (`advisor/query_cache.py`) is a
+plain in-process dict with no invalidation on code change — a stale process silently serves
+both stale code *and* stale cached answers indefinitely. Restarting the server picks up new
+code and implicitly clears the cache (`QueryCache` isn't persisted to disk/Redis). Worth
+remembering when a fix "isn't taking effect" during live testing: check `ps aux | grep
+uvicorn` before assuming the code change is wrong.
+
+**4. Docstring detail was still thin after the above.** Two more compounding causes, found
+when asked to include more docstring/signature detail: (a) `code_symbol_store.py` truncated
+every docstring to 500 chars at write time ("cap to keep DB small") — `AutomatedCuration`'s
+docstring was already cut off mid-sentence in the DB itself, so no prompt change could recover
+it; raised the cap to 4000 chars and re-ingested `pyegeria` again. (b) The final generation
+prompt said "concise answer" with no instruction to preserve docstring/signature text, so the
+LLM compressed both away even when present in `context` — and the `context` string itself was
+a raw Python dict/list dump, so the one time the LLM did try to "quote it in full" it echoed
+back escaped `\n` literals instead of readable text. Added `_format_class_info()` /
+`_format_class_hierarchy()` to render clean text instead of `str(dict)`, and updated the
+system/user prompts to explicitly require the full signature and full docstring verbatim.
+
+**5. File paths in answers were absolute, not repo-relative.** `get_class_for_method`,
+`get_class_info`, and `list_classes` all returned the indexed file's full local disk path
+(`/home/dwolfson/localGit/.../data/repos/egeria-python/pyegeria/omvs/automated_curation.py`)
+— meaningless to anyone without this exact machine's directory layout, and `list_classes`'
+existing ad-hoc path-shortening (marker-matching on `/pyegeria/` or `/egeria_java/`) silently
+never fired for Java, since the real Java repo path has no `/egeria_java/` segment (that's
+only the *collection* name, not a directory) — it only worked for Python. Added a single
+`_relative_path()` helper that strips everything through `data/repos/<repo-name>/`, leaving a
+path relative to that source repo's root (`pyegeria/omvs/automated_curation.py`,
+`open-metadata-implementation/frameworks/.../X.java`), and applied it at the data-fetching
+source (`get_class_for_method`, `get_class_info`, `list_classes`) so both the direct `handle()`
+path and the BeeAI tool-calling path get relative paths consistently.
+
+**Backlog:** added IB-8 — contextual "learn more" follow-up buttons after an Inspect answer
+(e.g. "Class hierarchy ▸" / "Methods on X ▸" / "Who inherits from X ▸"), mirroring IB-7's
+conditional post-run buttons pattern for Act.
+
+**6. Method/function questions didn't reliably surface docstring/signature either.** The
+existing "method"/"function" keyword branch only worked when the query literally contained
+one of those words, always took `methods[0]` (the *first* extracted word, no name
+resolution), and formatted the result as a raw dict dump like the class-info bug fixed above.
+So "what does create_glossary do" (no "method"/"function" keyword) fell through to the
+class-only default branch and returned "not found" even though the method is indexed with a
+full docstring.
+
+Generalized `_resolve_class_name()` into `_resolve_symbol_name(words, kinds)`, which also
+tries an underscore join (`"create_glossary"` from `["create", "glossary"]`) alongside the
+existing no-separator join, covering snake_case method/function names typed with spaces.
+Added `_format_method_info()` for clean method/function rendering (parallel to
+`_format_class_info()`). The default branch now tries class resolution first, then falls
+back to method/function resolution if no class matches — so a bare "what is X" / "what does
+X do" works regardless of whether X is a class or a method, without the user needing to say
+"method" explicitly. `get_class_for_method()` was broadened from `kind = 'method'` to
+`kind IN ('method', 'function')` so module-level functions (not just class methods) resolve
+too, and its SELECT now includes `name` so results are self-labeled.
+
+**Verified:** "what is create_glossary", "what does create_glossary do", "what method is
+create glossary" (space-separated), and "what class is create_glossary defined in" all now
+return the full signature and docstring, tested directly against the running server.
+
+**Verified:** "what is the Automated Curation class", "tell me about the automated curation
+class", "what does Automated Curation do", and "what is the AutomatedCuration class" all now
+return the real docstring, file location, and inheritance chain — tested directly against the
+running server via `curl /api/query`.
+
+**Commits:** (this session).
+
+---
+
+### Phase 19 — "Show me" format clarify was hijacking explicit non-"Show me" intents (Jul 12, 2026)
+
+**Theme:** Act + "show me the external references" returned the Python/CLI/Dr.Egeria format
+clarify — the same clarify meant for the ambiguous "Show me" experience — instead of looking
+for a matching report spec. Reported live: the user explicitly selected Act (`intent_override
+= "command"`), but the query text still contained "show me", which was enough to trigger the
+clarify regardless of which intent button was clicked.
+
+**Root cause:** `PerspectiveRoutingEngine.route()` is called unconditionally in
+`_process_query`, and its format-disambiguation branches (dre/cli/java signal routing, the
+tech-role code/Python fast path, the ambiguous-example clarify — all built in Phase 17/17b/18)
+only ever looked at the query *text*, never at `intent`. Rule 11 in `CLAUDE.md` had claimed
+this layer was "skipped when `query_type_override` is set" since before this session, but
+nothing in the code actually implemented that — the claim was aspirational/stale, not a
+description of real behavior. `BACKLOG.md` IB-2's Act read-verb → `ReportPipeline` matching
+(`_ACT_READ_RE`, matches `^show\b` etc., already correctly implemented and working) sits much
+further down in `_process_query`'s dispatch chain than the early `routing_action["action"] ==
+"clarify"` return — so the clarify intercepted the query before it could ever reach the
+already-correct Act logic.
+
+**Fix:** added `PerspectiveRoutingEngine._AMBIGUOUS_ELIGIBLE_INTENTS = {"code_help",
+"code_search", "example", "general", ""}` and wrapped the entire format-disambiguation
+section in `if intent in self._AMBIGUOUS_ELIGIBLE_INTENTS:`. An explicit `intent_override` for
+anything else (`command`/Act, `report`/Run Report, `code_intel`/Inspect,
+`explanation`/Explain, `debugging`/Troubleshoot, `plan`/`create`/Create) now skips the whole
+layer and falls straight to default policy routing — letting the query reach whatever
+dispatch logic that intent actually has (for Act, the pre-existing `_ACT_READ_RE` →
+`ReportPipeline.find_specs()` path).
+
+**Verified:** live query "show me the external references" with `intent_override: "command"`
+now returns `routing_agent: "auth_gate"` (Act's Egeria-auth-required gate, reached only via
+the `_ACT_READ_RE` block) instead of the format clarify. "Show me" (`code_help`) and Auto
+(no override) on an ambiguous query still correctly clarify — confirmed unaffected.
+
+**Commits:** (this session).
+
+---
+
+### Phase 20 — Act element-type extraction truncated multi-word type names (Jul 12, 2026)
+
+**Theme:** with Phase 19's fix landed, Act correctly reached `_ACT_READ_RE` →
+`ReportPipeline` for "show me the external references" — but then failed with a real Egeria
+error: `type name External ... is not recognized`. `_extract_type_and_filter()` took only the
+*first* content word after the verb as the entity type ("external", dropping "references"),
+so multi-word Egeria type names were silently truncated before ever reaching Egeria. Same bug
+for "list Data Products" → "Data" (dropping "Products").
+
+**Added `advisor/egeria_type_registry.py`** — a cached registry of known Egeria type names,
+built from the 75 distinct `target_type` values in
+`config/report_specs/report_specs_annotated.json` (the same catalog the Dr.Egeria template
+annotations use). `resolve_type_name(words)` tries the longest word-prefix first (up to 4
+words) against the normalized registry, so "external references" → `ExternalReference` and
+"data products" → `DigitalProduct` resolve correctly instead of stopping at the first word.
+Normalization handles casing, spacing, and pluralization (including `-ies` → `-y`, e.g.
+"glossaries" → `Glossary`).
+
+**Real Egeria doesn't call it "Data Product."** Checked the actual Java source
+(`OpenMetadataType.java`): the type is `DigitalProduct`, not `DataProduct` — "data product" is
+common industry terminology that doesn't textually match Egeria's own naming. Added a small
+`_ALIASES` dict in the registry for this kind of mismatch (currently just this one entry;
+expected to grow as more surface).
+
+**`_extract_type_and_filter()` in `rag_system.py`** now collects all content words before the
+first separator (not just the first one) and resolves them through the registry, falling back
+to the old first-word heuristic when nothing matches (e.g. an ad-hoc type not in the static
+catalog). `search_string` extraction (the part after a separator like "named"/"where") is
+unchanged.
+
+**Verified** the extraction logic directly (replicated from the actual source): "show me the
+external references" → `("ExternalReference", "*")`, "list Data Products" → `("DigitalProduct",
+"*")`, "show glossaries named Inventory" → `("Glossary", "Inventory")` — all correct, with
+`search_string` extraction still intact. Could not fully verify end-to-end against a live
+Egeria server since `_ACT_READ_RE` gates on an authenticated Egeria session before reaching
+type extraction, and Egeria wasn't reachable in this environment.
+
+**Backlog:** added IB-9 — the registry is currently a static 75-type list (only types with a
+Dr.Egeria template); could be supplemented with a live Egeria type listing for full coverage,
+and `resolve_type_name()` is a general-purpose utility worth reusing beyond Act (e.g.
+ReportSpecElicitor, the Report Spec Builder's element-type field).
+
+**Commits:** (this session).
+
+---
+
+### Phase 21 — Configurable deployment: point this Advisor at a remote Egeria instance (Jul 12, 2026)
+
+**Theme:** tie the Advisor running on this machine ("hedwig") into the broader Egeria demo
+system at egeria.pdr-associates.com — port-forward :8880 to this machine's web UI, and point
+the app at Egeria running at egeria.pdr-associates.com:9443 instead of local Egeria. Investigated
+what actually governs the Egeria connection, since the obvious `.env` field turned out to be a
+red herring.
+
+**Found `.env`'s `EGERIA_PLATFORM_URL` is dead code** — declared in `advisor.config.settings`
+but `settings.egeria_platform_url` is never read anywhere in the app (confirmed via full-repo
+grep). The real authoritative source was `config/mcp_servers.json`'s
+`mcpServers.pyegeria.env.EGERIA_VIEW_SERVER_URL`/`EGERIA_VIEW_SERVER`, independently re-parsed
+by four different call sites (`advisor.auth.validate_egeria_credentials` — login validation;
+`advisor.report_pipeline.ReportPipeline._read_pyegeria_connection` — report execution;
+`advisor.egeria_context.EgeriaContext._load_connection` — context enrichment;
+`advisor.agents.dr_egeria_agent.DrEgeriaActionAgent._get_egeria_conn` — Dr.Egeria
+actions/templates), each with subtly different fallback logic (one already had an env-var
+fallback, three didn't).
+
+**Consolidated into one shared resolver: `advisor/mcp_config.py::get_pyegeria_platform_config()`.**
+Priority: `EGERIA_VIEW_SERVER_URL`/`EGERIA_VIEW_SERVER` env vars (`.env`) first, then
+`config/mcp_servers.json`'s defaults (which stay pointed at local Egeria, `localhost:9443`/
+`qs-view-server`, so a fresh clone still works out of the box with zero `.env` config). All
+four call sites now use this one function — switching deployments (local Egeria vs. this
+remote demo instance) is two `.env` lines, no JSON edits, and no more risk of the four readers
+drifting out of sync. Removed the dead `egeria_platform_url`/`egeria_view_server` fields from
+`advisor.config.settings` (both unused; `egeria_user`/`egeria_password` are real — the
+`.env`-backed service-account fallback for requests with no logged-in session).
+
+**Found the Portal-token exchange already exists and is fully wired up** —
+`POST /api/auth/portal` → `advisor.auth.exchange_portal_token()` — a Portal can already hand
+this Advisor a short-lived JWT (shared HS256 secret) to establish a session without a second
+login. It just needed the secret actually configured: `ADVISOR_PORTAL_SECRET` was already an
+env-var override point (`_portal_secret()`), so no code change was needed there, only wiring
+up the `.env` value once coordinated with the Portal.
+
+**Made CORS cross-origin access configurable** — `advisor/web/app.py`'s CORS middleware
+previously only allowed `localhost` origins (`allow_origin_regex=r"https?://localhost(:\d+)?"`).
+Same-origin SPA access (the UI served from the same host:port as the API) was never affected
+by this regardless of hostname, but a Portal on a *different* origin calling this Advisor's
+API directly would have been blocked. Added `ADVISOR_EXTRA_CORS_ORIGINS` (`.env`,
+comma-separated) — `_cors_origin_regex()` now builds the allow-list from localhost plus these
+extra exact origins.
+
+**Flagged (not a code change): uvicorn's bind address.** Defaults to `127.0.0.1`
+(loopback-only) with no explicit `--host` anywhere in the codebase. This deployment's
+port-forward is a router/NAT forward hitting the machine's real network interface, so it
+needs `uvicorn advisor.web.app:app --host 0.0.0.0 --port 8880` — an SSH reverse tunnel would
+have worked fine with the default loopback bind instead.
+
+**Verified:** restarted with the new `.env` values pointed at
+`https://egeria.pdr-associates.com:9443`; `POST /api/auth/login` made a real ~3s round-trip to
+the remote host (confirms `get_pyegeria_platform_config()` correctly resolved the remote URL
+across the whole stack) rather than an instant local no-op or connection error. Separately
+noted — not a bug in this repo — that `validate_egeria_credentials()` accepted bogus test
+credentials without error; `EgeriaTech.create_egeria_bearer_token()` doesn't appear to validate
+synchronously against this particular demo instance. Worth confirming with whoever runs the
+demo Egeria whether that's expected for a `qs-view-server`-style demo setup.
+
+**Follow-up: `.env` wasn't reliably loaded into `os.environ` at all.** Investigating why a
+freshly-generated `ADVISOR_PORTAL_SECRET` value in `.env` produced `503 Portal SSO is not
+configured` (while `EGERIA_VIEW_SERVER_URL` had worked moments earlier in a different process)
+revealed the real bug: `advisor.config`'s `Settings` uses pydantic-settings' `env_file=".env"`,
+which loads `.env` into the `Settings` *object* only — it never touches `os.environ`. Code that
+reads `os.environ.get(...)` directly (`advisor.auth`'s `_portal_secret()`/`_jwt_secret()`,
+`advisor.mcp_config`'s env-var priority check) only ever saw `.env` values by accident, if some
+unrelated module happened to call `load_dotenv()` first in that process (`advisor.embeddings`
+does, at import time; `advisor.report_pipeline` does too, but lazily inside a function) — order-
+and code-path-dependent, not a reliable guarantee. Fixed by adding an explicit `load_dotenv()`
+call at the top of `advisor/config.py`, guaranteed to run early since virtually everything
+imports `advisor.config`. Verified: minted a real HS256 portal token and POSTed it to
+`/api/auth/portal` — failed with 503 before this fix, returned a valid session token (HTTP 200)
+after.
+
+**Also found the Portal-SSO frontend piece already exists** — `advisor/web/static/auth.js`
+already handles a `#pt=<token>` URL hash fragment on page load (`checkUrlFragment()`) and a
+`postMessage`-based alternative (`listenForPortalMessage()`), both calling the same
+`/api/auth/portal` exchange. Nothing needed building on the Advisor side; the design brief
+handed to the Portal-side session only needed to cover the Portal's own changes (mint the
+token, append it as `#pt=...` when opening the Advisor tab).
+
+**Confirmed how the Portal actually links to Advisor today.** Traced the real Portal source
+(`egeria-workspaces/compose-configs/egeria-quickstart/PyegeriaWebHandler/`) — the "Egeria
+Advisor" tile is a plain `newTab: true` link (`demo-portal.html::renderAppGrid`), not an
+iframe or embed, and there was no existing call to `/api/auth/portal` anywhere in that
+codebase — a corrected assumption from earlier in this session (had initially guessed the
+Portal called this Advisor cross-origin, which isn't how it actually works; CORS/
+`ADVISOR_EXTRA_CORS_ORIGINS` isn't actually exercised by this flow, since same-tab navigation
+is same-origin regardless of hostname). Also confirmed the Portal's own `JWT_SECRET`
+(`.env.demo`) is unrelated — it only signs the Portal's own `demo_token` session cookie
+(`demo_auth_handler.py::_make_jwt`), not anything handed to Egeria Advisor.
+
+Generated a fresh HS256 secret and set it as `ADVISOR_PORTAL_SECRET` in this machine's `.env`
+(gitignored, value not in this doc). Verified end-to-end: minted a real portal token with that
+secret and POSTed it to `/api/auth/portal` — returned a valid Advisor session token (HTTP 200,
+confirming the whole exchange path). Wrote and handed off a full design brief to a separate
+Claude session working on the Portal repo, covering the JWT claim shape, the shared secret,
+where in the Portal codebase to mint the token and construct the `#pt=` URL, and the
+`EGERIA_ADVISOR_URL` config check needed for external (non-localhost) users.
+
+**State as of this session's end:** `egeria-advisor`'s `.env` on this machine
+(`EGERIA_VIEW_SERVER_URL`) points at `https://egeria.pdr-associates.com:9443`
+(`qs-view-server`), confirmed live via `get_pyegeria_platform_config()` and the running
+server process. The Portal-side SSO wiring is not yet implemented — that's the other
+session's task per the handed-off design brief.
+
+**Commits:** (this session).
+
+---
+
+### Phase 22 — "Running a report times out": three timeout layers, then the real cause (Jul 12, 2026)
+
+**Theme:** running a report through Act reproducibly timed out ("The **Glossaries** report
+timed out (Egeria took too long)."). Chased this through three genuinely-real, genuinely-fixed
+configuration bugs before finding the actual root cause was none of them.
+
+**Bug 1 — MCP subprocess env didn't get the Phase 21 fix.** `advisor.mcp_config`'s
+env-var-priority resolver (Phase 21) covered `auth.py`/`report_pipeline.py`/`egeria_context.py`/
+`dr_egeria_agent.py`, but not the actual MCP *subprocess launch* — `MCPServerConfig.
+get_env_with_defaults()` (`advisor/mcp_client.py`) does `env = os.environ.copy(); env.
+update(self.env)`, and `self.env` is `config/mcp_servers.json`'s literal (still-localhost)
+`env` block, which unconditionally overwrites the parent's correct value. Confirmed via
+`/proc/<pid>/environ` on the actual subprocess. Fixed with `_resolve_server_env()` in
+`advisor/mcp_agent.py`, applied at `MCPConfig.from_file()`/`from_dict()` load time so the
+JSON's literal `EGERIA_VIEW_SERVER_URL`/`EGERIA_VIEW_SERVER` get overlaid with the resolved
+values before `MCPServerConfig` is even constructed.
+
+**Bug 2 — three independent ~30s timeout layers, only one of which was egeria-advisor's own.**
+Raising `config/mcp_servers.json`'s `tool_timeout` (now `ADVISOR_MCP_TOOL_TIMEOUT` env var,
+`advisor/mcp_agent.py::_resolve_tool_timeout()`) changed the observed failure time from 30s to
+~39s, not to 90s — proving a *second*, shorter timeout was now binding. Found it in a
+completely different codebase: `pyegeria/core/mcp_server.py:159` hardcodes
+`asyncio.wait_for(..., timeout=30)` around the `run_report` tool's execution — but the
+*version of that file actually being launched* (a separate dev checkout at
+`~/localGit/egeria-v6/egeria-python`, last committed 2026-05-18) doesn't even have the
+`PYEGERIA_MCP_REPORT_TIMEOUT` env-var override that a *newer* pip-installed pyegeria
+(6.0.16.3, sitting unused in egeria-advisor's own `.venv`) already supports. Fixed by
+repointing `config/mcp_servers.json`'s `pyegeria.command`/`args` to launch `python -m
+pyegeria.core.mcp_server` from egeria-advisor's own venv instead of the stale external
+checkout — immediately unlocking the already-fixed, already-configurable timeout. Even after
+that, the observed timeout only moved to ~40s at first because `PYEGERIA_MCP_REPORT_TIMEOUT`
+wasn't set yet; setting it (alongside a *third* layer, `PYEGERIA_TIMEOUT_SECONDS` — pyegeria's
+actual per-HTTP-request timeout, `pyegeria/core/config.py` → `_base_server_client.py`,
+overriding an also-hardcoded `httpx.Timeout(30.0)` client-constructor default in
+`_base_platform_client.py`) pushed the observed timeout to the full ~99s, confirming all three
+layers were now genuinely configured and working.
+
+**First (wrong) conclusion: "Egeria is co-located, use localhost."** Report execution still
+timed out at ~90s even for a report the user had just confirmed returns instantly (1 row) via
+a completely different client (Egeria Explorer, part of the Portal) — ruling out "Egeria is
+just slow." Direct `curl`/`httpx` connectivity tests from this machine to
+`https://egeria.pdr-associates.com:9443` never completed a TCP connect at all (hard 15s
+timeout), while `https://localhost:9443` responded in ~20ms, and `ss -tlnp`/`docker ps`
+confirmed something real was listening on `*:9443` locally. Concluded "NAT hairpinning" —
+this machine can't reach its own forwarded port via its public hostname — and pointed
+`EGERIA_VIEW_SERVER_URL` at `localhost:9443` instead. Reports executed successfully
+end-to-end with this change (~22s, real table output), which looked like confirmation.
+
+**This was wrong, and the user's pushback caught it.** The user correctly refused to accept
+"it returns data" as proof of same-server identity, and asked to compare a specific element's
+GUID instead — GUIDs are per-instance random UUIDs, so a match is near-conclusive and a
+mismatch is definitive. The GUID from `localhost:9443` did not match what the Portal showed
+for the same element. Root cause: this machine ("hedwig") separately runs its own **local**
+`egeria-quickstart` dev stack (`docker ps` showed `quickstart-egeria-main`, port-mapped
+`9443:9443`) — a genuinely different Egeria server, coincidentally seeded with the same
+standard sample content pack (`OpenMetadataDigitalProductsContentPack`), which is exactly why
+matching report *output* was misleading: same stock demo data, different server, different
+GUIDs. The user confirmed the real demo Egeria runs on a different machine entirely, not
+co-located with `egeria-advisor` at all — so there was never a hairpinning scenario to begin
+with. The actual reason `egeria.pdr-associates.com:9443` was unreachable: port `9443`
+forwarding had simply been dropped at the router (only `:8880` had been re-added earlier in
+this session) — restoring it made the public hostname connect instantly (~200ms) with a real
+response. Re-checked the GUID once more with forwarding restored and confirmed via the raw
+JSON: **it now matched** what the Portal shows. `EGERIA_VIEW_SERVER_URL` reverted to
+`https://egeria.pdr-associates.com:9443` — the original Phase 21 setting, which was correct
+all along; the intervening "fix" to `localhost` was itself the bug, just a plausible-looking
+one. Re-verified end-to-end: "Data-Dictionaries" report executes successfully in ~47s (real
+network latency to a genuinely remote server, comfortably inside the 90s timeouts).
+
+**Lesson, not just a fix:** when a connection to host A fails and host B "just works" and
+returns data that looks right, that is not proof B is the intended target — especially when
+sample/demo data is standardized (the same content pack loaded into every quickstart
+deployment). Verify identity with something instance-specific (a GUID, a creation timestamp,
+a server metadata-collection ID) before concluding "use B instead," not just "B responds."
+
+**Kept:** the Phase 21 config-consolidation infrastructure and all three timeout env vars
+(`ADVISOR_MCP_TOOL_TIMEOUT`/`PYEGERIA_MCP_REPORT_TIMEOUT`/`PYEGERIA_TIMEOUT_SECONDS`, still set
+to 90s) remain in place — genuinely needed for the real network latency to the actual remote
+Egeria (~47s observed, most of that plausibly real Egeria-side processing time, not overhead).
+The `config/mcp_servers.json` subprocess-launch fix (using egeria-advisor's own installed
+pyegeria instead of a separate, staler dev checkout) is an unconditional improvement
+independent of this bug.
+
+**Separately real and kept: pyegeria version drift.** `egeria-advisor`'s `pyproject.toml` only
+required `pyegeria>=6.0.16.1` (resolved to 6.0.16.3 installed), while the Portal's
+`PyegeriaWebHandler/requirements.txt` requires `>=6.0.16.16`. Bumped `egeria-advisor`'s floor
+to match and upgraded the installed package to 6.0.16.16 — this affects client-side
+feature/formatting parity (e.g. `run_report`'s available `output_type`s), not which Egeria
+server or data is used, but is worth keeping aligned regardless.
+
+**Commits:** (this session).
+
+---
+
+### Phase 23 — Create/plan entity extraction generalized beyond a hardcoded few types (Jul 12, 2026)
+
+**Theme:** with intent=Create, perspective=Data Engineer, "Create an External Reference to the
+Egeria-Project web site" returned the generic "which would you like to build — Governance Plan
+or Report Spec?" disambiguation instead of recognizing it as an obvious Dr.Egeria plan request.
+User's framing after the first fix landed: "Entity Patterns needs to cover all entities... not
+just a few" — correctly rejecting a one-off patch for External Reference alone in favor of a
+general fix.
+
+**Layer 1 — `CreateRouter` (`advisor/agents/create_router.py`).** `_PLAN_SIGNALS`/`_SPEC_SIGNALS`
+both include the word "project" (for legitimately different reasons), and "Egeria-**Project**"
+(part of the website's proper name) matched both, cancelling out to contribute no signal at
+all — with "External Reference" not in either keyword list, the query had zero signal and fell
+to 'ambiguous'. Fixed with a last-resort fallback (only reached when the existing keyword-set
+logic is inconclusive, never overriding an already-decided classification) that checks the
+full `CommandKeywordIndex` (~126 known Dr.Egeria commands, alias/partial matching) — closing
+this gap for every catalogued command, not just External Reference (verified: also fixed
+"Create a blueprint called X", previously ambiguous since bare "blueprint" isn't in either
+regex either).
+
+**Layer 2 — entity extraction (`advisor/agents/governance_plan_agent.py`).** Even once routed
+to `plan`, `_extract_entities_patterns`'s `_ENTITY_PATTERNS` is a hardcoded list of ~10 regexes
+(one per type: project/campaign/glossary/collection/task/team/agreement/study/blueprint/data-
+sharing-request) — anything else never matches at all, and the function bails out with zero
+objects before its own existing `_infer_type_from_context()` keyword-index fallback (found
+already present, built for a narrower purpose) ever runs. Worse: that fallback discarded a
+*correct* keyword-index match if the resolved command wasn't also in the ~25-entry
+`_ENTITY_TO_ACTION` dict (an inverse-lookup that returned nothing for e.g. "Create External
+Reference", silently defaulting to `"project"`).
+
+Fixed with:
+1. A generic catch-all pattern (last in `_ENTITY_PATTERNS`, sentinel `etype = "__generic__"`)
+   matching "create/add/set up a/an `<any type phrase>` called/named/for/to `<name>`" —
+   catches any of the ~126 known commands, not just the hand-listed ~10.
+2. `_infer_type_from_context()` now returns `(entity_type, action)` — `action` carries the
+   keyword-index match's actual resolved command name *directly*, bypassing
+   `_ENTITY_TO_ACTION`/`catalog.find_by_alias` entirely rather than requiring a pre-registered
+   inverse mapping. `_entities_to_commands` prefers `obj.get("action")` when present.
+3. **A second, deeper recurrence of the exact same class of bug**, caught by re-testing with a
+   slightly different phrasing ("Create an external references to the **Egeria Project** web
+   site and to the PDR home page" — no hyphen this time): `_infer_type_from_context()` searched
+   the *entire query* for the best keyword match, so "Project" (appearing in the *name*, not the
+   type) won a high-confidence exact match (0.90) over "external references"'s weaker partial
+   match (0.55) elsewhere in the sentence — same failure shape as the CreateRouter bug, one
+   layer deeper. Fixed by scoping the search to just the captured type-phrase (new `scope`
+   parameter), never the whole query.
+4. **Root-caused a related latent bug in the shared index itself**: `CommandKeywordIndex.
+   lookup()`'s tier-4 partial-match had no minimum length guard — `_normalize()` strips a
+   leading verb ("create "), so "create a" degenerates to the single letter "a", which
+   trivially substring-matches almost any multi-word command name ("a" in "campaign"),
+   producing a confident-looking but meaningless 0.55 match. Surfaced by testing "Create a
+   random gibberish thing called Foo", which returned a wrong, confident "Create Campaign"
+   guess instead of a safe generic fallback. Fixed with a 3-char minimum on both the query
+   phrase and the candidate term before attempting tier-4 matching — this protects every
+   consumer of the shared index, not just the two call sites touched here.
+
+**Not fixed (separate, narrower limitation):** the "Egeria Project web site and to the PDR home
+page" query only extracts the first named item — multi-item support for this "X to A and to B"
+sentence shape doesn't exist (a different, existing extraction path already handles a different
+multi-item shape, "components for A, B and C"). Out of scope for this pass.
+
+**Verified:** full regression sweep across all pre-existing `_ENTITY_PATTERNS`-covered phrasings
+(unaffected) plus every new case (External Reference, Digital Product, Governance Zone, Service
+Level Objective, Naming Standard Rule, bare "blueprint") resolves correctly; gibberish input
+safely falls back to the generic default instead of a wrong confident guess. Live-verified via
+`/api/query` with the exact reported query — now produces a real "Create External Reference"
+plan step with auto-generated Qualified Name, including a transparent "I interpreted X as Y" note
+for the lower-confidence plural-phrasing case.
+
+**Follow-up bug in a different file, found immediately by continuing the same session as a
+plan refinement.** With the External Reference plan drafted, "also create an external
+reference for the PDR web site" (a second, differently-named instance of the same action)
+returned "I wasn't sure how to update the plan from that." `_extract_entities_patterns`
+correctly resolved this in isolation — the bug was in `plan_elicitor.py`'s addition-handling
+(`_handle_confirm_commands`), which filtered new commands by `action not in existing_actions`
+(bare action type), with only `"Create Project"` special-cased to allow multiples. Since the
+plan already had one `Create External Reference` step, the second one was silently discarded
+as a false "duplicate," `added` ended up empty, and the code fell through to the generic
+"couldn't parse" message. `advisor/plan_validator.py::_deduplicate()` — already called right
+after this filter — compares `(action, display_name)` pairs, not bare action, so the
+premature filter was both redundant and *stricter* than the correct logic already downstream.
+Fixed by matching that same `(action, display_name)` comparison, removing the "Create
+Project"-only special case entirely (every action type now allows multiple distinctly-named
+instances, same as Create Project always did). Verified end-to-end: initial plan → follow-up
+"also create..." → plan now correctly has two distinct `Create External Reference` steps,
+each with its own auto-generated Qualified Name.
+
+**Commits:** (this session).
+
+---
+
+### Phase 24 — HTTP + HTTPS served together (Jul 12, 2026)
+
+**Theme:** offer the web UI over HTTPS as well as plain HTTP, using a wildcard cert for
+pdr-associates.com. The cert wasn't placed on this machine yet at the time of this work — no
+existing process-manager/start script for the web app either (it had been run ad-hoc via a
+bare `uvicorn` command all session) — so this pass builds the config/launcher ready to go the
+moment the cert lands, rather than blocking on it.
+
+**`scripts/run_web.sh`** — always starts plain HTTP (`ADVISOR_HTTP_PORT`, default 8880); starts
+HTTPS (`ADVISOR_HTTPS_PORT`, default 8881) too only when `ADVISOR_SSL_CERTFILE`/
+`ADVISOR_SSL_KEYFILE` are both set in `.env` to files that actually exist, otherwise HTTPS is
+silently skipped (plain HTTP-only, e.g. local dev with no cert). uvicorn serves exactly one
+scheme per process, so "both HTTP and HTTPS" means two `uvicorn` processes (both serving the
+same `advisor.web.app:app`), started and torn down together by one script (`trap cleanup EXIT
+INT TERM` kills both if either exits or the script is interrupted).
+
+**Verified before the real cert existed** — generated a throwaway self-signed test cert
+(`openssl req -x509 ...`, `CN=test.local`, 1-day validity), ran the script against alternate
+ports (18880/18443) so the actual running production instance on 8880 was undisturbed, and
+confirmed: HTTP returns 200, HTTPS returns 200 over genuine TLS (`curl -v`'s reported
+`subject: CN=test.local` proves it's really terminating TLS, not just listening on the port),
+and the production instance was unaffected throughout. Test cert and processes cleaned up
+after.
+
+**Still needed from the user:** place the real wildcard cert/key files somewhere on this
+machine and set `ADVISOR_SSL_CERTFILE`/`ADVISOR_SSL_KEYFILE` in `.env` (currently commented
+out, pointing at placeholder paths) to the real locations — at that point `scripts/run_web.sh`
+starts serving HTTPS with no further code changes. External port-forwarding for the HTTPS
+port (443 → whatever `ADVISOR_HTTPS_PORT` is set to) is also the user's own router
+configuration, same as the existing `:8880`/`:9443` forwards from earlier phases.
+
+**Follow-up: real cert placed, wired up, and verified.** Files landed in `config/certs/`
+(added to `.gitignore` as a whole directory — never committed, holds the private key).
+`server.crt` (subject `CN=egeria.pdr-associates.com`, SAN also covers `home.wolfsonnet.com`,
+issued by Let's Encrypt R13, valid through 2026-08-22) + `server-ca.crt` (the R13 intermediate)
+concatenated into `config/certs/fullchain.pem` — a naive `cat server.crt server-ca.crt` produced
+a malformed PEM at first (`server.crt` has no trailing newline, so the two `-----END
+CERTIFICATE-----`/`-----BEGIN CERTIFICATE-----` markers ran together on one line); fixed by
+inserting a newline between them. Verified `server.key` actually matches `server.crt`'s public
+key before wiring anything up (`openssl x509 -pubkey` vs. `openssl rsa -pubout`, byte-for-byte
+identical). `.env` updated to the real absolute paths. Restarted via `scripts/run_web.sh`
+(replacing the ad-hoc bare-uvicorn process used throughout this session) and verified both
+ports live: HTTP 200, HTTPS 200 with `curl -v` confirming the served cert's actual subject/issuer
+match the real Let's Encrypt cert, not the earlier self-signed test one. HTTPS via the public
+hostname (`egeria.pdr-associates.com:8443` at the time) currently timed out — expected, since
+external port-forwarding hadn't been configured yet (same class of gap as the `:9443` Egeria
+connectivity issue from Phase 22, now on a different port).
+
+**Follow-up: HTTPS port changed 8443 → 8881.** Updated the default in `scripts/run_web.sh`,
+`.env`, and `.env.example`; restarted and re-verified both HTTP (8880) and HTTPS (8881, real
+cert) return 200 locally. External port-forwarding still needs setting up for whichever port
+is actually exposed publicly — unchanged conclusion, just a different internal port number.
+
+**Commits:** (this session).
+
+### Phase 25 — Plan execution broken: `dr_egeria_run_block` MCP tool no longer exists (Jul 12, 2026)
+
+**Theme:** the first live plan executed against the newly-fixed remote Egeria connection (Phase
+22) failed immediately with `Tool not found: dr_egeria_run_block`. Traced to a genuine upstream
+pyegeria API change, not a config mistake — `pyegeria.core.mcp_server` in current pyegeria
+(installed 6.0.16.16, and even the older local `egeria-python` dev checkout at 6.0.12) registers
+only 5 report tools (`list_reports`, `find_report_specs`, `describe_report`, `run_report`,
+`prompt`; its own docstring now says "basic MCP server for Egeria"). Dr.Egeria command execution
+was never exposed as an MCP tool in either version available on this machine — it only exists as
+an in-process engine, `md_processing.v2` (`UniversalExtractor` → `V2Dispatcher.dispatch_batch()`
+via processor classes registered in `md_processing.dr_egeria.setup_dispatcher()`), with the
+`dr_egeria`/`dr_egeria_md` console-script CLI (`commands.cat.dr_egeria:process_markdown_file`) as
+a thin file-based, rich-console wrapper over it — no MCP wrapper exists at all. The
+`dr_egeria_run_block` tool `advisor/agents/dr_egeria_agent.py` called (added Apr 25, 2026) must
+have existed only in some earlier/different pyegeria MCP server build that predates both
+locally-available copies; every downstream consumer (`governance_plan_agent.py`'s
+`_parse_dr_egeria_response()`, `outcome_reporter.py`, `governance_docs.py`) was still built around
+the JSON envelope shape that tool used to return (`{success, output, validation_errors,
+execution_errors, commands_total, commands_succeeded, commands_failed, commands_detail}`).
+
+**Fix:** `DrEgeriaActionAgent.execute()` now calls the `md_processing.v2` engine directly,
+in-process, instead of going through MCP at all — `_execute_dr_egeria_markdown()` builds an
+`EgeriaTech` client from the resolved connection, extracts commands with `UniversalExtractor`,
+runs them through `setup_dispatcher(client).dispatch_batch()`, and reconstructs the same JSON
+envelope shape from the processors' per-command result dicts (which already carry `status`,
+`guid`, `qualified_name`, `display_name`, `message` cleanly — no more parsing a GUID out of a
+message string). `execute()` still returns a JSON string, so `_parse_dr_egeria_response()` and
+everything downstream needed zero changes. Removed the now-fully-dead `_ensure_mcp()`/
+`_mcp_agent` machinery from the class (confirmed unused anywhere else in the codebase) — this
+agent no longer touches MCP; `report_pipeline.py`'s MCP usage for reports is untouched and still
+works (its 5 tools are exactly what's still registered).
+
+**Verified live** against `https://egeria.pdr-associates.com:9443`, three ways: (1) calling
+`_execute_dr_egeria_markdown()` directly in `validate` mode, (2) the same in `process` mode
+(created a real `ExternalReference`, got back a real GUID), (3) the full stack —
+`doc_manager.create()` → `GovernancePlanAgent.execute(doc_id)` → outbox — reproducing the user's
+exact failing scenario end-to-end: **Status: Succeeded**, correct Command Results table with
+real GUID/QN, verification report ran. The test plan document (moved to outbox by the run) was
+deleted afterward; the `ExternalReference` test elements those runs created in Egeria itself were
+*not* deleted (deleting live Egeria data wasn't part of this fix and wasn't done without asking —
+they're harmless leftover sample-data-style test records, same class of thing already present in
+this shared Coco Pharmaceuticals demo instance). Restarted `scripts/run_web.sh` (HTTP 8880 + HTTPS
+8881) to pick up the fix.
+
+**Commits:** (this session).
+
 ---
 
 ## Current state and next steps (Jul 2026)
@@ -990,6 +1864,20 @@ groundwork exists so far — no dedicated UI:
 - Phase 12 ✓ — report spec builder & parameter model (RSD lifecycle, parameter model, collapsible canvas panels, Create intent, Act verb split)
 - Phase 12b ✓ — composite examples agent (Show me composite response, related templates, related report specs with file:// links)
 - Phase 13 ✓ — Plan Templates sidebar, NL reorder/relationship editing, priority-resort fix, outcome-reporter false-success fix
+- Phase 14 ✓ — data pipeline sync (repos/vector store/config brought back into alignment), silent Python ingestion data-loss bug found and fixed
+- Phase 15 ✓ — MCP credential propagation (live Egeria calls use the signed-in user's own credentials, not a shared service account; singleton credential-caching bug fixed)
+- Phase 16 ✓ — Milvus removal (migrated remaining diagnostics/tests to pgvector, then deleted all Milvus code, config, scripts, and the pymilvus dependency)
+- Phase 17 ✓ — "Show me" format disambiguation (CLI/Python/Dr.Egeria/Java recognition) + CLI ingestion gap fix (CLICommandAgent answers are now grounded in real extracted command data, not fabricated)
+- Phase 17b ✓ — Dr.Egeria given its own explicit route (was fallthrough-only); ambiguous "show me" now clarifies for every role, not just Data Steward/Governance
+- Phase 18 ✓ — fixed `code_symbols` population bug where the `pyegeria` collection's symbol table held only test-harness code (0 real SDK files); `Inspect` can now correctly answer questions about real pyegeria classes like `AutomatedCuration`
+- Phase 18b ✓ — `CodeIntelAgent` gained a `get_class_info` tool (returns a class's own docstring, not just its hierarchy) and space-separated/case-insensitive class-name resolution ("Automated Curation" → `AutomatedCuration`)
+- Phase 19 ✓ — the "Show me" format-disambiguation clarify no longer hijacks explicit non-"Show me" intents (Act/Run Report/Inspect/Explain/Troubleshoot/Create); gated behind `_AMBIGUOUS_ELIGIBLE_INTENTS` so Act's pre-existing report-spec matching is actually reachable
+- Phase 20 ✓ — new `egeria_type_registry.py` fixes Act's element-type extraction truncating multi-word Egeria type names ("external references" → "External" instead of `ExternalReference`; "data products" → `DigitalProduct` via an alias for the real Egeria type name)
+- Phase 21 ✓ — consolidated Egeria connection resolution into `advisor/mcp_config.py` (env vars first, then `config/mcp_servers.json`) so switching deployments (local Egeria vs. remote demo instance) is two `.env` lines; Portal SSO and CORS cross-origin access made configurable via `.env` too
+- Phase 22 ✓ — report execution timeouts fixed at three real layers (MCP subprocess env, stale pyegeria dev checkout vs. the already-fixed installed version, three independent ~30s timeout settings); real root cause was a dropped router port-forward for `:9443`, not NAT hairpinning as first (wrongly) concluded — this machine runs its own separate local `egeria-quickstart` dev stack seeded with the same sample content, which made a GUID-mismatched wrong-server "fix" look correct until the user insisted on verifying with element GUIDs instead of matching output
+- Phase 23 ✓ — Create/plan entity-type recognition generalized from a hardcoded ~10-type list to the full ~126-command keyword index, at both the CreateRouter and entity-extraction layers; fixed a recurring "keyword search scoped to the whole query, not just the type phrase" bug that let an unrelated proper noun in the name win over the real type; fixed a latent minimum-length gap in the shared `CommandKeywordIndex` that could produce confident-looking wrong guesses for unrecognized input; fixed plan-refinement's addition path wrongly deduplicating by bare action type instead of (action, display_name), which silently discarded legitimate repeated-action additions ("also create an external reference for a different site")
+- Phase 24 ✓ — `scripts/run_web.sh` serves HTTP and HTTPS together (two uvicorn processes sharing the same app); HTTPS activates automatically once `ADVISOR_SSL_CERTFILE`/`ADVISOR_SSL_KEYFILE` are set in `.env` — verified with a throwaway self-signed cert ahead of the real wildcard cert being placed
+- Phase 25 ✓ — plan execution restored: current pyegeria's MCP server never exposes Dr.Egeria command execution (only 5 report tools) so the `dr_egeria_run_block` MCP tool `DrEgeriaActionAgent.execute()` called no longer exists anywhere on this machine; switched to calling the `md_processing.v2` dispatcher engine directly, in-process, reconstructing the same JSON envelope shape every downstream consumer already expected — verified live end-to-end against the remote demo Egeria (real GUID returned, outcome/Command Results table correct)
 
 **What's working end-to-end (Jul 6, 2026):**
 - Full plan lifecycle exercised live against a real Dr.Egeria MCP server + Egeria REST backend + Postgres for the first time (not just synthetic testing) — surfaced and fixed six real bugs in one session (SS-6 through SS-11, see "Recent work" above and `BACKLOG.md`), including a genuine event-loop-freezing hang in the MCP client
@@ -1010,6 +1898,9 @@ groundwork exists so far — no dedicated UI:
 - Show me queries return composite responses linking relevant Python code, Dr.Egeria templates, and catalog report specs with clickable file:// links
 - Chat-driven plan reorder ("move step 3 to be the first step") and relationship editing (Project Hierarchy, Project Dependency) work in both pre- and post-generation phases
 - Plan Templates are browsable from the Plans sidebar tab, not just via chat phrase
+- `data/repos/`, the pgvector store, and `config/advisor.yaml` are back in sync (`scripts/full_reset.sh` re-clones and re-ingests everything from one consistent snapshot); Python ingestion no longer silently drops class-containing files
+- Live Egeria calls (reports, Dr.Egeria actions, plan execution) use the signed-in user's own credentials end-to-end, verified against the real Egeria instance
+- Milvus is fully gone — pgvector is the only vector store code path, config, or dependency in the repo
 
 **Planned next (in priority order):**
 
@@ -1034,8 +1925,6 @@ groundwork exists so far — no dedicated UI:
 - **Egeria Actor lookup for unresolved names** — when `actor_found=False`, optionally auto-insert a `Create Actor Profile` command before the role appointment. Currently surfaces a warning only.
 
 - **Builder mode chat routing** — when `builder_mode: True` is set on a draft, informational chat queries should route to DocAgent rather than GovernancePlanAgent (flag is stored but not yet read by `_process_query`).
-
-- **MCP credential propagation** — investigate whether `run_report`/`dr_egeria_run_block` accept per-call user args; if yes, thread JWT-extracted credentials through to MCP calls.
 
 - **Report Spec canvas** — create/edit question_specs via chat + canvas (needs design session).
 

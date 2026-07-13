@@ -1,6 +1,6 @@
 # Egeria Advisor — Prompt Patterns Guide
 
-**Last Updated:** 2026-06-02
+**Last Updated:** 2026-07-11
 
 This guide gives you concrete, copy-ready prompt patterns organised by what you want to accomplish. Each pattern shows the recommended role, the recommended intent button, the query text, and the type of response you will get.
 
@@ -411,11 +411,31 @@ If the generated code uses methods like `create_governance_zone()` that don't ex
 
 ## Intent Button Quick Reference
 
+The buttons in the current Web UI read **Auto / Explain / Show me / Inspect / Run Report /
+Act / Create / Troubleshoot**. Elsewhere in this guide, "Report intent" and "the Report
+button" refer to what's now labelled **Run Report**, and "Plan"/planning patterns use the
+**Create** button — the underlying behaviour described in each example is unchanged, only the
+button labels moved.
+
 | Button | When to use |
 |---|---|
 | **Auto** | Default. Works well when your query is clear and your role is set |
 | **Explain** | Force a conceptual explanation — bypasses code routing even for Developer role |
 | **Show me** | Force ExamplesAgent — use when Auto keeps returning a report or explanation |
-| **Report** | Force live data from MCP — use when Auto keeps returning code or docs |
+| **Inspect** | Ask about the codebase's own structure (classes, inheritance, method locations, complexity) — answered via SQL over a symbol table, not RAG |
+| **Run Report** | Force live data from MCP — use when Auto keeps returning code or docs |
 | **Act** | Force Dr.Egeria — use when you want a template or to execute a command |
+| **Create** | Build a new governance plan or report spec — `CreateRouter` decides which, or asks |
 | **Troubleshoot** | Force diagnostic mode — describe the error or unexpected behaviour |
+
+### Inspect examples
+
+```
+"How many classes are in pyegeria?"
+"List methods on AssetManager"
+"Does GlossaryManager inherit from Client?"
+"What are the most complex methods in egeria_java?"
+```
+
+**→ Response:** `CodeIntelAgent` — structured answer from a live SQL query over the code
+symbol table populated at ingest time. No LLM call, no hallucination risk.

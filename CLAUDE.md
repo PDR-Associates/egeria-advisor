@@ -41,6 +41,7 @@ Requires Python 3.12+. External services must be running locally:
 # Start the web UI (primary interface)
 python -m advisor.web.app          # → http://localhost:8880
 # or: uvicorn advisor.web.app:app --reload --port 8880
+# or: scripts/run_web.sh            # HTTP always + HTTPS too if ADVISOR_SSL_CERTFILE/KEYFILE are set in .env
 
 # Query (one-shot CLI)
 egeria-advisor "What is a glossary term in Egeria?"
@@ -99,11 +100,14 @@ User Query  [+ optional perspective + optional intent_override]
       │    └─ if 'general': LLMIntentClassifier ← zero-temp LLM call → refined intent
       │                      (LIVE_DATA/CODE_HELP/CONCEPT/WRITE_COMMAND/AMBIGUOUS)
       │
-      ├─ Role-aware routing (before pipeline dispatch, skipped when intent_override set)
-      │    ├─ developer|data_engineer + code/example/method signals
-      │    │    → ExamplesAgent (advisor/agents/examples_agent.py)
-      │    └─ data_steward|governance_officer + ambiguous example signals (no python keyword)
-      │         → clarification response (Python vs Dr.Egeria)
+      ├─ Format/role-aware routing (before pipeline dispatch, skipped when intent_override set)
+      │    ├─ explicit Dr.Egeria phrasing         → DrEgeriaTemplateAgent
+      │    ├─ explicit hey_egeria/CLI phrasing     → CLICommandAgent
+      │    ├─ explicit Java phrasing               → clarification (Java generation unsupported)
+      │    ├─ developer|data_engineer + explicit code/python signal
+      │    │    → ExamplesAgent (advisor/agents/examples_agent.py; CodeIntelAgent for structural code questions)
+      │    └─ any role + ambiguous "show me"/example signal (no explicit format signal)
+      │         → clarification response (Python vs CLI vs Dr.Egeria)
       │
       ├─ quantitative  → Analytics module (direct SQL answer)
       ├─ relationship  → RelationshipQueryHandler
@@ -186,25 +190,26 @@ The pgvector table for `pyegeria_drE` is named `pyegeria_dre` (normalized to low
 
 The `CollectionRouter` selects 1–N collections per query based on classified intent. RAG parameters: chunk_size=512, top_k=10, min_score=0.30.
 
-### Vector Store Backends
+### Vector Store Backend
 
-`BaseVectorStore` (`advisor/vector_store_base.py`) is the abstract base class for all backends.
+`BaseVectorStore` (`advisor/vector_store_base.py`) is the abstract base class. `PgVectorStore`
+(`advisor/vector_store_pg.py`) is the sole implementation — uses `ThreadedConnectionPool`.
+Milvus was the original backend but has been fully removed (migrated Apr 2026, code/config/
+dependency deleted Jul 2026).
 
-- **`PgVectorStore`** (`advisor/vector_store_pg.py`) — active backend; uses `ThreadedConnectionPool`
-- **`MilvusVectorStore`** (`advisor/vector_store.py`) — legacy; kept for reference
-
-`get_vector_store()` in `advisor/vector_store.py` reads `vector_store_backend` from `config/advisor.yaml` and returns the correct instance. Currently set to `pgvector`.
+`get_vector_store()` in `advisor/vector_store.py` reads `vector_store_backend` from `config/advisor.yaml` and returns a `PgVectorStore` instance.
 
 ### Agent Modes (`advisor/agents/`)
 
 | Agent | File | Handles |
 |---|---|---|
-| `DrEgeriaActionAgent` | `dr_egeria_agent.py` | `command` queries — composes and executes Dr.Egeria pyegeria commands via MCP |
+| `DrEgeriaActionAgent` | `dr_egeria_agent.py` | `command` queries — composes and executes Dr.Egeria pyegeria commands in-process via the `md_processing.v2` dispatcher (no MCP — see rule 24) |
 | `DrEgeriaTemplateAgent` | `dre_template_agent.py` | `command` + template/sample/example keyword — returns pre-generated Dr.Egeria markdown templates from the filesystem |
 | `ExamplesAgent` | `examples_agent.py` | `code_search` / `example` — generates runnable pyegeria code examples *or* structured API-reference listings (method-discovery mode) |
 | `DocAgent` | `doc_agent.py` | `explanation` / `best_practice` / `comparison` / `debugging` / `general` — conceptual answers from indexed docs |
 | `ConversationAgent` | `conversation_agent.py` | Multi-turn sessions (BeeAI framework) |
 | `CLICommandAgent` | `cli_command_agent.py` | hey_egeria CLI command lookup and generation |
+| `CodeIntelAgent` | `code_intel_agent.py` | `code_intel` ("Inspect") — structural codebase facts (class info/docstring, inheritance, method→class lookup, hierarchy, stats) via live SQL over the `code_symbols`/`code_relationships` symbol table, not RAG |
 | `GovernancePlanAgent` | `governance_plan_agent.py` | `plan` queries — orchestrates full plan lifecycle: decompose → validate → generate → execute → outcome |
 | `OutcomeReporter` | `outcome_reporter.py` | Post-execution: selects and runs verification reports, synthesises outcome narrative, appends to plan document |
 
@@ -243,7 +248,7 @@ The **Literate Governance with Context Intelligence (LGCI)** feature allows user
 
 23. **Outbox plan structure** — after execution the outbox plan contains three appended sections in order: (a) `## Outcome` — structured outcome with status, narrative, error tables, Command Results table (GUID + QN + message), filtered Execution Results (Mermaid diagrams and report tables extracted by `_extract_report_sections`), Verification Reports; (b) `## Dr.Egeria Execution Output` — full raw augmented plan markdown in a `<details>` collapsible, always preserved, contains View Report output and Mermaid diagrams. The Plan Editor `<details toggle>` listener re-runs Mermaid when the section is expanded.
 
-24. **`commands_detail` in MCP response** — `_build_structured_response` in `mcp_server.py` emits a `commands_detail` list alongside `validation_errors`/`execution_errors`. Each entry: `{step, command, status, guid, qualified_name, display_name, message}`. `OutcomeReporter.generate()` uses it directly when available. When `guid` is empty (auto-derived QN), the GUID is parsed from the processor's message string `"Executed Verb Object (GUID: …)"` via `_GUID_IN_MSG_RE`.
+24. **`commands_detail` in Dr.Egeria's execution response** — built by `_execute_dr_egeria_markdown()` in `advisor/agents/dr_egeria_agent.py`, which calls the `md_processing.v2` command dispatcher **in-process** (not via MCP — pyegeria's MCP server, `pyegeria.core.mcp_server`, only exposes report tools; Dr.Egeria command execution has no MCP wrapper as of pyegeria 6.0.16.x, see `docs/PROJECT_SUMMARY.md` Phase 25) and reconstructs the same JSON envelope shape (`{success, output, validation_errors, execution_errors, commands_total, commands_succeeded, commands_failed, commands_detail}`) that `governance_plan_agent._parse_dr_egeria_response()` and everything downstream already expect. Each `commands_detail` entry: `{step, command, status, guid, qualified_name, display_name, message}` — `guid`/`qualified_name`/`display_name` come directly from the processor's result dict, not string-parsed. `OutcomeReporter.generate()` uses it directly when available; if `guid` is ever empty, `_GUID_IN_MSG_RE` falls back to parsing it out of the message string `"Executed Verb Object (GUID: …)"`.
 
 25. **`_ACTION_TO_EGERIA_TYPE` completeness** — every `Create X` command that makes a new Egeria element must be in this dict so `_make_cmd()` auto-generates Qualified Name. Currently missing entries are the commonest source of empty QN in Command Results. When adding a new Create command to the action catalog, always add the corresponding entry here. Current gaps known: none for commands in catalog as of Jun 15 2026 — `PersonRole`, `Community`, `ActorProfile`, `UserIdentity` added.
 
@@ -254,6 +259,10 @@ The **Literate Governance with Context Intelligence (LGCI)** feature allows user
 28. **The document composer always validates against the *basic*-tier Dr.Egeria template, regardless of `spec["mode"]`.** `GovernancePlanAgent._load_template()` hardcodes `root / "basic"` — `spec["mode"]` only controls which Q&A questions the elicitor asks (`_build_pending_questions`), never which template file `_compose_command_block()` checks rendered fields against. **Any field that exists only in the advanced template is silently dropped from every generated plan document, at any mode** (tracked as `BACKLOG.md` PC-1). This means the historical `Create Project` + `Parent ID` sub-project mechanism has likely never actually rendered into a chat-generated plan — the validator sets it correctly in `pre_filled`/`answers`, but the composer discards it before it reaches markdown. The NL hierarchy handler (rule 27) works around this by targeting the newer basic-tier `Sub-Projects` field instead. Before relying on any advanced-only field anywhere in the compose path, verify it's actually in the **basic** template file, not just that it exists in advanced.
 
 29. **`OutcomeReporter._build_command_results()` must not fabricate an "all succeeded" table from an unattributed error.** It builds per-command status by matching `validation_errors`/`execution_errors` to command names, assuming unlisted commands succeeded — correct for genuine per-command Dr.Egeria failures, but a systemic failure (e.g. an MCP call timeout, synthesized by `GovernancePlanAgent.execute()`'s generic exception handler with placeholder `step="?"`/`command="?"`) has no real per-command attribution. When every recorded error is unattributed, the function returns `[]` rather than marking every command "Success", so `_infer_status()` falls back to scanning the raw output text instead of reporting a false "Success" that contradicts the actual failure.
+
+30. **Entity-type extraction (`_extract_entities_patterns`) and `CreateRouter` both fall back to the full `CommandKeywordIndex` (~126 commands), not just the ~25 types hand-registered in `_ENTITY_TO_ACTION`.** The hand-written `_ENTITY_PATTERNS` regexes (and `_PLAN_SIGNALS`/`_SPEC_SIGNALS` in `create_router.py`) only cover the most common phrasings; a generic catch-all pattern (sentinel `etype = "__generic__"`, two capture groups: type phrase + name) catches anything else shaped like "create/add/set up a/an `<type>` called/named/for/to `<name>`" and resolves the type phrase against the keyword index. **The keyword-index search must be scoped to just the captured type phrase, never the whole query** — passing the full sentence lets an unrelated proper noun in the *name* portion (e.g. "...to the Egeria Project web site") win a higher-confidence exact match ("Project") over the correct, weaker partial match on the real type earlier in the sentence. `_infer_type_from_context(scope=...)` takes this explicitly for exactly this reason. A resolved command is carried directly as `obj["action"]`, bypassing `_ENTITY_TO_ACTION`/`catalog.find_by_alias` entirely (which only handles pre-registered types) — `_entities_to_commands` prefers `obj.get("action")` when present. `CommandKeywordIndex.lookup()`'s tier-4 partial-match has a minimum phrase/term length guard (3 chars) — without it, `_normalize()` stripping a leading verb ("create ") can leave a 1-2 char leftover that trivially substring-matches almost any command name.
+
+31. **`PlanElicitor._handle_confirm_commands`'s addition path must deduplicate new commands by `(action, display_name)`, matching `plan_validator.py::_deduplicate()` exactly — never by bare action type.** A plan can legitimately want two instances of the same action with different names (two `Create External Reference` steps for two different sites, two `Create Task` steps, etc.). Filtering on bare action type (with only `Create Project` special-cased to allow multiples) silently discards every other legitimately-repeated action as a false duplicate — `added` ends up empty and the user gets "I wasn't sure how to update the plan from that" for a perfectly clear request. `_deduplicate()` is called right after this filter anyway and already does the correct `(action, display_name)` comparison, so there's no need for `_handle_confirm_commands` to have its own, stricter, wrong version of the same check.
 
 ### Data Pipeline (`advisor/data_prep/`)
 
@@ -273,6 +282,24 @@ Primary config: `config/advisor.yaml`. Environment overrides: `.env` (copy from 
 Key config sections: `pgvector`, `vector_store_backend`, `llm`, `embeddings`, `rag`, `observability`, `agents`.
 
 Settings are managed via Pydantic models in `advisor/config.py`.
+
+### Deployment / Egeria Connection Configuration
+
+**Which Egeria instance the app talks to is resolved by `advisor/mcp_config.py::get_pyegeria_platform_config()`, not `advisor.config.settings`.** Priority: `EGERIA_VIEW_SERVER_URL`/`EGERIA_VIEW_SERVER` env vars (`.env`) first, then `config/mcp_servers.json`'s `mcpServers.pyegeria.env` block (which defaults to local Egeria at `https://localhost:9443`/`qs-view-server`). This is the single source every live-Egeria code path uses: `advisor.auth.validate_egeria_credentials` (login), `advisor.report_pipeline.ReportPipeline._read_pyegeria_connection` (report execution), `advisor.egeria_context.EgeriaContext._load_connection` (context enrichment), `advisor.agents.dr_egeria_agent.DrEgeriaActionAgent._get_egeria_conn` (Dr.Egeria actions/templates). To point a deployment at a different Egeria instance, set the two `.env` values — never edit the committed `config/mcp_servers.json` for this. (`advisor.config.settings` has no `egeria_platform_url`/`egeria_view_server` fields anymore — they were dead: declared but never read anywhere. `egeria_user`/`egeria_password` in `.env` are real, but only as the fallback service account `advisor.auth.resolve_egeria_credentials()` uses when a request has no logged-in session — most live-Egeria actions require login via `require_egeria_user()` and never hit this.)
+
+**Portal SSO** — `POST /api/auth/portal` (`advisor.auth.exchange_portal_token`) exchanges a short-lived JWT issued by an external Portal (shared HS256 secret, `ADVISOR_PORTAL_SECRET` env var or `config/advisor.yaml`'s `auth.portal.shared_secret`) for this Advisor's own session JWT — lets a Portal hand off an already-authenticated user without a second login. Blank/unset `ADVISOR_PORTAL_SECRET` disables it (endpoint returns 503).
+
+**Cross-origin access** — `advisor/web/app.py`'s CORS middleware always allows `localhost` (any port, for local dev) plus any origins listed in `ADVISOR_EXTRA_CORS_ORIGINS` (`.env`, comma-separated). Only needed when something calls this Advisor's API from a *different* origin (e.g. a Portal frontend); the SPA's own same-origin calls (served from the same host:port as the API) are never subject to CORS regardless of hostname.
+
+**External/forwarded access** — uvicorn defaults to binding `127.0.0.1` (loopback only). An SSH reverse tunnel terminating on this machine's own loopback works fine as-is; a router/NAT port-forward or a reverse proxy forwarding to this machine's real network interface needs `uvicorn advisor.web.app:app --host 0.0.0.0 --port 8880` (or the specific interface IP) to accept those connections at all.
+
+**HTTP + HTTPS together** — `scripts/run_web.sh` always serves plain HTTP (`ADVISOR_HTTP_PORT`, default 8880) and additionally serves HTTPS (`ADVISOR_HTTPS_PORT`, default 8881) when `ADVISOR_SSL_CERTFILE`/`ADVISOR_SSL_KEYFILE` are both set in `.env` to existing files — otherwise HTTPS is silently skipped. uvicorn only serves one scheme per process, so "both" means two `uvicorn` processes sharing the same FastAPI app (`advisor.web.app:app`), started and torn down together by that one script, not one process doing both. `config/certs/` (gitignored entirely, never committed — holds private key material) has the real Let's Encrypt cert for `egeria.pdr-associates.com`: `server.crt` (leaf) + `server-ca.crt` (R13 intermediate) concatenated into `fullchain.pem` (built once — `server.crt` had no trailing newline, so a naive `cat` without inserting one produces a malformed PEM with two certs run together on one line) and `server.key` (private key, verified to match via `openssl x509 -pubkey` vs `openssl rsa -pubout`). Verified live with the real cert: HTTP and HTTPS both return 200 locally, and `curl -v`'s reported cert subject/issuer confirm HTTPS is genuinely serving the real Let's Encrypt cert, not a placeholder. External reachability on the HTTPS port additionally depends on router port-forwarding being configured (same requirement as the existing `:8880`/`:9443` forwards) — not verifiable from this machine alone.
+
+**Don't assume `localhost:9443` is "the" Egeria just because something responds there.** This machine ("hedwig") separately runs its own local `egeria-quickstart` dev stack (Docker container `quickstart-egeria-main`, port-mapped `9443:9443`) — a genuinely different Egeria server from whatever this Advisor is actually meant to talk to, seeded with the same standard sample content pack. A connection attempt to a *different* Egeria hanging/failing is easy to misdiagnose as "must mean I should use localhost instead" — it looked exactly like NAT hairpinning (instant `localhost:9443` response vs. a hard-timeout public hostname) and wasn't; the real cause was that the public hostname's port forward for `:9443` had simply been dropped at the router. **Verify same-server identity with data, not just "it responds"**: fetch a specific element's GUID (`find_elements_by_property_value`) through each candidate connection and compare — GUIDs are per-instance random UUIDs, so a match is near-conclusive and a mismatch is definitive, whereas matching report *output* proves nothing when both servers loaded the same stock sample content pack. Confirm basic reachability first with `curl -k --max-time 15 https://<host>:9443/...` (should be milliseconds once the right port is actually open; a hard timeout means find out why that specific port isn't forwarded before reaching for a different hostname).
+
+**Three separate, independent timeout layers sit between a report request and Egeria's response** — raising one alone does nothing if the others are still short: `ADVISOR_MCP_TOOL_TIMEOUT` (egeria-advisor's own wait for the whole MCP round-trip, `advisor/mcp_agent.py`), `PYEGERIA_MCP_REPORT_TIMEOUT` (pyegeria's `run_report` MCP tool handler's own internal deadline, `pyegeria/core/mcp_server.py` — a *different codebase*), and `PYEGERIA_TIMEOUT_SECONDS` (pyegeria's actual per-HTTP-request timeout to Egeria's REST API, `pyegeria/core/config.py` → `_base_server_client.py`, which overrides an also-hardcoded `httpx.Timeout(30.0)` client default in `_base_platform_client.py`). All three default to ~30s. `config/mcp_servers.json`'s `pyegeria.command`/`args` also matter here: they must launch from a pyegeria installation that actually *has* `PYEGERIA_MCP_REPORT_TIMEOUT`/`PYEGERIA_TIMEOUT_SECONDS` support — an older/different pyegeria checkout elsewhere on disk may have these hardcoded with no env override at all, in which case raising the env var has zero effect no matter how high.
+
+**Keep `pyegeria`'s version floor in `pyproject.toml` aligned with other pyegeria consumers in the same deployment** (e.g. a Portal's own `requirements.txt`), not just whatever's convenient locally — different client versions reading the same Egeria data can still disagree on available features/output formats (e.g. `run_report`'s supported `output_type`s), causing confusing "why does this tool support X but that one doesn't" reports even though the underlying data is identical.
 
 ### Report Spec Builder Design Rules
 
@@ -300,6 +327,8 @@ Settings are managed via Pydantic models in `advisor/config.py`.
 
 5. **`QuestionSpecIndex.search()` perspective filter** zeros out scores for specs whose `perspectives` list does not contain the selected role (or `"any"`). A `None` perspective disables filtering — all specs are eligible.
 
+5a. **Act's `_extract_type_and_filter()` resolves element types via `advisor/egeria_type_registry.py`**, not a bare first-content-word heuristic. `resolve_type_name(words)` tries the longest word-prefix (up to 4 words) against a cached registry built from `config/report_specs/report_specs_annotated.json`'s 75 `target_type` values, so multi-word type names ("external reference(s)", "data product(s)") resolve to their full canonical Egeria name (`ExternalReference`, `DigitalProduct`) instead of truncating to the first word. Falls back to the bare first word when nothing matches. Real Egeria calls it `DigitalProduct`, not `DataProduct` — common industry terminology doesn't always match Egeria's own type names; mismatches like this go in the registry's `_ALIASES` dict.
+
 ### Agent & Routing Design Rules
 
 6. **BeeAI `FunctionTool` objects (produced by `@tool`) have no `.func` attribute** — calling `my_tool.func(...)` raises `AttributeError`. Extract implementation into a `_<name>_raw()` plain function; the `@tool` wrapper delegates to it. Fallback methods import and call the raw function directly. See `_find_dre_template_raw`, `_search_egeria_content_raw`, `_get_egeria_symbol_raw` in `advisor/agents/tools.py`.
@@ -312,7 +341,7 @@ Settings are managed via Pydantic models in `advisor/config.py`.
 
 10. **Dr.Egeria template lookup uses `_templates_root()`** which tries two layouts in order: `{root}/Templates/Dr-Egeria-Templates` (workspace layout) then `{root}/templates` (lower-case fallback). The root comes from `pyegeria.core.config.get_app_config().Environment.pyegeria_root` first, then `EGERIA_ROOT_PATH` / `PYEGERIA_ROOT_PATH` env vars.
 
-11. **Role-aware routing in `_process_query`** fires *before* pipeline dispatch and is skipped when `query_type_override` is set. Developer/Data Engineer + code/example/method-discovery signals → always route to ExamplesAgent. Data Steward/Governance + ambiguous example signals (no Python keyword) → return a clarification asking whether they want Python code or a Dr.Egeria template.
+11. **Format/role-aware routing in `PerspectiveRoutingEngine.route()`** (called from `_process_query`, before pipeline dispatch). This whole layer — dre/cli/java signal routing, the tech-role code/Python fast path, and the ambiguous "show me" clarify — is gated behind `intent in PerspectiveRoutingEngine._AMBIGUOUS_ELIGIBLE_INTENTS` (`{"code_help", "code_search", "example", "general", ""}`). An explicit `intent_override` for anything else — Act (`command`), Run Report (`report`), Inspect (`code_intel`), Explain (`explanation`), Troubleshoot (`debugging`), Create (`plan`/`create`) — skips this layer entirely and falls straight to default policy routing, so the query text containing "show me" (e.g. Act + "show me the external references") can never hijack an explicit non-"Show me" intent selection. Within the eligible intents: Dr.Egeria phrasing ("dr egeria"/"dr. egeria"/"dr_egeria"/word-boundary `dre`) → `DrEgeriaTemplateAgent`; `hey_egeria`/CLI phrasing → `CLICommandAgent`; Java phrasing → clarification (no Java generation capability exists). Developer/Data Engineer + an *explicit* code/Python signal → `ExamplesAgent` (or `CodeIntelAgent` for structural questions like class hierarchies). Any role with only an ambiguous example/"show me" signal and no explicit format signal → 3-way clarification (Python / CLI / Dr.Egeria) — role-agnostic; Developer/Data Engineer no longer default straight to Python for a plain "show me X".
 
 12. **`routing.yaml` CRITICAL priority patterns** are checked before HIGH/MEDIUM patterns. Python/code example patterns in CRITICAL `example` ensure "give me a python example to create X" is classified before it can match HIGH `command` or `report` patterns. Method-discovery patterns ("what methods", "what api", "list methods", etc.) are CRITICAL `code_search` so they never fall to `general`.
 

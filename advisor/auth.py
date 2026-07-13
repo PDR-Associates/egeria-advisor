@@ -8,6 +8,8 @@ Public API:
   require_egeria_user(request) -> dict           -- raises HTTP 401 if missing
   exchange_portal_token(portal_token) -> dict    -- validates portal short-lived token
   validate_egeria_credentials(user_id, password) -> bool
+  get_egeria_credentials(request) -> Optional[EgeriaCredentials]  -- None if anonymous
+  resolve_egeria_credentials(creds) -> EgeriaCredentials          -- falls back to service account
 """
 from __future__ import annotations
 
@@ -15,7 +17,7 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TypedDict
 
 import jwt
 from fastapi import HTTPException, Request
@@ -143,6 +145,52 @@ def is_authenticated(request: Request) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Per-user Egeria credential propagation
+#
+# The JWT already embeds the real egeria_user/egeria_password a user signed
+# in with (see create_access_token above). Live-Egeria call sites (reports,
+# Dr.Egeria actions, plan execution) must use THESE credentials rather than
+# falling back to a static service account, so that live_reports/actions run
+# as the actual signed-in user and not one shared identity for everyone.
+# ---------------------------------------------------------------------------
+
+class EgeriaCredentials(TypedDict):
+    user_id: str
+    password: str
+
+
+def get_egeria_credentials(request: Request) -> Optional[EgeriaCredentials]:
+    """
+    Extract {user_id, password} from the request's JWT.
+    Returns None only when there is no authenticated user (anonymous, no/invalid
+    token) — callers decide whether to fall back via resolve_egeria_credentials().
+    """
+    user = get_current_user(request)
+    if user is None:
+        return None
+    return {
+        "user_id": user.get("egeria_user", ""),
+        "password": user.get("egeria_password", ""),
+    }
+
+
+def resolve_egeria_credentials(creds: Optional[Dict[str, str]]) -> EgeriaCredentials:
+    """
+    Single fallback point for Egeria user_id/password: use the given per-request
+    credentials if present and non-empty, otherwise fall back to the .env-backed
+    service account (advisor.config.settings.egeria_user/egeria_password).
+
+    Deliberately does NOT fall back to config/mcp_servers.json — that file's
+    "EGERIA_USER"/"EGERIA_PASSWORD" env entries are unresolved template
+    placeholders on a typical local checkout, never substituted anywhere.
+    """
+    if creds and creds.get("user_id"):
+        return {"user_id": creds["user_id"], "password": creds.get("password", "")}
+    from advisor.config import settings
+    return {"user_id": settings.egeria_user, "password": settings.egeria_password}
+
+
+# ---------------------------------------------------------------------------
 # Portal token exchange
 # ---------------------------------------------------------------------------
 
@@ -177,10 +225,13 @@ def validate_egeria_credentials(user_id: str, password: str) -> bool:
     Falls back to checking against configured service account if Egeria is down.
     """
     try:
+        from advisor.mcp_config import get_pyegeria_platform_config
+        conn = get_pyegeria_platform_config()
+        view_server  = conn["view_server"]
+        platform_url = conn["platform_url"]
+
         cfg = json.loads(_MCP_PATH.read_text())
         env = cfg.get("mcpServers", {}).get("pyegeria", {}).get("env", {})
-        view_server  = env.get("EGERIA_VIEW_SERVER", "")
-        platform_url = env.get("EGERIA_VIEW_SERVER_URL", "")
         svc_user     = env.get("EGERIA_USER", "")
         svc_pwd      = env.get("EGERIA_PASSWORD", "")
 

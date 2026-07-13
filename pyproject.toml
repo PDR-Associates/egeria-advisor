@@ -10,8 +10,7 @@ readme = "README.md"
 license = {text = "Apache-2.0"}
 
 dependencies = [
-    "pyegeria>=6.0.16.1",
-    "pymilvus>=2.4.0",
+    "pyegeria>=6.0.16.16",  # matches the Portal's (PyegeriaWebHandler) floor -- avoid client-version drift within the same demo stack
     "psycopg2-binary>=2.9.9",
     "pgvector>=0.3.0",
     "docling>=1.0.0",

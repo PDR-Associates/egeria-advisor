@@ -1,5 +1,7 @@
 """
-Abstract base class for vector store backends (Milvus, pgvector, etc.).
+Abstract base class for vector store backends. pgvector is the only
+implementation today (advisor/vector_store_pg.py); this interface exists to
+keep the rest of the codebase decoupled from that choice.
 """
 
 from abc import ABC, abstractmethod
@@ -47,9 +49,8 @@ class BaseVectorStore(ABC):
         """
         Create (or verify) a collection / table.
 
-        extra_fields meaning is backend-specific:
-          - Milvus: list[FieldSchema]
-          - pgvector: ignored (schema is determined by collection name)
+        extra_fields: unused by the pgvector backend (schema is determined
+        by collection name); kept for interface flexibility.
         """
         ...
 
@@ -104,8 +105,8 @@ class BaseVectorStore(ABC):
         """
         Retrieve rows by scalar filter without a vector search.
 
-        filter_expr uses Milvus expression syntax for the Milvus backend and is
-        translated to a SQL WHERE clause for the pgvector backend.
+        filter_expr uses the small filter-expression DSL defined in
+        advisor.metadata_filters, translated to a SQL WHERE clause internally.
         """
         ...
 

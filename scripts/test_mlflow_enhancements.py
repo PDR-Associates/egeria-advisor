@@ -167,7 +167,7 @@ def main():
     if not test_health_check():
         print("\n⚠️  System health check failed. Please ensure all services are running.")
         print("   - Ollama: systemctl status ollama")
-        print("   - Milvus: docker ps | grep milvus")
+        print("   - pgvector: psql -h localhost -p 5442 -U egeria_advisor -d egeria_advisor -c 'SELECT 1;'")
         print("   - MLflow: docker ps | grep mlflow")
         return 1
     

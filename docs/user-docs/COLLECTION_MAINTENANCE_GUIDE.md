@@ -6,7 +6,7 @@ Guide for understanding, maintaining, and updating the Egeria Advisor vector col
 
 ## Collection overview
 
-Egeria Advisor indexes content from four upstream Git repositories into nine pgvector collections (~88,900 entities total). Each collection targets a distinct content type and is tuned accordingly — chunk size, overlap, similarity threshold, and result count all vary based on the nature of the material.
+Egeria Advisor indexes content from four upstream Git repositories into nine pgvector collections (~92,400 entities total). Each collection targets a distinct content type and is tuned accordingly — chunk size, overlap, similarity threshold, and result count all vary based on the nature of the material.
 
 The authoritative definitions live in `advisor/collection_config.py`. This guide explains the design choices documented there.
 
@@ -132,14 +132,22 @@ python -m advisor.incremental_indexer --collection egeria_concepts
 python -m advisor.incremental_indexer --collection egeria_templates
 ```
 
-To re-index all collections from scratch:
+To re-index all collections from scratch, from a guaranteed-consistent snapshot of every
+upstream repo:
 
 ```bash
-# 1. Update upstream repos
-python scripts/clone_repos.py
+scripts/full_reset.sh --yes
+```
+
+See [Repo Update Guide](REPO_UPDATE_GUIDE.md#full-reset) for what this does. For a lighter
+touch that doesn't delete and re-clone existing checkouts:
+
+```bash
+# 1. Update upstream repos in place
+python scripts/clone_repos.py --phase all --update
 
 # 2. Re-ingest all collections
-python scripts/ingest_collections.py
+python scripts/ingest_collections.py --phase all --force
 ```
 
 ---

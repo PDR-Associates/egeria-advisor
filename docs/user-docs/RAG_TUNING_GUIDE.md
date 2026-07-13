@@ -154,17 +154,14 @@ rag:
 
 ### Step 5: Verify Data Quality
 
-#### 5.1 Check What's in Milvus
+#### 5.1 Check What's in the Vector Store
 
 ```bash
-python -c "
-from advisor.vector_store import get_vector_store
-vs = get_vector_store()
-print(f'Total documents: {vs.count()}')
-"
+python scripts/count_vectors.py
 ```
 
-Should show ~4,600 documents.
+Should show ~92,000+ entities total across 9 collections (see `docs/user-docs/COLLECTION_MAINTENANCE_GUIDE.md`
+for the current per-collection breakdown).
 
 #### 5.2 Test Search Quality
 
@@ -172,7 +169,7 @@ Should show ~4,600 documents.
 python -c "
 from advisor.vector_store import get_vector_store
 vs = get_vector_store()
-results = vs.search('glossary', top_k=5)
+results = vs.search('egeria_concepts', query_text='glossary', top_k=5)
 for r in results:
     print(f'{r.score:.3f}: {r.metadata.get(\"name\", \"Unknown\")} - {r.metadata.get(\"file_path\", \"Unknown\")}')
 "

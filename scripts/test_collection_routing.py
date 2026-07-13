@@ -3,7 +3,7 @@
 Test script for collection routing logic.
 
 Tests the intelligent query routing system without requiring
-actual Milvus collections to be populated.
+actual pgvector collections to be populated.
 """
 
 import sys

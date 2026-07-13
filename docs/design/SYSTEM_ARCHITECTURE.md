@@ -1,5 +1,25 @@
 # Egeria Advisor - System Architecture
 
+> **⚠️ This document describes an early architecture snapshot and is substantially out of
+> date as of 2026-07-11.** It predates the Milvus → pgvector migration (Apr 2026), the
+> expansion from 6 to 9 collections (~92,400 entities, not 99,822), and everything built in
+> Phases 8–14 — the agent architecture (`DrEgeriaActionAgent`, `ExamplesAgent`, `DocAgent`,
+> `GovernancePlanAgent`), MCP integration, Literate Governance (LGCI), the report spec
+> builder, and code intelligence. Every Mermaid diagram below that shows "Milvus" or "6
+> Collections" reflects that old state.
+>
+> **For current architecture, use:**
+> - `CLAUDE.md` (repo root) — Query Flow diagram, current component list, all design rules
+> - `docs/PROJECT_SUMMARY.md` — "Architecture evolution" section has accurate, current
+>   Mermaid diagrams for each phase, including the present state
+> - `docs/user-docs/COLLECTION_MAINTENANCE_GUIDE.md` — current 9-collection pgvector setup
+>
+> This document was not fully rewritten in this pass — it would require redoing all 8+
+> Mermaid diagrams and several major sections (Component Architecture, Data Flow, Deployment,
+> Technology Stack, Scalability) from scratch, which is a bigger undertaking than the rest of
+> the documentation refresh this document is part of. Treat everything below as historical
+> unless independently verified against the code.
+
 ## Overview
 
 The Egeria Advisor is a production-ready RAG (Retrieval-Augmented Generation) system with conversational AI capabilities, built on a multi-collection vector store architecture with comprehensive observability.

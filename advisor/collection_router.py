@@ -1,5 +1,5 @@
 """
-Collection router for intelligent query routing across multiple Milvus collections.
+Collection router for intelligent query routing across multiple collections.
 
 This module determines which collection(s) to search based on query content,
 domain terms, and collection metadata.
@@ -18,7 +18,7 @@ from advisor.query_patterns import get_domain_terms
 
 
 class CollectionRouter:
-    """Routes queries to appropriate Milvus collections."""
+    """Routes queries to appropriate collections."""
 
     # Collections that contain action/command templates — not suitable for
     # informational "how do I find / what is / explain" queries.

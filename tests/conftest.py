@@ -73,8 +73,8 @@ def mock_llm_response():
 def test_config():
     """Test configuration."""
     return {
-        "milvus_host": "localhost",
-        "milvus_port": 19530,
+        "pgvector_host": "localhost",
+        "pgvector_port": 5442,
         "ollama_host": "http://localhost:11434",
         "model_name": "llama3.2:3b",
         "embedding_model": "nomic-embed-text:latest",
@@ -172,5 +172,5 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "quality: Quality tests")
     config.addinivalue_line("markers", "performance: Performance tests")
     config.addinivalue_line("markers", "slow: Slow running tests")
-    config.addinivalue_line("markers", "requires_milvus: Tests that require Milvus")
+    config.addinivalue_line("markers", "requires_pgvector: Tests that require pgvector")
     config.addinivalue_line("markers", "requires_ollama: Tests that require Ollama")

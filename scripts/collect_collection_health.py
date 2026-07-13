@@ -2,7 +2,7 @@
 """
 Collect and record collection health metrics.
 
-This script checks the health of all Milvus collections and records
+This script checks the health of all pgvector collections and records
 metrics to the metrics database for display in the dashboard.
 """
 
@@ -14,10 +14,32 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from pymilvus import utility, Collection
 from advisor.vector_store import get_vector_store
 from advisor.metrics_collector import get_metrics_collector, CollectionHealth
 from advisor.collection_config import get_enabled_collections
+
+
+def _table_exists(store, table: str) -> bool:
+    conn = store._get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = %s)",
+                (table,),
+            )
+            return bool(cur.fetchone()[0])
+    finally:
+        store._put_conn(conn)
+
+
+def _table_count(store, table: str) -> int:
+    conn = store._get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f'SELECT count(*) FROM "{table}"')
+            return cur.fetchone()[0]
+    finally:
+        store._put_conn(conn)
 
 
 def calculate_health_score(entity_count: int, expected_min: int = 100) -> float:
@@ -97,12 +119,13 @@ def collect_collection_health():
     
     for collection_metadata in enabled_collections:
         collection_name = collection_metadata.name
-        
+        table_name = vector_store._table(collection_name)
+
         try:
-            # Check if collection exists
-            if not utility.has_collection(collection_name):
+            # Check if collection table exists
+            if not _table_exists(vector_store, table_name):
                 logger.warning(f"Collection {collection_name} does not exist")
-                
+
                 # Record as critical
                 health = CollectionHealth(
                     collection_name=collection_name,
@@ -115,19 +138,9 @@ def collect_collection_health():
                 )
                 collector.record_collection_health(health)
                 continue
-            
-            # Get collection
-            collection = Collection(collection_name)
-            
-            # Try to load collection (may fail if no index)
-            try:
-                collection.load()
-            except Exception as load_error:
-                logger.warning(f"Could not load {collection_name}: {load_error}")
-                # Continue anyway to get entity count
-            
+
             # Get entity count
-            entity_count = collection.num_entities
+            entity_count = _table_count(vector_store, table_name)
             
             # Calculate health score
             health_score = calculate_health_score(entity_count)

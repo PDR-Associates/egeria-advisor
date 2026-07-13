@@ -18,7 +18,9 @@ egeria_user_perspectives:
   - Team Member
 
 data_sources:
-  egeria_python_path: /Users/dwolfson/localGit/egeria-python
+  # Must match the checkout that scripts/clone_repos.py / ingest_collections.py use
+  # (data/repos/egeria-python), so this path and the vector store stay in sync.
+  egeria_python_path: /home/dwolfson/localGit/egeria-v6/egeria-advisor/data/repos/egeria-python
   # Annotated report specs (question_spec populated by generate_question_specs.py)
   # Loaded into pyegeria MCP server via PYEGERIA_USER_REPORT_SPECS_DIR env var
   report_specs_dir: config/report_specs
@@ -42,7 +44,7 @@ data_sources:
 
 vector_store:
   host: localhost
-  port: 19530
+  port: 5442
   # Collections are defined in advisor/collection_config.py
   # Active collections (9 total) — backend is pgvector (see pgvector section below):
   #   1. pyegeria         - Python SDK code and tests
@@ -66,7 +68,7 @@ pgvector:
   max_connections: 10
   ef_search: 128  # HNSW query-time parameter — higher = better recall, slower
 
-# Active vector store backend: "milvus" or "pgvector"
+# Active vector store backend — pgvector is the only supported backend
 vector_store_backend: pgvector
 
 llm:

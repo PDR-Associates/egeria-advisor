@@ -61,7 +61,7 @@ def test_config():
         print(f"  ✓ Settings loaded")
         print(f"    - Data path: {settings.advisor_data_path}")
         print(f"    - Cache dir: {settings.advisor_cache_dir}")
-        print(f"    - Milvus: {settings.milvus_host}:{settings.milvus_port}")
+        print(f"    - pgvector: {settings.pgvector_host}:{settings.pgvector_port}")
         print(f"    - Ollama: {settings.ollama_base_url}")
         print(f"    - MLflow: {settings.mlflow_tracking_uri}")
         

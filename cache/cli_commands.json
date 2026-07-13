@@ -59,6 +59,18 @@
     "help_text": "",
     "docstring": ""
   },
+  "load_report_specs": {
+    "command_name": "load_report_specs",
+    "type": "hey_egeria",
+    "category": "cat",
+    "module_path": "commands.cat.load_report_specs",
+    "function_name": "main",
+    "entry_point": "commands.cat.load_report_specs:main",
+    "description": "",
+    "parameters": [],
+    "help_text": "",
+    "docstring": ""
+  },
   "list_assets": {
     "command_name": "list_assets",
     "type": "hey_egeria",
@@ -593,42 +605,42 @@
     "module_path": "commands.cat.glossary_actions",
     "function_name": "import_terms_csv",
     "entry_point": "commands.cat.glossary_actions:import_terms_csv",
-    "description": "Load terms from file into the glossary specified",
+    "description": "Import glossary terms from a CSV file into the named glossary.",
     "parameters": [
       {
-        "name": "--glossary_name",
+        "name": "--glossary-name",
         "type": "str",
         "required": true,
         "default": null,
-        "help": "Name of Glossary"
+        "help": "Display name of the target glossary"
       },
       {
-        "name": "--file_name",
+        "name": "--file-name",
         "type": "str",
         "required": true,
         "default": null,
-        "help": "Name of CSV file"
+        "help": "Name of the CSV file to import"
       },
       {
-        "name": "--input_file",
+        "name": "--file-path",
         "type": "str",
         "required": false,
         "default": null,
-        "help": "Path of CSV file"
+        "help": "Directory containing the CSV file (defaults to EGERIA_GLOSSARY_PATH)"
       },
       {
-        "name": "--verbose",
-        "type": "bool",
+        "name": "--verbose/--no-verbose",
+        "type": "str",
         "required": false,
         "default": true,
-        "help": "If set, result descriptions are provided"
+        "help": "Show per-row import results"
       },
       {
-        "name": "--upsert",
-        "type": "bool",
+        "name": "--upsert/--no-upsert",
+        "type": "str",
         "required": false,
         "default": true,
-        "help": "If set, terms will be updated if they exist; otherwise they would be appended"
+        "help": "Update existing terms when a matching qualified name is found; disable to always insert"
       },
       {
         "name": "--server",
@@ -667,7 +679,7 @@
       }
     ],
     "help_text": "",
-    "docstring": "Load terms from file into the glossary specified"
+    "docstring": "Import glossary terms from a CSV file into the named glossary.\n\nThe CSV must contain the columns produced by the export-terms-csv command:\nTerm Name, Qualified Name, Abbreviation, Summary, Description, Examples,\nUsage, Version Identifier, Status."
   },
   "export_terms_to_csv_file": {
     "command_name": "export_terms_to_csv_file",
@@ -676,28 +688,28 @@
     "module_path": "commands.cat.glossary_actions",
     "function_name": "export_terms_csv",
     "entry_point": "commands.cat.glossary_actions:export_terms_csv",
-    "description": "Export the glossary specified",
+    "description": "Export all terms from a glossary to a CSV file.",
     "parameters": [
       {
-        "name": "--glossary_guid",
+        "name": "--glossary-guid",
         "type": "str",
         "required": true,
         "default": null,
-        "help": "GUID of Glossary to export"
+        "help": "GUID of the glossary to export"
       },
       {
-        "name": "--file_name",
+        "name": "--file-name",
         "type": "str",
         "required": true,
         "default": null,
-        "help": "Name of CSV file"
+        "help": "Output CSV file name"
       },
       {
-        "name": "--input_file",
+        "name": "--file-path",
         "type": "str",
         "required": false,
         "default": null,
-        "help": "Path of CSV file"
+        "help": "Directory in which to write the CSV (defaults to EGERIA_GLOSSARY_PATH)"
       },
       {
         "name": "--server",
@@ -736,7 +748,7 @@
       }
     ],
     "help_text": "",
-    "docstring": "Export the glossary specified"
+    "docstring": "Export all terms from a glossary to a CSV file.\n\nThe output file can be re-imported with the import-terms-from-csv command."
   },
   "list_categories": {
     "command_name": "list_categories",
@@ -810,21 +822,21 @@
     "help_text": "",
     "docstring": ""
   },
-  "dr_egeria_md": {
-    "command_name": "dr_egeria_md",
+  "dr_egeria": {
+    "command_name": "dr_egeria",
     "type": "hey_egeria",
     "category": "cat",
-    "module_path": "commands.cat.dr_egeria_md",
+    "module_path": "commands.cat.dr_egeria",
     "function_name": "process_markdown_file",
-    "entry_point": "commands.cat.dr_egeria_md:process_markdown_file",
+    "entry_point": "commands.cat.dr_egeria:process_markdown_file",
     "description": "Process a markdown file by parsing and executing Dr. Egeria md_commands. Write output to a new file.",
     "parameters": [
       {
-        "name": "--input-file",
+        "name": "input_file",
         "type": "str",
-        "required": true,
+        "required": false,
         "default": "dr_egeria_intro_part1.md",
-        "help": "Markdown file to process."
+        "help": ""
       },
       {
         "name": "--output-folder",
@@ -837,8 +849,22 @@
         "name": "--directive",
         "type": "str",
         "required": false,
-        "default": "process",
-        "help": "How to process the file"
+        "default": "validate",
+        "help": "How to process the file (display/validate/process). Overridden by --validate or --process flags."
+      },
+      {
+        "name": "--validate",
+        "type": "bool",
+        "required": false,
+        "default": false,
+        "help": "Shortcut: validate the file against Egeria without making changes (overrides --directive)"
+      },
+      {
+        "name": "--process",
+        "type": "bool",
+        "required": false,
+        "default": false,
+        "help": "Shortcut: execute all commands and make permanent changes in Egeria (overrides --directive)"
       },
       {
         "name": "--server",
@@ -879,12 +905,144 @@
         "name": "--attribute-logs",
         "type": "str",
         "required": false,
-        "default": "debug",
+        "default": "info",
         "help": "Per-attribute log verbosity"
+      },
+      {
+        "name": "--advanced",
+        "type": "bool",
+        "required": false,
+        "default": false,
+        "help": "Use Advanced usage level \u2014 shows additional attributes (default: Basic)"
+      },
+      {
+        "name": "--summary-only",
+        "type": "bool",
+        "required": false,
+        "default": false,
+        "help": "Only display the summary table and errors/warnings"
+      },
+      {
+        "name": "--debug",
+        "type": "bool",
+        "required": false,
+        "default": false,
+        "help": "Print each Egeria API request URL and body to the console"
       }
     ],
     "help_text": "Process a markdown file and return the output as a string.",
-    "docstring": "Process a markdown file by parsing and executing Dr. Egeria md_commands. Write output to a new file."
+    "docstring": "Process a markdown file by parsing and executing Dr. Egeria md_commands. Write output to a new file.\n\nDirective resolution order (highest priority first):\n  1. --process flag  \u2192 process\n  2. --validate flag \u2192 validate\n  3. --directive     \u2192 value provided (default: validate)"
+  },
+  "dr_egeria_md": {
+    "command_name": "dr_egeria_md",
+    "type": "hey_egeria",
+    "category": "cat",
+    "module_path": "commands.cat.dr_egeria",
+    "function_name": "process_markdown_file",
+    "entry_point": "commands.cat.dr_egeria:process_markdown_file",
+    "description": "Process a markdown file by parsing and executing Dr. Egeria md_commands. Write output to a new file.",
+    "parameters": [
+      {
+        "name": "input_file",
+        "type": "str",
+        "required": false,
+        "default": "dr_egeria_intro_part1.md",
+        "help": ""
+      },
+      {
+        "name": "--output-folder",
+        "type": "str",
+        "required": false,
+        "default": "",
+        "help": "Output folder."
+      },
+      {
+        "name": "--directive",
+        "type": "str",
+        "required": false,
+        "default": "validate",
+        "help": "How to process the file (display/validate/process). Overridden by --validate or --process flags."
+      },
+      {
+        "name": "--validate",
+        "type": "bool",
+        "required": false,
+        "default": false,
+        "help": "Shortcut: validate the file against Egeria without making changes (overrides --directive)"
+      },
+      {
+        "name": "--process",
+        "type": "bool",
+        "required": false,
+        "default": false,
+        "help": "Shortcut: execute all commands and make permanent changes in Egeria (overrides --directive)"
+      },
+      {
+        "name": "--server",
+        "type": "str",
+        "required": false,
+        "default": "EGERIA_VIEW_SERVER",
+        "help": "Egeria view server to use."
+      },
+      {
+        "name": "--url",
+        "type": "str",
+        "required": false,
+        "default": "EGERIA_VIEW_SERVER_URL",
+        "help": "URL of Egeria platform to connect to"
+      },
+      {
+        "name": "--userid",
+        "type": "str",
+        "required": false,
+        "default": "EGERIA_USER",
+        "help": "Egeria user"
+      },
+      {
+        "name": "--user_pass",
+        "type": "str",
+        "required": false,
+        "default": "EGERIA_USER_PASSWORD",
+        "help": "Egeria user password"
+      },
+      {
+        "name": "--parse-summary",
+        "type": "str",
+        "required": false,
+        "default": "none",
+        "help": "When to show parse summaries"
+      },
+      {
+        "name": "--attribute-logs",
+        "type": "str",
+        "required": false,
+        "default": "info",
+        "help": "Per-attribute log verbosity"
+      },
+      {
+        "name": "--advanced",
+        "type": "bool",
+        "required": false,
+        "default": false,
+        "help": "Use Advanced usage level \u2014 shows additional attributes (default: Basic)"
+      },
+      {
+        "name": "--summary-only",
+        "type": "bool",
+        "required": false,
+        "default": false,
+        "help": "Only display the summary table and errors/warnings"
+      },
+      {
+        "name": "--debug",
+        "type": "bool",
+        "required": false,
+        "default": false,
+        "help": "Print each Egeria API request URL and body to the console"
+      }
+    ],
+    "help_text": "Process a markdown file and return the output as a string.",
+    "docstring": "Process a markdown file by parsing and executing Dr. Egeria md_commands. Write output to a new file.\n\nDirective resolution order (highest priority first):\n  1. --process flag  \u2192 process\n  2. --validate flag \u2192 validate\n  3. --directive     \u2192 value provided (default: validate)"
   },
   "dr_egeria_jupyter": {
     "command_name": "dr_egeria_jupyter",
@@ -896,11 +1054,11 @@
     "description": "",
     "parameters": [
       {
-        "name": "--file-path",
+        "name": "input_file",
         "type": "str",
         "required": false,
         "default": "glossary_creation_experiment.ipynb",
-        "help": "File path to notebook"
+        "help": ""
       },
       {
         "name": "--directive",
@@ -1222,6 +1380,13 @@
         "required": false,
         "default": 120,
         "help": "Number of seconds to wait"
+      },
+      {
+        "name": "--organization-name",
+        "type": "str",
+        "required": false,
+        "default": null,
+        "help": "Organization name prefix for resource names"
       }
     ],
     "help_text": "",
@@ -1282,6 +1447,54 @@
     "module_path": "commands.ops.list_archives",
     "function_name": "main",
     "entry_point": "commands.ops.list_archives:main",
+    "description": "",
+    "parameters": [],
+    "help_text": "",
+    "docstring": ""
+  },
+  "my_egeria": {
+    "command_name": "my_egeria",
+    "type": "hey_egeria",
+    "category": "other",
+    "module_path": "my_egeria.main",
+    "function_name": "main",
+    "entry_point": "my_egeria.main:main",
+    "description": "",
+    "parameters": [],
+    "help_text": "",
+    "docstring": ""
+  },
+  "my_profile": {
+    "command_name": "my_profile",
+    "type": "hey_egeria",
+    "category": "other",
+    "module_path": "my_egeria.DemoCode.My_Profile.my_profile_app",
+    "function_name": "main",
+    "entry_point": "my_egeria.DemoCode.My_Profile.my_profile_app:main",
+    "description": "",
+    "parameters": [],
+    "help_text": "",
+    "docstring": ""
+  },
+  "serve_my_egeria": {
+    "command_name": "serve_my_egeria",
+    "type": "hey_egeria",
+    "category": "other",
+    "module_path": "my_egeria.serve",
+    "function_name": "serve_my_egeria",
+    "entry_point": "my_egeria.serve:serve_my_egeria",
+    "description": "",
+    "parameters": [],
+    "help_text": "",
+    "docstring": ""
+  },
+  "serve_my_profile": {
+    "command_name": "serve_my_profile",
+    "type": "hey_egeria",
+    "category": "other",
+    "module_path": "my_egeria.serve",
+    "function_name": "serve_my_profile",
+    "entry_point": "my_egeria.serve:serve_my_profile",
     "description": "",
     "parameters": [],
     "help_text": "",
@@ -2129,6 +2342,82 @@
     "help_text": "",
     "docstring": ""
   },
+  "validate_compact_specs": {
+    "command_name": "validate_compact_specs",
+    "type": "hey_egeria",
+    "category": "tech",
+    "module_path": "commands.tech.validate_compact_specs",
+    "function_name": "main",
+    "entry_point": "commands.tech.validate_compact_specs:main",
+    "description": "Validate compact command JSON files and report errors/warnings.",
+    "parameters": [
+      {
+        "name": "spec_path",
+        "type": "str",
+        "required": false,
+        "default": null,
+        "help": ""
+      },
+      {
+        "name": "--strict",
+        "type": "bool",
+        "required": false,
+        "default": null,
+        "help": "Return non-zero if warnings are found."
+      },
+      {
+        "name": "--format",
+        "type": "str",
+        "required": false,
+        "default": "both",
+        "help": ""
+      },
+      {
+        "name": "--validate-om-types/--no-validate-om-types",
+        "type": "str",
+        "required": false,
+        "default": true,
+        "help": "Validate OM_TYPE values against Egeria type defs."
+      },
+      {
+        "name": "--validate-derived-match/--no-validate-derived-match",
+        "type": "str",
+        "required": false,
+        "default": false,
+        "help": "Validate OM_TYPE equals derived processing type (disabled by default)."
+      },
+      {
+        "name": "--server",
+        "type": "str",
+        "required": false,
+        "default": null,
+        "help": ""
+      },
+      {
+        "name": "--url",
+        "type": "str",
+        "required": false,
+        "default": null,
+        "help": ""
+      },
+      {
+        "name": "--userid",
+        "type": "str",
+        "required": false,
+        "default": null,
+        "help": ""
+      },
+      {
+        "name": "--password",
+        "type": "str",
+        "required": false,
+        "default": null,
+        "help": ""
+      }
+    ],
+    "help_text": "",
+    "docstring": "Validate compact command JSON files and report errors/warnings.\n\nSPEC_PATH can be a compact command directory or a single compact JSON file."
+  },
   "get_tech_type_template": {
     "command_name": "get_tech_type_template",
     "type": "hey_egeria",
@@ -2148,6 +2437,18 @@
     "module_path": "commands.tech.list_relationships",
     "function_name": "main",
     "entry_point": "commands.tech.list_relationships:main",
+    "description": "",
+    "parameters": [],
+    "help_text": "",
+    "docstring": ""
+  },
+  "generate_md_cmd_templates": {
+    "command_name": "generate_md_cmd_templates",
+    "type": "hey_egeria",
+    "category": "tech",
+    "module_path": "commands.tech.generate_md_cmd_template",
+    "function_name": "main",
+    "entry_point": "commands.tech.generate_md_cmd_template:main",
     "description": "",
     "parameters": [],
     "help_text": "",
@@ -2252,21 +2553,92 @@
   "gen_report_specs": {
     "command_name": "gen_report_specs",
     "type": "hey_egeria",
-    "category": "other",
-    "module_path": "md_processing.md_processing_utils.gen_report_specs",
+    "category": "tech",
+    "module_path": "commands.tech.gen_report_specs",
     "function_name": "main",
-    "entry_point": "md_processing.md_processing_utils.gen_report_specs:main",
+    "entry_point": "commands.tech.gen_report_specs:main",
     "description": "CLI entry point for generating report FormatSets from commands.json.",
-    "parameters": [],
+    "parameters": [
+      {
+        "name": "commands_json",
+        "type": "str",
+        "required": false,
+        "default": null,
+        "help": ""
+      },
+      {
+        "name": "output_path",
+        "type": "str",
+        "required": false,
+        "default": null,
+        "help": ""
+      },
+      {
+        "name": "--emit",
+        "type": "str",
+        "required": false,
+        "default": "json",
+        "help": "Output mode"
+      },
+      {
+        "name": "--merge",
+        "type": "bool",
+        "required": false,
+        "default": null,
+        "help": "Merge into runtime report registry and sync generated section in pyegeria/view/base_report_formats.py."
+      },
+      {
+        "name": "--list",
+        "type": "bool",
+        "required": false,
+        "default": null,
+        "help": "List set names"
+      },
+      {
+        "name": "--usage-level",
+        "type": "str",
+        "required": false,
+        "default": null,
+        "help": "Egeria usage level (Basic or Advanced)"
+      }
+    ],
     "help_text": "",
     "docstring": "CLI entry point for generating report FormatSets from commands.json.\n\nNotes\n- If a command object includes a string field `family`, it will be propagated into the generated\n  `FormatSet.family`. This applies to both JSON emission and generated Python code.\n\nSynopsis\n- Default (emit JSON):\n    python -m md_processing.md_processing_utils.gen_report_specs             md_processing/data/commands.json md_processing/data/generated_format_sets.json --emit json\n- Emit Python code:\n    python -m md_processing.md_processing_utils.gen_report_specs             md_processing/data/commands.json md_processing/data/generated_format_sets.py --emit code\n- In-memory only and list:\n    python -m md_processing.md_processing_utils.gen_report_specs             md_processing/data/commands.json --emit dict --list\n\nFlags\n- --emit json|dict|code: controls output mode (default json)\n- --merge: also merge generated sets into built-in report_specs at runtime\n- --list: when emitting dict (or after merge), list set names to stdout"
   },
-  "dr_provenance": {
-    "command_name": "Provenance",
-    "type": "dr_egeria",
-    "category": "markdown",
-    "description": "Dr. Egeria markdown command: Provenance",
+  "gen_md_cmd_templates": {
+    "command_name": "gen_md_cmd_templates",
+    "type": "hey_egeria",
+    "category": "tech",
+    "module_path": "commands.tech.generate_md_cmd_templates",
+    "function_name": "main",
+    "entry_point": "commands.tech.generate_md_cmd_templates:main",
+    "description": "Generate markdown command templates organised by family.",
     "parameters": [],
-    "usage": "# Provenance\n...\n---"
+    "help_text": "",
+    "docstring": "Generate markdown command templates organised by family.\n\nEach command file is structured as:\n\n    ## <Command Name>\n    > <description>\n\n    ## Required\n    ### <attr>  ...   (input_required=true, any visible level)\n\n    ## Common Properties\n    ### <attr>  ...   (level=Common, optional)\n\n    ## <DisplayName> Properties\n    ### <attr>  ...   (level=Domain, optional; heading uses command display_name)\n\n    ## Additional Properties\n    ### <attr>  ...   (level=Basic, optional)\n\n    ## Advanced Properties\n    ### <attr>  ...   (level=Advanced, optional)\n\nSections with no attributes are omitted entirely.\nLink commands only ever produce Required and Advanced sections from defaults;\ntheir Domain section is populated once Tinderbox re-exports level=Domain on\ncommand-specific attributes."
+  },
+  "gen_dr_help": {
+    "command_name": "gen_dr_help",
+    "type": "hey_egeria",
+    "category": "tech",
+    "module_path": "commands.tech.generate_dr_help",
+    "function_name": "main",
+    "entry_point": "commands.tech.generate_dr_help:main",
+    "description": "",
+    "parameters": [],
+    "help_text": "",
+    "docstring": ""
+  },
+  "refresh_specs": {
+    "command_name": "refresh_specs",
+    "type": "hey_egeria",
+    "category": "tech",
+    "module_path": "commands.tech.refresh_specs",
+    "function_name": "main",
+    "entry_point": "commands.tech.refresh_specs:main",
+    "description": "",
+    "parameters": [],
+    "help_text": "",
+    "docstring": ""
   }
 }

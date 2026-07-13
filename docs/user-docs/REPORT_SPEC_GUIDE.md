@@ -126,6 +126,8 @@ Merge order: `spec.content_filters → spec.shape_defaults → spec.performance_
 
 ## Output formats
 
+The most commonly used formats:
+
 | Format | Best for |
 |---|---|
 | `REPORT` | Deep readable markdown with all attributes |
@@ -133,6 +135,11 @@ Merge order: `spec.content_filters → spec.shape_defaults → spec.performance_
 | `DICT` | Python dict/list — use in notebooks or APIs |
 | `JSON` | Raw Egeria response — for advanced users |
 | `FORM` | Dr.Egeria-editable markdown form |
+
+The run modal's format dropdown is spec-specific — it's rebuilt from each spec's actually
+supported formats (which can also include `TABLE`, `REPORT-GRAPH`, `MD`, `MERMAID`, `HTML`,
+and `GRAPH` for specs that support them), defaulting to the most browser-friendly option
+available. Non-runnable specs are filtered out of the catalog automatically.
 
 ---
 

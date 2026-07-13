@@ -2,7 +2,8 @@
 PyEgeria Agent - Specialized agent for PyEgeria Python library queries.
 
 This agent provides intelligent responses about PyEgeria classes, methods,
-modules, and usage patterns by leveraging the pyegeria collection in Milvus.
+modules, and usage patterns by leveraging the pyegeria collection in the
+vector store.
 
 Enhanced with metadata filtering for precise, fast queries.
 Enhanced with interactive response formatting for better UX.
@@ -278,7 +279,8 @@ class PyEgeriaAgent:
             
             logger.info(f"Direct query returned {len(results)} items for {class_name}")
             
-            # Filter for methods only (do this in Python since Milvus doesn't support combined filters)
+            # Filter for methods only in Python, after the fetch (kept simple —
+            # avoids building a compound filter_expr for this one extra condition)
             method_results = [r for r in results if r.get('element_type') == 'method']
             logger.info(f"Filtered to {len(method_results)} methods")
             

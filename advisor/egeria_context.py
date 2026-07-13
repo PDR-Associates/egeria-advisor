@@ -54,10 +54,19 @@ class EgeriaContext:
     the lifetime of the instance (one planning turn).
     """
 
-    def __init__(self, mcp_config_path: str = _MCP_CONFIG_PATH) -> None:
+    def __init__(
+        self,
+        mcp_config_path: str = _MCP_CONFIG_PATH,
+        egeria_credentials: Optional[dict] = None,
+    ) -> None:
         self._conn: dict | None = None
         self._conn_loaded = False
         self._mcp_config_path = mcp_config_path
+        # The authenticated caller's {user_id, password}; None falls back to the
+        # .env-backed service account (see advisor.auth.resolve_egeria_credentials).
+        # This instance is created fresh per call site (not a shared singleton),
+        # so it's safe to hold this on self for the instance's lifetime.
+        self._egeria_credentials = egeria_credentials
         self._actor_mgr  = None
         self._project_mgr = None
         self._gov_officer = None
@@ -69,31 +78,30 @@ class EgeriaContext:
     # ── Connection ─────────────────────────────────────────────────────────────
 
     def _load_connection(self) -> dict | None:
-        """Read Egeria connection params — MCP config first, env vars as fallback."""
-        # 1. Try MCP server config (same source as ReportPipeline)
-        try:
-            p = Path(self._mcp_config_path)
-            if p.exists():
-                cfg = json.loads(p.read_text())
-                env = cfg.get("mcpServers", {}).get("pyegeria", {}).get("env", {})
-                conn = {
-                    "view_server":  env.get("EGERIA_VIEW_SERVER", ""),
-                    "platform_url": env.get("EGERIA_VIEW_SERVER_URL", ""),
-                    "user_id":      env.get("EGERIA_USER", ""),
-                    "user_pwd":     env.get("EGERIA_PASSWORD", ""),
-                }
-                if all(conn.values()):
-                    return conn
-        except Exception:
-            pass
-        # 2. Env vars
-        conn = {
-            "view_server":  os.environ.get("EGERIA_VIEW_SERVER", ""),
-            "platform_url": os.environ.get("EGERIA_VIEW_SERVER_URL", ""),
-            "user_id":      os.environ.get("EGERIA_USER", ""),
-            "user_pwd":     os.environ.get("EGERIA_PASSWORD", ""),
+        """Read Egeria connection params.
+
+        view_server/platform_url are static — same Egeria instance for everyone —
+        resolved via advisor.mcp_config.get_pyegeria_platform_config() (env vars
+        first, then MCP server config). user_id/user_pwd come from the
+        authenticated caller (self._egeria_credentials) via
+        advisor.auth.resolve_egeria_credentials, which itself falls back to the
+        .env-backed service account when no per-request credentials are given.
+        """
+        from advisor.auth import resolve_egeria_credentials
+        from advisor.mcp_config import get_pyegeria_platform_config
+        creds = resolve_egeria_credentials(self._egeria_credentials)
+
+        conn = get_pyegeria_platform_config(self._mcp_config_path)
+        view_server = conn["view_server"]
+        platform_url = conn["platform_url"]
+        if not (view_server and platform_url):
+            return None
+        return {
+            "view_server":  view_server,
+            "platform_url": platform_url,
+            "user_id":      creds["user_id"],
+            "user_pwd":     creds["password"],
         }
-        return conn if all(conn.values()) else None
 
     def _get_connection(self) -> dict | None:
         if not self._conn_loaded:

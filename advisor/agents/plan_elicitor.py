@@ -94,6 +94,7 @@ class PlanElicitor:
         perspective: Optional[str],
         mode: str = "basic",
         template_name: Optional[str] = None,
+        egeria_credentials: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """
         Decompose the user's intent, pre-fill what we can from the query,
@@ -118,7 +119,7 @@ class PlanElicitor:
             title = template_name
             purpose = query
         else:
-            decomp = agent._decompose_intent(query, perspective, llm)
+            decomp = agent._decompose_intent(query, perspective, llm, egeria_credentials=egeria_credentials)
             title = decomp.get("title", query[:50])
             purpose = decomp.get("purpose", query)
             _val_warnings = decomp.get("validator_warnings") or []
@@ -230,7 +231,10 @@ class PlanElicitor:
     # Phase dispatch — continue an existing draft
     # ------------------------------------------------------------------
 
-    def process(self, draft_id: str, user_response: str) -> Dict[str, Any]:
+    def process(
+        self, draft_id: str, user_response: str,
+        egeria_credentials: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
         """
         Receive a user message for an active draft and advance the phase.
         """
@@ -286,7 +290,7 @@ class PlanElicitor:
                 return result
 
         if phase == "confirm_commands":
-            result = self._handle_confirm_commands(spec, user_response)
+            result = self._handle_confirm_commands(spec, user_response, egeria_credentials=egeria_credentials)
         elif phase == "elicit_required":
             result = self._handle_elicit_required(spec, user_response)
         elif phase == "elicit_optional":
@@ -432,7 +436,10 @@ class PlanElicitor:
     # Phase handlers
     # ------------------------------------------------------------------
 
-    def _handle_confirm_commands(self, spec: Dict, user_response: str) -> Dict[str, Any]:
+    def _handle_confirm_commands(
+        self, spec: Dict, user_response: str,
+        egeria_credentials: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
         """
         Process the user's response to the confirm_commands step.
 
@@ -620,6 +627,7 @@ class PlanElicitor:
                 spec.get("perspective"),
                 llm,
                 existing_commands=spec["commands_identified"],
+                egeria_credentials=egeria_credentials,
             )
             from advisor.action_catalog import get_action_catalog
             catalog = get_action_catalog()
@@ -641,15 +649,25 @@ class PlanElicitor:
                     "placeholders": {},
                 })
 
-            # Sub-projects: multiple "Create Project" commands are allowed (different names)
-            # For all other actions, skip duplicates
+            # Skip genuine duplicates only: same action AND same display_name already in
+            # the plan. Matches validate_commands()'s _deduplicate() exactly (same
+            # (action, display_name) key) — deliberately NOT "same action type", which
+            # used to wrongly block e.g. a second "Create External Reference" step for a
+            # different name ("also create an external reference for the PDR web site"
+            # was silently discarded because the plan already had one External Reference,
+            # even though they're for two different sites). "Create Project" needed no
+            # special-casing once this was fixed the general way — every action type now
+            # allows multiple distinctly-named instances the same way Create Project always did.
+            existing_keys = {
+                (c["action"], (c.get("display_name") or "").strip().lower())
+                for c in spec["commands_identified"]
+            }
             added = []
-            existing_actions = {c["action"] for c in spec["commands_identified"]}
             for cmd in new_commands:
-                if cmd["action"] == "Create Project":
-                    added.append(cmd)   # always add — each is a distinct named project
-                elif cmd["action"] not in existing_actions:
+                key = (cmd["action"], (cmd.get("display_name") or "").strip().lower())
+                if key not in existing_keys:
                     added.append(cmd)
+                    existing_keys.add(key)
 
             if added:
                 for cmd in added:

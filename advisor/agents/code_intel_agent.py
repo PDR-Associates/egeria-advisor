@@ -8,11 +8,67 @@ from loguru import logger
 from advisor.agents.base import BaseAdvisorAgent
 from advisor.db_consolidated import get_db_manager
 
+
+def _resolve_symbol_name(words: List[str], kinds: tuple = ("class",)) -> str:
+    """
+    Resolve regex-split query words to an actual indexed symbol name of the given kind(s).
+
+    Class names are stored CamelCase ("AutomatedCuration"); method/function names are
+    snake_case ("create_glossary"). Users naturally type either with spaces
+    ("Automated Curation", "create glossary"). Try the full no-separator concatenation
+    (covers CamelCase) and the full underscore join (covers snake_case) first, then each
+    individual word, checking existence case-insensitively against code_symbols. Falls
+    back to the concatenation (as a readable label for a "not found" message) if nothing
+    matches.
+    """
+    if not words:
+        return ""
+    db = get_db_manager()
+    concat = "".join(words)
+    snake = "_".join(words)
+    candidates = []
+    for cand in (concat, snake, *words):
+        if cand not in candidates:
+            candidates.append(cand)
+    kind_clause = " OR ".join(["kind = %s"] * len(kinds))
+    for cand in candidates:
+        rows = db.execute_query(
+            f"SELECT name FROM code_symbols WHERE ({kind_clause}) AND name ILIKE %s LIMIT 1",
+            tuple(kinds) + (cand,)
+        )
+        if rows:
+            return rows[0]["name"]
+    return concat
+
+def _relative_path(file_path: str) -> str:
+    """
+    Convert an indexed absolute file path to one relative to its source repo root
+    (e.g. ".../data/repos/egeria-python/pyegeria/omvs/x.py" -> "pyegeria/omvs/x.py").
+
+    All indexed source lives under data/repos/<repo-name>/... — strip everything up
+    to and including that <repo-name> segment. Falls back to the original path if
+    the marker isn't found (e.g. paths outside data/repos/).
+    """
+    marker = "data/repos/"
+    idx = file_path.find(marker)
+    if idx == -1:
+        return file_path
+    rest = file_path[idx + len(marker):]
+    parts = rest.split("/", 1)
+    return parts[1] if len(parts) == 2 else rest
+
+def _relativize_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Apply _relative_path() to the 'file_path' field of each row, in place."""
+    for row in rows:
+        if row.get("file_path"):
+            row["file_path"] = _relative_path(row["file_path"])
+    return rows
+
 # Tools to be exposed to the LLM / direct executor
 def get_class_for_method(method_name: str, collection: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Find the parent class(es) where a method is defined, returning file paths and line numbers."""
+    """Find a method or standalone function's definition: parent class (if any), file path, line number, signature, and docstring."""
     db = get_db_manager()
-    where_clause = "WHERE kind = 'method' AND name = %s"
+    where_clause = "WHERE kind IN ('method', 'function') AND name ILIKE %s"
     params = [method_name]
     if collection:
         where_clause += " AND collection = %s"
@@ -38,12 +94,48 @@ def get_class_for_method(method_name: str, collection: Optional[str] = None) -> 
             ))
         """
     sql = f"""
-        SELECT parent_class, collection, file_path, start_line, signature, docstring 
-        FROM code_symbols 
+        SELECT name, parent_class, collection, file_path, start_line, signature, docstring
+        FROM code_symbols
         {where_clause}
         ORDER BY parent_class
     """
-    return db.execute_query(sql, tuple(params))
+    return _relativize_rows(db.execute_query(sql, tuple(params)))
+
+def get_class_info(class_name: str, collection: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Get a class's own definition: its docstring, file path, line numbers, and signature."""
+    db = get_db_manager()
+    where_clause = "WHERE kind = 'class' AND name ILIKE %s"
+    params = [class_name]
+    if collection:
+        where_clause += " AND collection = %s"
+        params.append(collection)
+        if collection == "pyegeria":
+            where_clause += """
+                AND file_path LIKE '%%/pyegeria/%%'
+                AND file_path NOT LIKE '%%/tests/%%'
+                AND file_path NOT LIKE '%%/my_egeria/%%'
+                AND file_path NOT LIKE '%%/md_processing/%%'
+                AND file_path NOT LIKE '%%/examples/%%'
+                AND file_path NOT LIKE '%%/commands/%%'
+            """
+    else:
+        where_clause += """
+            AND (language != 'python' OR (
+                file_path LIKE '%%/pyegeria/%%'
+                AND file_path NOT LIKE '%%/tests/%%'
+                AND file_path NOT LIKE '%%/my_egeria/%%'
+                AND file_path NOT LIKE '%%/md_processing/%%'
+                AND file_path NOT LIKE '%%/examples/%%'
+                AND file_path NOT LIKE '%%/commands/%%'
+            ))
+        """
+    sql = f"""
+        SELECT name, collection, file_path, start_line, end_line, signature, docstring, parent_class
+        FROM code_symbols
+        {where_clause}
+        ORDER BY collection
+    """
+    return _relativize_rows(db.execute_query(sql, tuple(params)))
 
 def check_inheritance(class_a: str, class_b: str, collection: Optional[str] = None) -> Dict[str, Any]:
     """Check if class_a inherits from class_b (directly or recursively), returning the path if found."""
@@ -57,16 +149,16 @@ def check_inheritance(class_a: str, class_b: str, collection: Optional[str] = No
         WITH RECURSIVE inheritance_path AS (
             SELECT source_name, target_name, 1 AS depth, collection
             FROM code_relationships
-            WHERE relationship_type = 'inherits_from' AND source_name = %s {col_filter}
-            
+            WHERE relationship_type = 'inherits_from' AND source_name ILIKE %s {col_filter}
+
             UNION ALL
-            
+
             SELECT r.source_name, r.target_name, ip.depth + 1, r.collection
             FROM code_relationships r
             JOIN inheritance_path ip ON r.source_name = ip.target_name AND r.collection = ip.collection
             WHERE r.relationship_type = 'inherits_from' AND ip.depth < 10
         )
-        SELECT source_name, target_name, depth, collection FROM inheritance_path WHERE target_name = %s
+        SELECT source_name, target_name, depth, collection FROM inheritance_path WHERE target_name ILIKE %s
     """
     params = anchor_params + [class_b]
     rows = db.execute_query(sql, tuple(params))
@@ -118,17 +210,10 @@ def list_classes(collection: Optional[str] = None) -> List[str]:
         ORDER BY name
     """
     rows = db.execute_query(sql, tuple(params))
-    
+
     results = []
     for r in rows:
-        name = r["name"]
-        path = r["file_path"]
-        for marker in ("/pyegeria/", "/egeria_java/"):
-            idx = path.find(marker)
-            if idx != -1:
-                path = path[idx+1:]
-                break
-        results.append(f"{name} (in {path})")
+        results.append(f"{r['name']} (in {_relative_path(r['file_path'])})")
     return results
 
 def get_class_hierarchy(class_name: str, collection: Optional[str] = None) -> Dict[str, Any]:
@@ -140,7 +225,7 @@ def get_class_hierarchy(class_name: str, collection: Optional[str] = None) -> Di
         WITH RECURSIVE ancestors AS (
             SELECT source_name, target_name, 1 AS depth, collection
             FROM code_relationships
-            WHERE relationship_type = 'inherits_from' AND source_name = %s
+            WHERE relationship_type = 'inherits_from' AND source_name ILIKE %s
             UNION ALL
             SELECT r.source_name, r.target_name, a.depth + 1, r.collection
             FROM code_relationships r
@@ -155,7 +240,7 @@ def get_class_hierarchy(class_name: str, collection: Optional[str] = None) -> Di
             WITH RECURSIVE ancestors AS (
                 SELECT source_name, target_name, 1 AS depth, collection
                 FROM code_relationships
-                WHERE relationship_type = 'inherits_from' AND source_name = %s AND collection = %s
+                WHERE relationship_type = 'inherits_from' AND source_name ILIKE %s AND collection = %s
                 UNION ALL
                 SELECT r.source_name, r.target_name, a.depth + 1, r.collection
                 FROM code_relationships r
@@ -173,7 +258,7 @@ def get_class_hierarchy(class_name: str, collection: Optional[str] = None) -> Di
         WITH RECURSIVE descendants AS (
             SELECT source_name, target_name, 1 AS depth, collection
             FROM code_relationships
-            WHERE relationship_type = 'inherits_from' AND target_name = %s
+            WHERE relationship_type = 'inherits_from' AND target_name ILIKE %s
             UNION ALL
             SELECT r.source_name, r.target_name, d.depth + 1, r.collection
             FROM code_relationships r
@@ -188,7 +273,7 @@ def get_class_hierarchy(class_name: str, collection: Optional[str] = None) -> Di
             WITH RECURSIVE descendants AS (
                 SELECT source_name, target_name, 1 AS depth, collection
                 FROM code_relationships
-                WHERE relationship_type = 'inherits_from' AND target_name = %s AND collection = %s
+                WHERE relationship_type = 'inherits_from' AND target_name ILIKE %s AND collection = %s
                 UNION ALL
                 SELECT r.source_name, r.target_name, d.depth + 1, r.collection
                 FROM code_relationships r
@@ -264,6 +349,47 @@ def get_codebase_stats(collection: Optional[str] = None) -> Dict[str, Any]:
         stats["total_loc"] += loc
         
     return stats
+
+def _format_class_info(info: List[Dict[str, Any]]) -> str:
+    """Render get_class_info() results as clean text (real newlines, not a dict repr)."""
+    blocks = []
+    for row in info:
+        blocks.append(
+            f"Class: {row['name']} (collection: {row['collection']})\n"
+            f"File: {row['file_path']} (lines {row['start_line']}-{row['end_line']})\n"
+            f"Signature: {row['signature']}\n"
+            f"Docstring:\n{row['docstring'] or '(no docstring)'}"
+        )
+    return "\n\n".join(blocks)
+
+def _format_method_info(rows: List[Dict[str, Any]]) -> str:
+    """Render get_class_for_method() results as clean text (real newlines, not a dict repr)."""
+    blocks = []
+    for row in rows:
+        parent = row.get("parent_class") or None
+        header = f"Method: {row['name']} (in class {parent})" if parent else f"Function: {row['name']} (module-level, no parent class)"
+        blocks.append(
+            f"{header}\n"
+            f"Collection: {row['collection']}\n"
+            f"File: {row['file_path']} (line {row['start_line']})\n"
+            f"Signature: {row['signature']}\n"
+            f"Docstring:\n{row['docstring'] or '(no docstring)'}"
+        )
+    return "\n\n".join(blocks)
+
+def _format_class_hierarchy(hierarchy: Dict[str, Any]) -> str:
+    """Render get_class_hierarchy() results as clean text (real newlines, not a dict repr)."""
+    lines = [f"Class: {hierarchy['class_name']}"]
+    if hierarchy["ancestors"]:
+        lines.append("Ancestors (parents):")
+        for a in sorted(hierarchy["ancestors"], key=lambda x: x["depth"]):
+            lines.append(f"  - {a['class_name']} (depth {a['depth']}, collection {a['collection']})")
+    if hierarchy["descendants"]:
+        lines.append("Descendants (children):")
+        for d in sorted(hierarchy["descendants"], key=lambda x: x["depth"]):
+            lines.append(f"  - {d['class_name']} (depth {d['depth']}, collection {d['collection']})")
+    return "\n".join(lines)
+
 class CodeIntelAgent(BaseAdvisorAgent):
     def system_prompt(self) -> str:
         return (
@@ -271,11 +397,15 @@ class CodeIntelAgent(BaseAdvisorAgent):
             "structural relationships, inheritance, method containment, class listings, and statistics of the codebase.\n\n"
             "Workflow:\n"
             "1. Identify the structural question being asked:\n"
-            "   - If the user wants to know where a method is defined, call get_class_for_method.\n"
+            "   - If the user wants to know what a class is / does (a description or definition), call get_class_info.\n"
+            "   - If the user wants to know what a method/function is/does, its signature, docstring, or where "
+            "it is defined, call get_class_for_method.\n"
             "   - If the user wants to check if class A inherits from class B, call check_inheritance.\n"
             "   - If the user wants the hierarchy of a class (parents/children), call get_class_hierarchy.\n"
             "   - If the user wants to list all classes in a collection, call list_classes.\n"
             "   - If the user wants overall statistics or line counts, call get_codebase_stats.\n"
+            "   - For a general 'what is X' about a class, call BOTH get_class_info and get_class_hierarchy "
+            "and combine the docstring with the hierarchy in your answer.\n"
             "2. Use the database results to form a clear, direct, and factual answer.\n\n"
             "Rules:\n"
             "- Ground all your answers strictly in the tool outputs.\n"
@@ -290,7 +420,7 @@ class CodeIntelAgent(BaseAdvisorAgent):
         )
 
     def tools(self) -> list:
-        return [get_class_for_method, check_inheritance, get_class_hierarchy, get_codebase_stats, list_classes]
+        return [get_class_info, get_class_for_method, check_inheritance, get_class_hierarchy, get_codebase_stats, list_classes]
 
     def handle(self, query: str) -> dict:
         logger.info(f"CodeIntelAgent handling query: {query}")
@@ -356,25 +486,54 @@ class CodeIntelAgent(BaseAdvisorAgent):
                 else:
                     context = "Could not identify class names for inheritance check."
             elif "method" in q_lower or "function" in q_lower or "defined in" in q_lower or "what class is" in q_lower or "in which class" in q_lower:
-                # Find method name
+                # Find method/function name — questions specifically about a method or
+                # function's own definition (signature, docstring, containing class).
                 words = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', query)
-                ignore = {"what", "class", "is", "method", "defined", "in", "function", "defined_in", "where", "find", "locate"}
+                ignore = {
+                    "what", "class", "is", "method", "defined", "in", "function",
+                    "defined_in", "where", "find", "locate", "does", "do", "the",
+                    "a", "an", "tell", "me", "about", "describe", "explain"
+                }
                 methods = [w for w in words if w.lower() not in ignore]
                 if methods:
-                    res = get_class_for_method(methods[0])
-                    context = f"Method Definition Lookup ({methods[0]}):\n{res}"
+                    method_name = _resolve_symbol_name(methods, ("method", "function"))
+                    res = get_class_for_method(method_name)
+                    if res:
+                        context = _format_method_info(res)
+                    else:
+                        context = f"No method or function named '{method_name}' found in the indexed codebase."
                 else:
                     context = "Could not identify method name for definition lookup."
             else:
-                # Default to class hierarchy lookup
+                # Default: bare-name questions ("what is X", "describe X", "tell me
+                # about X", "class hierarchy for X"). X could be a class or a
+                # method/function — try class first (plus its hierarchy), and fall
+                # back to a method/function lookup if no class matches.
                 words = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', query)
-                ignore = {"hierarchy", "parents", "children", "ancestors", "descendants", "what", "is", "the", "for", "class", "show"}
-                classes = [w for w in words if w.lower() not in ignore]
-                if classes:
-                    res = get_class_hierarchy(classes[0])
-                    context = f"Class Hierarchy for {classes[0]}:\n{res}"
+                ignore = {
+                    "hierarchy", "parents", "children", "ancestors", "descendants",
+                    "what", "is", "the", "for", "class", "show", "does", "do", "tell",
+                    "me", "about", "describe", "explain"
+                }
+                names = [w for w in words if w.lower() not in ignore]
+                if names:
+                    class_name = _resolve_symbol_name(names, ("class",))
+                    info = get_class_info(class_name)
+                    if info:
+                        parts = [_format_class_info(info)]
+                        hierarchy = get_class_hierarchy(class_name)
+                        if hierarchy["ancestors"] or hierarchy["descendants"]:
+                            parts.append(_format_class_hierarchy(hierarchy))
+                        context = "\n\n".join(parts)
+                    else:
+                        method_name = _resolve_symbol_name(names, ("method", "function"))
+                        method_info = get_class_for_method(method_name)
+                        if method_info:
+                            context = _format_method_info(method_info)
+                        else:
+                            context = f"No class, method, or function named '{class_name}' found in the indexed codebase."
                 else:
-                    context = "Could not identify class name for hierarchy lookup."
+                    context = "Could not identify a class or method/function name for lookup."
         except Exception as e:
             logger.warning(f"CodeIntelAgent direct tool execution failed: {e}")
             context = f"Error querying codebase relationships: {e}"
@@ -385,17 +544,21 @@ class CodeIntelAgent(BaseAdvisorAgent):
             "explicitly — do not invent information.\n"
             "CRITICAL: Do NOT output or guess external GitHub repository URLs, website links, or directory paths "
             "unless they are explicitly present in the provided query results. Be very clear and output specific "
-            "file paths and line numbers."
+            "file paths and line numbers.\n"
+            "When a 'signature' field is present in the query results, always include it verbatim (e.g. in a "
+            "code block). When a 'docstring' field is present, quote it in full — do not paraphrase or "
+            "summarize it down to one sentence; the user wants the actual documented description, not a gloss."
         )
-        
+
         prompt = (
             f"Query Results:\n{context}\n\n"
             f"Question: {query}\n\n"
-            "Provide a concise maintainer-oriented answer."
+            "Provide a maintainer-oriented answer. Include the full signature and full docstring text from the "
+            "query results verbatim where present, plus file path and line numbers."
         )
-        
+
         try:
-            response = get_ollama_client().generate(prompt, system=system, max_tokens=1000)
+            response = get_ollama_client().generate(prompt, system=system, max_tokens=1500)
         except Exception as exc:
             response = f"Unable to generate response: {exc}"
             

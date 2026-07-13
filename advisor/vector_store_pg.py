@@ -330,8 +330,7 @@ class PgVectorStore(BaseVectorStore):
         batch_size: int = 1000,
     ) -> int:
         """
-        Insert rows using pre-computed embeddings (used by the migration script
-        to copy vectors from Milvus without re-computing them).
+        Insert rows using pre-computed embeddings, skipping re-computation.
         """
         collection_name = self._table(collection_name)
         self.connect()
@@ -591,12 +590,13 @@ class PgVectorStore(BaseVectorStore):
 
 
 # ---------------------------------------------------------------------------
-# Milvus → SQL filter expression translator
+# Filter expression DSL → SQL translator
 # ---------------------------------------------------------------------------
 
 def _translate_filter_expr(expr: str) -> Optional[Dict[str, Any]]:
     """
-    Translate a Milvus scalar filter expression to a parameterized SQL WHERE clause.
+    Translate a scalar filter expression (see advisor.metadata_filters) to a
+    parameterized SQL WHERE clause.
 
     Supported forms:
       - field == "value"

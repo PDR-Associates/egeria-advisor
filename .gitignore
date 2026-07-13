@@ -192,6 +192,7 @@ logs/
 *.key
 *.pem
 secrets/
+config/certs/
 
 # OS
 Thumbs.db

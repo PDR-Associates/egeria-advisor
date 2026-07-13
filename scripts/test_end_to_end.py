@@ -187,7 +187,7 @@ class EndToEndTestRunner:
         suite.start_time = time.time()
         
         dependencies = [
-            "pymilvus",
+            "psycopg2",
             "sentence_transformers",
             "torch",
             "mlflow",
@@ -209,14 +209,14 @@ class EndToEndTestRunner:
         return suite
     
     def test_vector_store(self) -> TestSuite:
-        """Test Milvus vector store"""
+        """Test pgvector vector store"""
         suite = TestSuite("Vector Store")
         suite.start_time = time.time()
-        
-        # Test Milvus connection
+
+        # Test vector store connection
         result = self._run_test(
-            "Milvus Connection",
-            lambda: self._check_milvus_connection()
+            "Vector Store Connection",
+            lambda: self._check_vector_store_connection()
         )
         suite.results.append(result)
         
@@ -584,53 +584,70 @@ class EndToEndTestRunner:
         except ImportError as e:
             return "FAIL", str(e), {}
     
-    def _check_milvus_connection(self) -> Tuple[str, str, Dict]:
-        """Check Milvus connection"""
-        from pymilvus import connections, utility
-        from advisor.config import get_full_config
-        
+    def _check_vector_store_connection(self) -> Tuple[str, str, Dict]:
+        """Check vector store (pgvector) connection"""
+        from advisor.vector_store import get_vector_store
+
         try:
-            config = get_full_config()
-            connections.connect(
-                alias="default",
-                host=config["vector_store"].host,
-                port=config["vector_store"].port
-            )
-            version = utility.get_server_version()
-            return "PASS", f"Connected (v{version})", {"version": version}
+            store = get_vector_store()
+            store.connect()
+            return "PASS", f"Connected ({store.host}:{store.port}/{store.dbname})", {}
         except Exception as e:
             return "FAIL", str(e), {}
-    
+
     def _check_collections_exist(self) -> Tuple[str, str, Dict]:
-        """Check collections exist"""
-        from pymilvus import utility
+        """Check collection tables exist"""
+        from advisor.vector_store import get_vector_store
         from advisor.collection_config import get_enabled_collections
-        
-        collections = utility.list_collections()
+
+        store = get_vector_store()
+        store.connect()
         expected = [c.name for c in get_enabled_collections()]
-        
-        missing = [c for c in expected if c not in collections]
+        conn = store._get_conn()
+        try:
+            with conn.cursor() as cur:
+                existing = []
+                for name in expected:
+                    table = store._table(name)
+                    cur.execute(
+                        "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = %s)",
+                        (table,),
+                    )
+                    if cur.fetchone()[0]:
+                        existing.append(name)
+        finally:
+            store._put_conn(conn)
+
+        missing = [c for c in expected if c not in existing]
         if not missing:
-            return "PASS", f"{len(expected)} collections found", {"collections": collections}
-        return "WARN", f"Missing: {', '.join(missing)}", {"collections": collections}
-    
+            return "PASS", f"{len(expected)} collections found", {"collections": existing}
+        return "WARN", f"Missing: {', '.join(missing)}", {"collections": existing}
+
     def _check_collection_counts(self) -> Tuple[str, str, Dict]:
         """Check collection entity counts"""
-        from pymilvus import Collection
+        from advisor.vector_store import get_vector_store
         from advisor.collection_config import get_enabled_collections
-        
+
+        store = get_vector_store()
+        store.connect()
         counts = {}
         total = 0
-        for coll_meta in get_enabled_collections():
-            try:
-                coll = Collection(coll_meta.name)
-                coll.load()
-                count = coll.num_entities
-                counts[coll_meta.name] = count
-                total += count
-            except:
-                counts[coll_meta.name] = 0
-        
+        conn = store._get_conn()
+        try:
+            with conn.cursor() as cur:
+                for coll_meta in get_enabled_collections():
+                    try:
+                        table = store._table(coll_meta.name)
+                        cur.execute(f'SELECT count(*) FROM "{table}"')
+                        count = cur.fetchone()[0]
+                        counts[coll_meta.name] = count
+                        total += count
+                    except Exception:
+                        conn.rollback()
+                        counts[coll_meta.name] = 0
+        finally:
+            store._put_conn(conn)
+
         if total > 0:
             return "PASS", f"{total:,} total entities", counts
         return "WARN", "No entities found", counts

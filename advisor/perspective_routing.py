@@ -6,6 +6,7 @@ and applies routing policies and feedback loop adjustments from PostgreSQL.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 import yaml
@@ -16,6 +17,17 @@ from advisor.db_consolidated import get_db_manager
 
 class PerspectiveRoutingEngine:
     """Evaluates query intent and perspective context to decide routing actions."""
+
+    # Intents for which the "Show me" format-disambiguation layer (dre/cli/java signal
+    # routing + the ambiguous Python-vs-CLI-vs-Dr.Egeria clarify) is even eligible to run.
+    # An explicit intent_override — Act ("command"), Run Report ("report"), Inspect
+    # ("code_intel"), Explain ("explanation"), Troubleshoot ("debugging"), Create
+    # ("plan"/"create"), etc. — is the user unambiguously telling the system what to do;
+    # format disambiguation must not second-guess that just because the query text
+    # happens to contain "show me" or similar phrasing (e.g. Act + "show me the external
+    # references" should look for a runnable report, not offer a Python/CLI/Dr.Egeria
+    # code-sample clarify).
+    _AMBIGUOUS_ELIGIBLE_INTENTS = {"code_help", "code_search", "example", "general", ""}
 
     def __init__(self, policy_path: Optional[Path] = None):
         if policy_path is None:
@@ -170,7 +182,6 @@ class PerspectiveRoutingEngine:
 
         # Perspective Specific Rules:
         tech_roles = {"developer", "data_engineer"}
-        governance_roles = {"data_steward", "governance_officer"}
 
         code_signals = any(sig in query_lower for sig in (
             "python", "code example", "code sample", "write python",
@@ -178,51 +189,141 @@ class PerspectiveRoutingEngine:
             "class", "method", "def", "function"
         ))
         example_signals = any(kw in query_lower for kw in ("example", "sample", "show me", "how do i", "how to"))
-        dre_signals = any(sig in query_lower for sig in ("dr egeria", "dr. egeria", "dr_egeria", "dre"))
+        # "dr egeria"/"dr. egeria"/"dr_egeria" are multi-word/underscored phrases that don't
+        # collide with normal English. Bare "dre" is a real word fragment (e.g. "address",
+        # "dressed") so it needs a \b word boundary, not a plain substring check, now that
+        # this signal is a hard priority route rather than just an override suppressor.
+        dre_signals = (
+            any(sig in query_lower for sig in ("dr egeria", "dr. egeria", "dr_egeria"))
+            or re.search(r"\bdre\b", query_lower) is not None
+        )
+        # Explicit CLI phrasing — tight, so it only fires when the user actually names
+        # the CLI, not on generic words ("command"/"cli" alone are too easily false
+        # positive, e.g. "command" appears in many Dr.Egeria/report phrasings too).
+        cli_signals = any(sig in query_lower for sig in (
+            "hey_egeria", "hey-egeria", "hey egeria",
+            "cli command", "command line", "command-line", "terminal command",
+        ))
+        # No Java example-generation capability exists anywhere in the system today —
+        # recognize the request and redirect rather than silently answering in Python.
+        java_signals = any(sig in query_lower for sig in (
+            "java example", "java code", "give me java", "java program", "in java",
+        ))
 
-        # Tech perspective requesting structural codebase info or examples
-        if resolved_persp in tech_roles and (code_signals or example_signals) and not dre_signals:
-            if any(term in query_lower for term in ("class", "inherit", "method", "parent", "child", "subclass", "superclass", "hierarchy")):
+        # "Show me" format disambiguation (dre/cli/java signal routing + the ambiguous
+        # Python-vs-CLI-vs-Dr.Egeria clarify) only applies when the query is actually in
+        # "Show me"/Auto territory. An explicit intent_override for something else (Act,
+        # Run Report, Inspect, Explain, Troubleshoot, Create, ...) means the user already
+        # said what they want done — the presence of "show me" in the query text (e.g.
+        # "show me the external references" typed under Act) must not hijack that choice.
+        if intent in self._AMBIGUOUS_ELIGIBLE_INTENTS:
+            # Explicit Dr.Egeria request — route directly to DrEgeriaTemplateAgent regardless
+            # of role. Checked first: it's the most specific/unambiguous of the format signals,
+            # and gives it the same reliability guarantee cli_signals/java_signals already have
+            # instead of depending on the base intent classifier happening to land on "command".
+            if dre_signals:
                 return {
                     "action": "route",
-                    "agent": "code_intel_agent",
-                    "boosts": ["code_elements"],
+                    "agent": "dre_template_agent",
+                    "boosts": ["egeria_templates"],
                     "active_perspective": resolved_persp,
                     "applied_policy_rule": {
-                        "rule_name": "tech_code_intel_override",
-                        "description": "Tech perspective + code structure keywords routes to CodeIntelAgent"
+                        "rule_name": "explicit_dre_signal",
+                        "description": "Explicit Dr.Egeria phrasing routes directly to DrEgeriaTemplateAgent"
                     },
                     "perspective_history": persp_history
                 }
-            return {
-                "action": "route",
-                "agent": "examples_agent",
-                "boosts": ["examples"],
-                "active_perspective": resolved_persp,
-                "applied_policy_rule": {
-                    "rule_name": "tech_examples_override",
-                    "description": "Tech perspective + code/example keywords routes to ExamplesAgent"
-                },
-                "perspective_history": persp_history
-            }
 
-        # Governance perspective requesting ambiguous templates/examples
-        if resolved_persp in governance_roles and example_signals and not code_signals and not dre_signals:
-            return {
-                "action": "clarify",
-                "clarification_type": "intent_choice",
-                "candidates": [
-                    "🐍 Python / pyegeria example",
-                    "📋 Dr.Egeria markdown template"
-                ],
-                "candidate_intents": ["code_help", "command"],
-                "active_perspective": resolved_persp,
-                "applied_policy_rule": {
-                    "rule_name": "governance_ambiguous_example_clarify",
-                    "description": "Governance perspective + ambiguous example/sample asks to clarify between Python and Dr.Egeria"
-                },
-                "perspective_history": persp_history
-            }
+            # Explicit CLI request — route directly to CLICommandAgent regardless of role.
+            # An explicit signal should always short-circuit ambiguity handling below.
+            if cli_signals:
+                return {
+                    "action": "route",
+                    "agent": "cli_command_agent",
+                    "boosts": ["pyegeria_cli"],
+                    "active_perspective": resolved_persp,
+                    "applied_policy_rule": {
+                        "rule_name": "explicit_cli_signal",
+                        "description": "Explicit hey_egeria/CLI phrasing routes directly to CLICommandAgent"
+                    },
+                    "perspective_history": persp_history
+                }
+
+            # Explicit Java request — no Java example generation exists; offer the formats
+            # that do (Python, CLI, Dr.Egeria) instead of silently answering in the wrong
+            # language or fabricating Java that was never grounded in anything.
+            # (dre_signals already returned above, so no need to re-check it here.)
+            if java_signals:
+                return {
+                    "action": "clarify",
+                    "clarification_type": "intent_choice",
+                    "clarify_message": (
+                        "I can't generate Java examples yet. Here's what I can show you instead:"
+                    ),
+                    "candidates": [
+                        "🐍 Python / pyegeria example",
+                        "💻 hey_egeria CLI command",
+                        "📋 Dr.Egeria markdown template",
+                    ],
+                    "candidate_intents": ["code_help", "cli_command", "command"],
+                    "active_perspective": resolved_persp,
+                    "applied_policy_rule": {
+                        "rule_name": "java_not_supported_clarify",
+                        "description": "Java example request — not supported; offer the 3 supported formats"
+                    },
+                    "perspective_history": persp_history
+                }
+
+            # Tech perspective + an *explicit* code/python signal — not ambiguous, so still
+            # fast-paths straight to Python (or CodeIntelAgent for structural questions) with
+            # no clarify. (dre_signals/cli_signals/java_signals already returned above.)
+            if resolved_persp in tech_roles and code_signals:
+                if any(term in query_lower for term in ("class", "inherit", "method", "parent", "child", "subclass", "superclass", "hierarchy")):
+                    return {
+                        "action": "route",
+                        "agent": "code_intel_agent",
+                        "boosts": ["code_elements"],
+                        "active_perspective": resolved_persp,
+                        "applied_policy_rule": {
+                            "rule_name": "tech_code_intel_override",
+                            "description": "Tech perspective + code structure keywords routes to CodeIntelAgent"
+                        },
+                        "perspective_history": persp_history
+                    }
+                return {
+                    "action": "route",
+                    "agent": "examples_agent",
+                    "boosts": ["examples"],
+                    "active_perspective": resolved_persp,
+                    "applied_policy_rule": {
+                        "rule_name": "tech_examples_override",
+                        "description": "Tech perspective + explicit code/python keywords routes to ExamplesAgent"
+                    },
+                    "perspective_history": persp_history
+                }
+
+            # Ambiguous "show me"/example/sample request with no explicit format signal —
+            # applies to every role (not just governance): a plain "Show me X" doesn't say
+            # which format the user wants, so ask rather than assume Python.
+            # (dre_signals/cli_signals/java_signals already returned above; code_signals is
+            # excluded here because that's an explicit Python signal, not an ambiguous one.)
+            if example_signals and not code_signals:
+                return {
+                    "action": "clarify",
+                    "clarification_type": "intent_choice",
+                    "candidates": [
+                        "🐍 Python / pyegeria example",
+                        "💻 hey_egeria CLI command",
+                        "📋 Dr.Egeria markdown template"
+                    ],
+                    "candidate_intents": ["code_help", "cli_command", "command"],
+                    "active_perspective": resolved_persp,
+                    "applied_policy_rule": {
+                        "rule_name": "ambiguous_example_clarify",
+                        "description": "Ambiguous example/sample/'show me' request with no explicit format signal — clarify between Python, CLI, and Dr.Egeria"
+                    },
+                    "perspective_history": persp_history
+                }
 
         # Default policy routing
         if default_agent:

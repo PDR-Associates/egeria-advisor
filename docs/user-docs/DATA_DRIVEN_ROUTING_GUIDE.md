@@ -1,7 +1,14 @@
 # Data-Driven Query Routing Configuration Guide
 
 **Version:** 1.0  
-**Last Updated:** 2026-03-10
+**Last Updated:** 2026-03-10 (mechanism still current as of 2026-07-11 — `config/routing.yaml`
+still has `collection_domain_terms`, `intent_keywords`, and `special_rules` sections as
+described below)
+
+> For the full current routing pipeline (pattern matching, LLM intent classification,
+> role-aware routing, pipeline dispatch, and the 8 intent buttons), see the
+> [Query Routing Guide](QUERY_ROUTING_GUIDE.md). This document focuses specifically on how
+> to customize `config/routing.yaml` without touching Python code.
 
 ## Overview
 

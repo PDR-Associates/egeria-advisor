@@ -163,7 +163,7 @@ Both dashboards display:
 
 **Issue**: Dashboard not updating
 - Check if metrics collector is running
-- Verify Milvus connection
+- Verify pgvector connection (`psql -h localhost -p 5442 -U egeria_advisor -d egeria_advisor -c "SELECT 1;"`)
 - Check system permissions
 
 **Issue**: Display issues

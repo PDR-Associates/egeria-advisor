@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
 """
-Test script for CLI command indexer.
+Index extracted hey_egeria CLI command metadata into pgvector.
 
-Tests indexing of CLI commands into vector store.
+Reads cache/cli_commands.json (produced by scripts/test_cli_parser.py) and
+indexes it into the pyegeria_cli collection additively — alongside, not
+replacing, the generic AST code chunks written by the main ingestion
+pipeline (scripts/ingest_collections.py). This is what CLICommandAgent's
+structured hey_egeria answers are grounded in; without it, CLICommandAgent
+has no real command syntax to draw from. Run as step 4/4 of
+scripts/full_reset.sh, after the main collection re-ingest (which must run
+first — it drops and recreates the table).
 """
 
 import json
@@ -16,17 +23,17 @@ from advisor.data_prep.cli_indexer import index_cli_commands_from_file
 from loguru import logger
 
 def main():
-    """Test CLI command indexing."""
-    
+    """Index CLI commands from the cached extraction into pgvector."""
+
     # Path to CLI commands JSON file
     commands_file = Path("cache/cli_commands.json")
-    
+
     if not commands_file.exists():
         logger.error(f"CLI commands file not found at {commands_file}")
         logger.info("Please run scripts/test_cli_parser.py first to extract commands")
         return 1
-    
-    logger.info(f"Testing CLI indexer with commands from: {commands_file}")
+
+    logger.info(f"Indexing CLI commands from: {commands_file}")
     logger.info("="*60)
     
     # Index commands

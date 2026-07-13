@@ -62,13 +62,13 @@ Add:
 - Composite response: code example + related template + related report spec
 
 ### IB-4 — Expand `Inspect` to cover all repos
-**Status:** open  
+**Status:** open
+**Priority:** low
 **Scope:** `advisor/agents/` (code_intel agent or equivalent), vector indexing
 
-Currently pyegeria-only. Should cover:
-- egeria-workspaces FastAPI handlers, compose files
-- egeria-advisor source (the advisor itself)
-- egeria-java (already partially indexed in `egeria_java`)
+Currently pyegeria + egeria_java only. Should cover:
+- egeria-workspaces FastAPI handlers, compose files (low priority)
+- egeria-advisor source (the advisor itself) (low priority)
 
 Needs multi-repo search path; may require dedicated collections for workspaces and advisor code.
 
@@ -99,6 +99,50 @@ No pre-run disambiguation modal. After a successful run, response includes condi
 - **[Run again with filter]** — re-prompts for search_string override
 
 The `act_result` response dict should include `matched_spec_id` (populated when a spec was found) so the UI knows which set of buttons to render.
+
+---
+
+### IB-8 — Contextual "learn more" follow-up options after an Inspect answer
+**Status:** open  
+**Scope:** `advisor/agents/code_intel_agent.py`, `advisor/web/static/index.html`
+
+After a `CodeIntelAgent` answer, offer buttons for related follow-up questions instead of
+making the user retype a new query. E.g. after "what is class X":
+- **[Class hierarchy ▸]** — re-queries `get_class_hierarchy(X)`
+- **[Methods on X ▸]** — new query type: list methods defined on a given class (no existing
+  tool for this — `get_class_for_method` goes method→class, not class→methods; would need a
+  new `get_methods_for_class(class_name)` tool)
+- **[Who inherits from X ▸]** — re-queries `get_class_hierarchy(X)` descendants specifically
+
+Same conditional-buttons pattern as IB-7 (Act). The response dict would need a
+`follow_up_options` list (label + re-query text or intent_override) so the UI can render
+buttons generically, similar to how `renderIntentClarification()` already renders
+`candidates`/`candidate_intents` for the "Show me" disambiguation clarify.
+
+---
+
+### IB-9 — Supplement the Egeria type-name registry with a live type listing
+**Status:** open
+**Priority:** low
+**Scope:** `advisor/egeria_type_registry.py`
+
+`advisor/egeria_type_registry.py` (added to fix Act's element-type extraction dropping the
+second word of multi-word type names — "external references" → "External" instead of
+"ExternalReference") is currently built from the 75 distinct `target_type` values in
+`config/report_specs/report_specs_annotated.json` — a static, bundled list that's correct but
+only covers types that have a Dr.Egeria create template. It works without a live Egeria
+connection (the exact scenario that surfaced this bug — Egeria was unreachable at the time),
+but real Egeria has hundreds of open metadata types, most without a Dr.Egeria template.
+
+Consider adding an optional refresh path — a script (or lazy background call) that pulls the
+full type list from a live Egeria server via pyegeria (e.g. `EgeriaTech`'s type-listing
+methods) and merges it into the cached registry, falling back to the static list when Egeria
+isn't reachable. Also worth widening `resolve_type_name()`'s use beyond Act's
+`_extract_type_and_filter()` — e.g. `ReportSpecElicitor`, the Report Spec Builder's own
+element-type field, and anywhere else free-text type mentions get parsed — since it's a
+general-purpose "resolve fuzzy type phrase → canonical Egeria type name" utility, not
+Act-specific. The `_ALIASES` dict (currently just `"data product(s)"` → `DigitalProduct`, for
+the common industry-vs-Egeria terminology mismatch) should grow as more mismatches surface.
 
 ---
 
@@ -146,7 +190,7 @@ structural improvement, but did not close the gap — see SS-1.
 | SS-1 | Fix interaction-mode leak — report run doesn't clear active task context | done | `runReport()`'s `confirmRunReport()` and `setIntent()` now call `clearContext()` on mode switch (`index.html`); backend `_process_query` now clears `context.task`/`draft_id` unconditionally when `query_type_override == 'report'` (`rag_system.py:483-486`), covering both the context-task branches and the legacy `draft_id.startswith("draft_report_")` fallback. |
 | SS-2 | Tighten bare-word regex false positive in `report_spec_elicitor` context routing | done | `rag_system.py:498` — tightened to `run\s+(?:the\s+)?spec\|run\s+it` (mirrors the `plan_elicitor` block's `run\s+the\s+plan` fix). `run report X` no longer matches; `run it`/`run the spec`/`execute`/`go ahead`/`proceed` still do. |
 | SS-3 | Backend session store — session-scoped ephemeral interaction state | open | New `session_id`, minted client-side (UUID in `sessionStorage`, sent as `X-Session-Id` header), backend in-memory `Dict[session_id, SessionState]` (TTL-evicted). Needed because `user_id` scoping alone is insufficient — demo/shared accounts run multiple concurrent sessions under one `user_id`. Note: `session_id`/`user_id` already exist as params threaded through `_process_query` (`rag_system.py:464-465`) but only for metrics/observability — frontend never sends `session_id` today, and no storage manager uses it. |
-| SS-4 | Per-user artifact directory namespacing | open | `DraftManager`, `DocumentManager`, `PlanTemplateManager`, `SessionLogger` (all under `~/egeria-plans/`) and `ReportDraftManager`, `ReportSpecDocumentManager` (under `~/egeria-reports/`, added by the Report Spec Builder work — same unscoped pattern replicated) need `user_id`-scoped roots. Currently any client that knows/guesses a `draft_id` can act on another user's draft — no ownership check exists. |
+| SS-4 | Per-user artifact directory namespacing | open — **priority: medium** | `DraftManager`, `DocumentManager`, `PlanTemplateManager`, `SessionLogger` (all under `~/egeria-plans/`) and `ReportDraftManager`, `ReportSpecDocumentManager` (under `~/egeria-reports/`, added by the Report Spec Builder work — same unscoped pattern replicated) need `user_id`-scoped roots. Currently any client that knows/guesses a `draft_id` can act on another user's draft — no ownership check exists. `GET /api/plans`, `/api/drafts`, `/api/reports` list every user's documents unfiltered, and `/api/plans` has no auth check at all. This is the remaining half of "does egeria-advisor support multi-user on the same machine?" — the *other* half (live Egeria calls using the wrong/shared identity, and a singleton credential-caching bug that could leak one user's credentials into a concurrent user's request) was root-caused and fixed 2026-07-11: `advisor/auth.py` gained `get_egeria_credentials()`/`resolve_egeria_credentials()`, threaded through `rag_system.py` → `report_pipeline.py`/`dr_egeria_agent.py`/`governance_plan_agent.py`/`egeria_context.py`, and the previously-unauthenticated live-Egeria endpoints (`/api/plans/*/execute\|validate\|retry\|rerun`, `/api/reports/docs/*/execute\|retry`, `/api/templates/*/fields`, `/api/egeria/zones`) now hard-require login. That fix does not touch storage layout — SS-4 (this item) is unaffected and still needed before the app is safe for genuinely concurrent multi-user use, since one user can still see/resume/execute another's plans and drafts by ID. |
 | SS-5 | Optimistic concurrency check for same-user concurrent draft edits | deferred | Two sessions of the same (demo) user editing the same draft. Spec already has `updated_at` — reject/warn a save if it moved since this session last read it. Not blocking SS-1 through SS-4. |
 | SS-6 | Plan Canvas edited a stale draft copy once a document existed — reorder/notes silently didn't reach the actual document | done | `PlanCanvas.open(draftId)` now checks for an existing `doc_id` and redirects into a new document-backed mode (`openDocument()`): fetches/parses the actual plan document via `_parsePlanMarkdown()` (reused from `plan_editor.js`, purified — `_synthesizePlanMarkdown()` split into a pure `_synthesizePlanMarkdownFrom()`), and Save is now explicit (`ArtifactCanvas.autoSync: false` + `flush()`) rather than auto-syncing every edit to the draft. Also added drag-reorder to the full-screen Plan Editor's command cards (it had none) and fixed a `---` duplication bug in `_parsePlanMarkdown` that would compound on every parse→save round-trip. |
 | SS-7 | "Execute" faked a chat message ("execute the plan X") instead of calling a direct endpoint — hung indefinitely (silent LLM call) whenever `context.task` happened to be `plan_elicitor` at click-time | done | Three call sites (Plan Canvas execute button, full-screen Plan Editor's `_executePlanDoc()`, sidebar inbox row's ▶ button) all sent literal chat text and relied on context/routing to correctly interpret it as an execute command rather than a plan-modification instruction — if that interception failed (e.g. `_spec_d` didn't resolve in the `plan_elicitor` context branch in `rag_system.py`), it silently fell through to `continue_draft()`, an LLM-based refinement call, with no console output until (if ever) it completed. SS-6's Canvas fix made this reachable for the first time in practice, since the Canvas no longer closes after a plan is generated, so `context.task == 'plan_elicitor'` can now be set at the exact moment "Execute" is clicked. `Validate` already called `POST /api/plans/{doc_id}/validate` directly and never had this problem — added the missing `POST /api/plans/{doc_id}/execute` to match, and switched all three call sites to it, bypassing chat-text routing entirely for this action. |

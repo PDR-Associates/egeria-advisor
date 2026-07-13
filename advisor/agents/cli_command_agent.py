@@ -118,9 +118,20 @@ class CLICommandAgent(BaseAgent):
             response = self._generate_parameter_response(search_results, user_query)
         else:  # general
             response = self._generate_general_response(search_results, user_query)
-        
+
         return response
-    
+
+    def handle(self, query: str, perspective: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Web-facing entry point, matching the handle(query, perspective=None) -> dict
+        convention used by every other agent dispatched from advisor/rag_system.py
+        (ExamplesAgent, DocAgent, etc.). perspective is currently unused here — CLI
+        command answers don't vary by role — accepted for interface consistency.
+        """
+        from advisor.agents.examples_agent import _make_result
+        response_text = self.query(query)
+        return _make_result(query, response_text, "cli_command")
+
     def _classify_query(self, query: str) -> str:
         """
         Classify the type of CLI query.
@@ -380,16 +391,33 @@ class CLICommandAgent(BaseAgent):
                 context_parts.append(f"Description: {cmd_data.get('description', 'N/A')}")
                 context_parts.append(f"Type: {cmd_data.get('type', 'N/A')}")
                 context_parts.append(f"Category: {cmd_data.get('category', 'N/A')}")
-                
+
+                # Include the actual flag names/required-status, not just a count —
+                # without this the LLM has no real syntax to draw from and guesses
+                # (confirmed live: produced a fabricated positional arg when only a
+                # parameter count was given).
                 params = cmd_data.get('parameters', [])
                 if params:
-                    context_parts.append(f"Parameters: {len(params)}")
+                    param_lines = []
+                    for p in params:
+                        name = p.get('name', '')
+                        req = 'required' if p.get('required') else 'optional'
+                        default = p.get('default')
+                        default_part = f", default={default!r}" if default is not None else ""
+                        param_lines.append(f"  {name} ({req}{default_part}): {p.get('help', '')}")
+                    context_parts.append(f"Parameters ({len(params)}):")
+                    context_parts.extend(param_lines)
                 context_parts.append("")
-        
+
         context = "\n".join(context_parts)
-        
+
         # Generate response using LLM
         prompt = f"""You are a helpful assistant for Egeria CLI commands.
+
+STRICT: Use ONLY the command name and parameter names/flags listed in "Available Commands"
+below — do not invent flags, positional arguments, or syntax that doesn't appear there. If
+the context doesn't include enough detail to show a full invocation, say so rather than
+guessing.
 
 User Question: {query}
 
@@ -526,5 +554,15 @@ I couldn't find any commands matching your query: "{query}"
         # Help text
         if param.get('help'):
             parts.append(f"\n  {param['help']}")
-        
+
         return " ".join(parts) + "\n"
+
+
+_cli_command_agent: Optional["CLICommandAgent"] = None
+
+
+def get_cli_command_agent() -> "CLICommandAgent":
+    global _cli_command_agent
+    if _cli_command_agent is None:
+        _cli_command_agent = CLICommandAgent()
+    return _cli_command_agent

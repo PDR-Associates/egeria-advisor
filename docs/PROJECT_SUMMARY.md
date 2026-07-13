@@ -1801,6 +1801,52 @@ is actually exposed publicly — unchanged conclusion, just a different internal
 
 **Commits:** (this session).
 
+### Phase 25 — Plan execution broken: `dr_egeria_run_block` MCP tool no longer exists (Jul 12, 2026)
+
+**Theme:** the first live plan executed against the newly-fixed remote Egeria connection (Phase
+22) failed immediately with `Tool not found: dr_egeria_run_block`. Traced to a genuine upstream
+pyegeria API change, not a config mistake — `pyegeria.core.mcp_server` in current pyegeria
+(installed 6.0.16.16, and even the older local `egeria-python` dev checkout at 6.0.12) registers
+only 5 report tools (`list_reports`, `find_report_specs`, `describe_report`, `run_report`,
+`prompt`; its own docstring now says "basic MCP server for Egeria"). Dr.Egeria command execution
+was never exposed as an MCP tool in either version available on this machine — it only exists as
+an in-process engine, `md_processing.v2` (`UniversalExtractor` → `V2Dispatcher.dispatch_batch()`
+via processor classes registered in `md_processing.dr_egeria.setup_dispatcher()`), with the
+`dr_egeria`/`dr_egeria_md` console-script CLI (`commands.cat.dr_egeria:process_markdown_file`) as
+a thin file-based, rich-console wrapper over it — no MCP wrapper exists at all. The
+`dr_egeria_run_block` tool `advisor/agents/dr_egeria_agent.py` called (added Apr 25, 2026) must
+have existed only in some earlier/different pyegeria MCP server build that predates both
+locally-available copies; every downstream consumer (`governance_plan_agent.py`'s
+`_parse_dr_egeria_response()`, `outcome_reporter.py`, `governance_docs.py`) was still built around
+the JSON envelope shape that tool used to return (`{success, output, validation_errors,
+execution_errors, commands_total, commands_succeeded, commands_failed, commands_detail}`).
+
+**Fix:** `DrEgeriaActionAgent.execute()` now calls the `md_processing.v2` engine directly,
+in-process, instead of going through MCP at all — `_execute_dr_egeria_markdown()` builds an
+`EgeriaTech` client from the resolved connection, extracts commands with `UniversalExtractor`,
+runs them through `setup_dispatcher(client).dispatch_batch()`, and reconstructs the same JSON
+envelope shape from the processors' per-command result dicts (which already carry `status`,
+`guid`, `qualified_name`, `display_name`, `message` cleanly — no more parsing a GUID out of a
+message string). `execute()` still returns a JSON string, so `_parse_dr_egeria_response()` and
+everything downstream needed zero changes. Removed the now-fully-dead `_ensure_mcp()`/
+`_mcp_agent` machinery from the class (confirmed unused anywhere else in the codebase) — this
+agent no longer touches MCP; `report_pipeline.py`'s MCP usage for reports is untouched and still
+works (its 5 tools are exactly what's still registered).
+
+**Verified live** against `https://egeria.pdr-associates.com:9443`, three ways: (1) calling
+`_execute_dr_egeria_markdown()` directly in `validate` mode, (2) the same in `process` mode
+(created a real `ExternalReference`, got back a real GUID), (3) the full stack —
+`doc_manager.create()` → `GovernancePlanAgent.execute(doc_id)` → outbox — reproducing the user's
+exact failing scenario end-to-end: **Status: Succeeded**, correct Command Results table with
+real GUID/QN, verification report ran. The test plan document (moved to outbox by the run) was
+deleted afterward; the `ExternalReference` test elements those runs created in Egeria itself were
+*not* deleted (deleting live Egeria data wasn't part of this fix and wasn't done without asking —
+they're harmless leftover sample-data-style test records, same class of thing already present in
+this shared Coco Pharmaceuticals demo instance). Restarted `scripts/run_web.sh` (HTTP 8880 + HTTPS
+8881) to pick up the fix.
+
+**Commits:** (this session).
+
 ---
 
 ## Current state and next steps (Jul 2026)
@@ -1831,6 +1877,7 @@ is actually exposed publicly — unchanged conclusion, just a different internal
 - Phase 22 ✓ — report execution timeouts fixed at three real layers (MCP subprocess env, stale pyegeria dev checkout vs. the already-fixed installed version, three independent ~30s timeout settings); real root cause was a dropped router port-forward for `:9443`, not NAT hairpinning as first (wrongly) concluded — this machine runs its own separate local `egeria-quickstart` dev stack seeded with the same sample content, which made a GUID-mismatched wrong-server "fix" look correct until the user insisted on verifying with element GUIDs instead of matching output
 - Phase 23 ✓ — Create/plan entity-type recognition generalized from a hardcoded ~10-type list to the full ~126-command keyword index, at both the CreateRouter and entity-extraction layers; fixed a recurring "keyword search scoped to the whole query, not just the type phrase" bug that let an unrelated proper noun in the name win over the real type; fixed a latent minimum-length gap in the shared `CommandKeywordIndex` that could produce confident-looking wrong guesses for unrecognized input; fixed plan-refinement's addition path wrongly deduplicating by bare action type instead of (action, display_name), which silently discarded legitimate repeated-action additions ("also create an external reference for a different site")
 - Phase 24 ✓ — `scripts/run_web.sh` serves HTTP and HTTPS together (two uvicorn processes sharing the same app); HTTPS activates automatically once `ADVISOR_SSL_CERTFILE`/`ADVISOR_SSL_KEYFILE` are set in `.env` — verified with a throwaway self-signed cert ahead of the real wildcard cert being placed
+- Phase 25 ✓ — plan execution restored: current pyegeria's MCP server never exposes Dr.Egeria command execution (only 5 report tools) so the `dr_egeria_run_block` MCP tool `DrEgeriaActionAgent.execute()` called no longer exists anywhere on this machine; switched to calling the `md_processing.v2` dispatcher engine directly, in-process, reconstructing the same JSON envelope shape every downstream consumer already expected — verified live end-to-end against the remote demo Egeria (real GUID returned, outcome/Command Results table correct)
 
 **What's working end-to-end (Jul 6, 2026):**
 - Full plan lifecycle exercised live against a real Dr.Egeria MCP server + Egeria REST backend + Postgres for the first time (not just synthetic testing) — surfaced and fixed six real bugs in one session (SS-6 through SS-11, see "Recent work" above and `BACKLOG.md`), including a genuine event-loop-freezing hang in the MCP client

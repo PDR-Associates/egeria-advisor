@@ -5,7 +5,7 @@ Handles write/action queries by:
 1. Finding the appropriate Dr. Egeria command template
 2. Extracting parameters from the user request via LLM
 3. Composing a complete Dr. Egeria markdown file
-4. Executing it via the dr-egeria MCP server (dr_egeria_run_block)
+4. Executing it in-process via md_processing's v2 command dispatcher
 
 All public methods are synchronous to match the RAGSystem dispatch pattern.
 """
@@ -17,6 +17,86 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from loguru import logger
+
+
+# ---------------------------------------------------------------------------
+# Dr.Egeria markdown execution — in-process, no MCP
+# ---------------------------------------------------------------------------
+#
+# pyegeria's MCP server (pyegeria.core.mcp_server, >=6.0.16) was scoped down to
+# report-only tools (list_reports/find_report_specs/describe_report/run_report/
+# prompt) — the "dr_egeria_run_block" tool it used to expose no longer exists
+# in any locally available pyegeria build. Dr.Egeria command execution now
+# lives only as an in-process engine (md_processing.v2's UniversalExtractor +
+# V2Dispatcher), with no MCP wrapper; the standalone `dr_egeria`/`dr_egeria_md`
+# CLI (commands.cat.dr_egeria:process_markdown_file) is a thin, file-based,
+# rich-console-output shim over the same engine. This calls the engine
+# directly instead, building the same {success, output, validation_errors,
+# execution_errors, commands_total, commands_succeeded, commands_failed,
+# commands_detail} envelope governance_plan_agent._parse_dr_egeria_response()
+# has always expected. See docs/PROJECT_SUMMARY.md Phase 25.
+
+async def _execute_dr_egeria_markdown(
+    markdown: str, directive: str, conn: Dict[str, str]
+) -> Dict[str, Any]:
+    import uuid
+
+    from md_processing.dr_egeria import setup_dispatcher
+    from md_processing.v2 import UniversalExtractor
+    from pyegeria import EgeriaTech
+
+    client = EgeriaTech(conn["server_name"], conn["url"], conn["user_id"], conn["user_pass"])
+    client.create_egeria_bearer_token()
+
+    commands = UniversalExtractor(markdown).extract_commands()
+    dispatcher = setup_dispatcher(client)
+    context = {"directive": directive, "request_id": str(uuid.uuid4())}
+    results = await dispatcher.dispatch_batch(commands, context)
+
+    commands_detail: List[Dict[str, Any]] = []
+    validation_errors: List[Dict[str, Any]] = []
+    execution_errors: List[Dict[str, Any]] = []
+    outputs: List[str] = []
+    step = 0
+    succeeded = 0
+    failed = 0
+
+    for res in results:
+        if res.get("output"):
+            outputs.append(str(res["output"]))
+        if not res.get("is_command", True):
+            continue
+        step += 1
+        status = res.get("status", "unknown")
+        command_name = f"{res.get('verb', '')} {res.get('object_type', '')}".strip()
+        message = res.get("message", "")
+        commands_detail.append({
+            "step": step,
+            "command": command_name,
+            "status": status,
+            "guid": res.get("guid") or "",
+            "qualified_name": res.get("qualified_name") or "",
+            "display_name": res.get("display_name") or "",
+            "message": message,
+        })
+        if status == "success":
+            succeeded += 1
+        elif status == "failure":
+            failed += 1
+            execution_errors.append({"step": step, "command": command_name, "message": message})
+        for err in res.get("errors", []) or []:
+            validation_errors.append({"step": step, "command": command_name, "message": err})
+
+    return {
+        "success": failed == 0,
+        "output": "\n\n".join(outputs),
+        "validation_errors": validation_errors,
+        "execution_errors": execution_errors,
+        "commands_total": step,
+        "commands_succeeded": succeeded,
+        "commands_failed": failed,
+        "commands_detail": commands_detail,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -326,22 +406,7 @@ class DrEgeriaActionAgent:
     def __init__(self, config_path: str = "config/mcp_servers.json"):
         self._config_path = config_path
         self._template_index = TemplateIndex()
-        self._mcp_agent = None  # lazy
         self._egeria_conn: Optional[Dict[str, str]] = None  # lazy
-
-    def _ensure_mcp(self) -> None:
-        """Connect to MCP servers if not already done. Raises ConnectionError if unreachable."""
-        if self._mcp_agent is not None and self._mcp_agent._initialized:
-            return
-        from advisor.report_pipeline import _run_async
-        from advisor.mcp_agent import initialize_mcp_agent
-        try:
-            self._mcp_agent = _run_async(
-                initialize_mcp_agent(config_path=self._config_path), timeout=8
-            )
-        except (TimeoutError, Exception) as exc:
-            self._mcp_agent = None
-            raise ConnectionError(f"Egeria MCP server not reachable: {exc}") from exc
 
     def _get_egeria_conn(self, egeria_credentials: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         """Extract Egeria connection params for Dr.Egeria command execution.
@@ -514,7 +579,8 @@ JSON:"""
         egeria_credentials: Optional[Dict[str, str]] = None,
     ) -> str:
         """
-        Execute a composed Dr.Egeria markdown file via MCP.
+        Execute a composed Dr.Egeria markdown file in-process via md_processing's
+        v2 command dispatcher (no MCP round-trip — see _execute_dr_egeria_markdown).
 
         Args:
             markdown: Complete Dr.Egeria markdown command file
@@ -524,33 +590,19 @@ JSON:"""
                 falls back to the service account when None.
 
         Returns:
-            Output string from MCP tool (or the markdown if dry_run)
+            JSON-encoded envelope string ({success, output, validation_errors,
+            execution_errors, commands_total, commands_succeeded, commands_failed,
+            commands_detail}) — the same shape governance_plan_agent's
+            _parse_dr_egeria_response() has always expected.
         """
         if dry_run:
             return markdown
 
-        self._ensure_mcp()
         conn = self._get_egeria_conn(egeria_credentials)
 
         from advisor.report_pipeline import _run_async
-        raw = _run_async(self._mcp_agent.execute_tool(
-            "dr_egeria_run_block",
-            {
-                "markdown_block": markdown,
-                "url": conn["url"],
-                "server_name": conn["server_name"],
-                "user_id": conn["user_id"],
-                "user_pass": conn["user_pass"],
-                "directive": directive,
-            }
-        ))
-
-        # Unwrap MCP content envelope
-        from advisor.report_pipeline import _unwrap_mcp_content
-        result = _unwrap_mcp_content(raw)
-        if result is None:
-            return "(no output from Dr. Egeria)"
-        return str(result) if not isinstance(result, str) else result
+        envelope = _run_async(_execute_dr_egeria_markdown(markdown, directive, conn))
+        return json.dumps(envelope)
 
     def handle(
         self,

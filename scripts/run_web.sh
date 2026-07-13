@@ -2,7 +2,7 @@
 # Launch the Egeria Advisor web UI.
 #
 # Always serves plain HTTP on $ADVISOR_HTTP_PORT (default 8880). Additionally
-# serves HTTPS on $ADVISOR_HTTPS_PORT (default 8443) when ADVISOR_SSL_CERTFILE
+# serves HTTPS on $ADVISOR_HTTPS_PORT (default 8881) when ADVISOR_SSL_CERTFILE
 # and ADVISOR_SSL_KEYFILE are set in .env and both files exist -- otherwise
 # HTTPS is silently skipped (HTTP-only, e.g. plain local dev).
 #
@@ -30,7 +30,7 @@ fi
 
 HOST="${ADVISOR_BIND_HOST:-0.0.0.0}"
 HTTP_PORT="${ADVISOR_HTTP_PORT:-8880}"
-HTTPS_PORT="${ADVISOR_HTTPS_PORT:-8443}"
+HTTPS_PORT="${ADVISOR_HTTPS_PORT:-8881}"
 
 PIDS=()
 cleanup() {

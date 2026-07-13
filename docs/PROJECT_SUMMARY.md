@@ -1755,7 +1755,7 @@ bare `uvicorn` command all session) — so this pass builds the config/launcher 
 moment the cert lands, rather than blocking on it.
 
 **`scripts/run_web.sh`** — always starts plain HTTP (`ADVISOR_HTTP_PORT`, default 8880); starts
-HTTPS (`ADVISOR_HTTPS_PORT`, default 8443) too only when `ADVISOR_SSL_CERTFILE`/
+HTTPS (`ADVISOR_HTTPS_PORT`, default 8881) too only when `ADVISOR_SSL_CERTFILE`/
 `ADVISOR_SSL_KEYFILE` are both set in `.env` to files that actually exist, otherwise HTTPS is
 silently skipped (plain HTTP-only, e.g. local dev with no cert). uvicorn serves exactly one
 scheme per process, so "both HTTP and HTTPS" means two `uvicorn` processes (both serving the
@@ -1790,9 +1790,14 @@ identical). `.env` updated to the real absolute paths. Restarted via `scripts/ru
 (replacing the ad-hoc bare-uvicorn process used throughout this session) and verified both
 ports live: HTTP 200, HTTPS 200 with `curl -v` confirming the served cert's actual subject/issuer
 match the real Let's Encrypt cert, not the earlier self-signed test one. HTTPS via the public
-hostname (`egeria.pdr-associates.com:8443`) currently times out — expected, since external
-port-forwarding for `:8443` hasn't been configured yet (same class of gap as the `:9443`
-Egeria connectivity issue from Phase 22, now on a different port).
+hostname (`egeria.pdr-associates.com:8443` at the time) currently timed out — expected, since
+external port-forwarding hadn't been configured yet (same class of gap as the `:9443` Egeria
+connectivity issue from Phase 22, now on a different port).
+
+**Follow-up: HTTPS port changed 8443 → 8881.** Updated the default in `scripts/run_web.sh`,
+`.env`, and `.env.example`; restarted and re-verified both HTTP (8880) and HTTPS (8881, real
+cert) return 200 locally. External port-forwarding still needs setting up for whichever port
+is actually exposed publicly — unchanged conclusion, just a different internal port number.
 
 **Commits:** (this session).
 

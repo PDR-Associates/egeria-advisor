@@ -187,11 +187,15 @@ class CommandKeywordIndex:
                     src = "catalog_name" if is_catalog else "template_name"
                     best = CommandMatch(entry["command"], entry["family"], score, src)
 
-            # Tier 4: partial match (only if nothing better found yet)
-            if best_score < 0.60:
+            # Tier 4: partial match (only if nothing better found yet). Guarded to a
+            # minimum length -- _normalize() strips leading verbs like "create ", so a
+            # short leftover like "a" or "an" would otherwise trivially substring-match
+            # almost any multi-word command name (e.g. "a" in "campaign") and produce a
+            # confident-looking but meaningless match.
+            if best_score < 0.60 and len(phrase_n) >= 3:
                 # phrase is contained in alias or name
                 for term in entry["terms"] + [entry["name_normalized"]]:
-                    if phrase_n in term or term in phrase_n:
+                    if len(term) >= 3 and (phrase_n in term or term in phrase_n):
                         score = 0.55
                         if score > best_score:
                             best_score = score

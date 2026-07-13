@@ -65,6 +65,20 @@ def _command_order_key(command_name: str) -> int:
     return 25
 
 
+def _command_to_entity_type(command: str) -> str:
+    """
+    Derive a snake_case entity-type label from a catalog command name, e.g.
+    "Create External Reference" -> "external_reference". Used only for display/
+    title purposes when a command was resolved via the keyword index rather than
+    a hand-written pattern -- the actual action to execute is carried separately
+    (obj["action"]), not re-derived from this label.
+    """
+    words = command.split()
+    if words and words[0].lower() in ("create", "link", "add", "attach", "classify", "set"):
+        words = words[1:]
+    return "_".join(w.lower() for w in words) or "project"
+
+
 # ---------------------------------------------------------------------------
 # GovernancePlanAgent
 # ---------------------------------------------------------------------------
@@ -1054,6 +1068,15 @@ class GovernancePlanAgent:
         (r'\bset\s+up\s+a\s+(?:glossary|project|campaign|task|team)\s+(?:for\s+the\s+|for\s+|called\s+)?"?(.+?)"?' + _NAME_STOP, None),
         # "create a data sharing request called <name>" (handles "I want to create a data sharing request...")
         (r'\bcreate\s+(?:a\s+)?data\s+sharing\s+(?:request|agreement)\s+(?:called\s+|named\s+)?"?(.+?)"?' + _NAME_STOP, "agreement"),
+        # Generic catch-all — MUST stay last so the more specific patterns above win when
+        # they also match. Covers "create/add/set up a/an <any type phrase> called/named/
+        # for/to <name>", for any of the ~126 known Dr.Egeria commands, not just the
+        # hand-listed types above (e.g. "Create an External Reference to the X web site",
+        # "Add a Digital Product for Y"). Sentinel etype "__generic__" tells the caller to
+        # resolve group(1) (the type phrase) against the command keyword index — SCOPED to
+        # just that phrase, not the whole query, so a proper noun elsewhere in the name
+        # (e.g. "...to the Egeria Project web site") can't be mistaken for the type.
+        (r'\b(?:create|add|set\s+up)\s+(?:an?\s+)?([\w\s]{2,40}?)\s+(?:called|named|for|to)\s+"?(.+?)"?' + _NAME_STOP, "__generic__"),
     ]
     # Role: "led by <person> as <role>" / "with <person> as <role>" /
     #        "have <person> be the <role>" / "<role> as <person>"
@@ -1248,47 +1271,84 @@ class GovernancePlanAgent:
         # so confirm_commands can surface "Did you mean X?"
         _low_confidence_suggestions: list[dict] = []
 
-        def _infer_type_from_context() -> str:
+        def _infer_type_from_context(scope: str = "") -> tuple[str, Optional[str]]:
+            """
+            Returns (entity_type, action). action is None when entity_type is one of
+            the small set of hand-mapped types below (the existing _ENTITY_TO_ACTION
+            lookup in _entities_to_commands already resolves those correctly). For
+            anything else, action carries the *actual* resolved command name from the
+            keyword index directly — this covers every one of the ~126 known Dr.Egeria
+            commands, not just the ~25 pre-registered in _ENTITY_TO_ACTION. Previously
+            a confident keyword-index match for a command NOT already in that dict was
+            silently discarded (the inverse-lookup `inv.get(...)` returned None) and
+            fell through to a generic "project" default — this is what made e.g.
+            "Create an External Reference to X" fail even though External Reference IS
+            a real, catalogued Dr.Egeria action.
+
+            `scope`, when given, restricts the search to just that text (the captured
+            "type phrase" from the generic catch-all pattern) instead of the whole
+            query. Without this, a query like "Create an external reference to the
+            Egeria Project web site" would find "Project" (an exact, high-confidence
+            match, since it's also a real command name) inside the *name* portion of
+            the sentence and wrongly prefer it over the weaker partial match on
+            "external reference" earlier in the sentence — the same class of bug as
+            the CreateRouter "Egeria-Project" false positive, one layer deeper.
+            """
+            search_text = scope.lower() if scope else ql
             for kw, etype in _KW_MAP.items():
-                if kw in ql:
-                    return etype
-            if "agreement" in ql or "data sharing" in ql:
-                return "agreement"
-            if "investigation" in ql:
-                return "study_project"
-            # Last resort: consult the keyword index against the full query
+                if kw in search_text:
+                    return etype, None
+            if "agreement" in search_text or "data sharing" in search_text:
+                return "agreement", None
+            if "investigation" in search_text:
+                return "study_project", None
+            # Last resort: consult the full keyword index (~126 commands) against the
+            # (scoped, if given) text, longest phrase first so multi-word command
+            # names/aliases ("external reference", "digital product") aren't shadowed
+            # by a shorter, weaker single-word partial match.
             try:
                 from advisor.command_keyword_index import get_command_keyword_index
                 idx = get_command_keyword_index()
-                # Try each word/bigram from the query
-                words = ql.split()
-                for i in range(len(words) - 1, -1, -1):
-                    for length in (2, 1):
+                words = search_text.split()
+                best_match = None
+                best_phrase = ""
+                for length in (4, 3, 2, 1):
+                    for i in range(len(words) - length, -1, -1):
                         phrase = " ".join(words[i:i + length])
                         match = idx.lookup(phrase)
-                        if match and match.confidence >= 0.50:
-                            # Map command name back to entity type via _ENTITY_TO_ACTION inverse
-                            inv = {v.lower(): k for k, v in self._ENTITY_TO_ACTION.items()}
-                            etype = inv.get(match.command.lower())
-                            if etype:
-                                if match.confidence < 0.80:
-                                    _low_confidence_suggestions.append({
-                                        "phrase": phrase,
-                                        "suggested_command": match.command,
-                                        "family": match.family,
-                                        "confidence": match.confidence,
-                                    })
-                                return etype
+                        if match and (best_match is None or match.confidence > best_match.confidence):
+                            best_match, best_phrase = match, phrase
+                    if best_match and best_match.confidence >= 0.90:
+                        break  # exact match already found at this length; no need to try shorter phrases
+                if best_match and best_match.confidence >= 0.50:
+                    if best_match.confidence < 0.80:
+                        _low_confidence_suggestions.append({
+                            "phrase": best_phrase,
+                            "suggested_command": best_match.command,
+                            "family": best_match.family,
+                            "confidence": best_match.confidence,
+                        })
+                    return _command_to_entity_type(best_match.command), best_match.command
             except Exception:
                 pass
-            return "project"
+            return "project", None
 
         # Detect main entity type and name
         main_type = ""
+        main_action: Optional[str] = None
         main_name = ""
         for pattern, etype in self._ENTITY_PATTERNS:
             m = re.search(pattern, q, re.IGNORECASE)
             if m:
+                if etype == "__generic__":
+                    # Two-group pattern: group(1) is the type phrase, group(2) is the
+                    # name. Resolve the type SCOPED to just that phrase — never the
+                    # whole query — so a proper noun elsewhere in the name can't be
+                    # mistaken for the type (see _infer_type_from_context docstring).
+                    type_phrase = m.group(1).strip()
+                    main_name = m.group(2).strip().strip('"\'')
+                    main_type, main_action = _infer_type_from_context(scope=type_phrase)
+                    break
                 main_name = m.group(1).strip().strip('"\'')
                 if etype:
                     main_type = etype
@@ -1302,17 +1362,20 @@ class GovernancePlanAgent:
                     elif "agreement" in matched_lower or "data sharing" in matched_lower:
                         main_type = "agreement"
                     else:
-                        main_type = _infer_type_from_context()
+                        main_type, main_action = _infer_type_from_context()
                 break
 
         if not main_name:
             return {"objects": [], "roles": []}
 
-        objects.append({
+        main_obj = {
             "type": main_type or "project",
             "name": main_name,
             "low_confidence_suggestions": _low_confidence_suggestions,
-        })
+        }
+        if main_action:
+            main_obj["action"] = main_action
+        objects.append(main_obj)
 
         # Sub-projects
         sub_m = self._SUBPROJECT_PATTERN.search(q)
@@ -1328,10 +1391,11 @@ class GovernancePlanAgent:
         # Role assignments
         roles = self._extract_roles(q)
 
-        title = f"{main_name} {main_type.title()} Setup" if main_name else query[:50]
+        main_type_label = main_type.replace("_", " ").title()
+        title = f"{main_name} {main_type_label} Setup" if main_name else query[:50]
         return {
             "title":   title,
-            "purpose": f"Set up a {main_type} called {main_name}",
+            "purpose": f"Set up a {main_type_label.lower()} called {main_name}",
             "objects": objects,
             "roles":   roles,
         }
@@ -1531,7 +1595,11 @@ JSON:"""
                 parent = top_level_name
                 entity_type = "sub_project"
 
-            action = self._ENTITY_TO_ACTION.get(entity_type)
+            # obj["action"], when present, is a command name already resolved directly
+            # against the full command keyword index (see _infer_type_from_context) —
+            # use it as-is rather than re-deriving from entity_type, which only covers
+            # the ~25 types hand-registered in _ENTITY_TO_ACTION.
+            action = obj.get("action") or self._ENTITY_TO_ACTION.get(entity_type)
             if not action:
                 action = catalog.find_by_alias(entity_type) or "Create Project"
 

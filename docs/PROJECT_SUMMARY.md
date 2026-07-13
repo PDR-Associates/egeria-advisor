@@ -1655,6 +1655,79 @@ server or data is used, but is worth keeping aligned regardless.
 
 ---
 
+### Phase 23 — Create/plan entity extraction generalized beyond a hardcoded few types (Jul 12, 2026)
+
+**Theme:** with intent=Create, perspective=Data Engineer, "Create an External Reference to the
+Egeria-Project web site" returned the generic "which would you like to build — Governance Plan
+or Report Spec?" disambiguation instead of recognizing it as an obvious Dr.Egeria plan request.
+User's framing after the first fix landed: "Entity Patterns needs to cover all entities... not
+just a few" — correctly rejecting a one-off patch for External Reference alone in favor of a
+general fix.
+
+**Layer 1 — `CreateRouter` (`advisor/agents/create_router.py`).** `_PLAN_SIGNALS`/`_SPEC_SIGNALS`
+both include the word "project" (for legitimately different reasons), and "Egeria-**Project**"
+(part of the website's proper name) matched both, cancelling out to contribute no signal at
+all — with "External Reference" not in either keyword list, the query had zero signal and fell
+to 'ambiguous'. Fixed with a last-resort fallback (only reached when the existing keyword-set
+logic is inconclusive, never overriding an already-decided classification) that checks the
+full `CommandKeywordIndex` (~126 known Dr.Egeria commands, alias/partial matching) — closing
+this gap for every catalogued command, not just External Reference (verified: also fixed
+"Create a blueprint called X", previously ambiguous since bare "blueprint" isn't in either
+regex either).
+
+**Layer 2 — entity extraction (`advisor/agents/governance_plan_agent.py`).** Even once routed
+to `plan`, `_extract_entities_patterns`'s `_ENTITY_PATTERNS` is a hardcoded list of ~10 regexes
+(one per type: project/campaign/glossary/collection/task/team/agreement/study/blueprint/data-
+sharing-request) — anything else never matches at all, and the function bails out with zero
+objects before its own existing `_infer_type_from_context()` keyword-index fallback (found
+already present, built for a narrower purpose) ever runs. Worse: that fallback discarded a
+*correct* keyword-index match if the resolved command wasn't also in the ~25-entry
+`_ENTITY_TO_ACTION` dict (an inverse-lookup that returned nothing for e.g. "Create External
+Reference", silently defaulting to `"project"`).
+
+Fixed with:
+1. A generic catch-all pattern (last in `_ENTITY_PATTERNS`, sentinel `etype = "__generic__"`)
+   matching "create/add/set up a/an `<any type phrase>` called/named/for/to `<name>`" —
+   catches any of the ~126 known commands, not just the hand-listed ~10.
+2. `_infer_type_from_context()` now returns `(entity_type, action)` — `action` carries the
+   keyword-index match's actual resolved command name *directly*, bypassing
+   `_ENTITY_TO_ACTION`/`catalog.find_by_alias` entirely rather than requiring a pre-registered
+   inverse mapping. `_entities_to_commands` prefers `obj.get("action")` when present.
+3. **A second, deeper recurrence of the exact same class of bug**, caught by re-testing with a
+   slightly different phrasing ("Create an external references to the **Egeria Project** web
+   site and to the PDR home page" — no hyphen this time): `_infer_type_from_context()` searched
+   the *entire query* for the best keyword match, so "Project" (appearing in the *name*, not the
+   type) won a high-confidence exact match (0.90) over "external references"'s weaker partial
+   match (0.55) elsewhere in the sentence — same failure shape as the CreateRouter bug, one
+   layer deeper. Fixed by scoping the search to just the captured type-phrase (new `scope`
+   parameter), never the whole query.
+4. **Root-caused a related latent bug in the shared index itself**: `CommandKeywordIndex.
+   lookup()`'s tier-4 partial-match had no minimum length guard — `_normalize()` strips a
+   leading verb ("create "), so "create a" degenerates to the single letter "a", which
+   trivially substring-matches almost any multi-word command name ("a" in "campaign"),
+   producing a confident-looking but meaningless 0.55 match. Surfaced by testing "Create a
+   random gibberish thing called Foo", which returned a wrong, confident "Create Campaign"
+   guess instead of a safe generic fallback. Fixed with a 3-char minimum on both the query
+   phrase and the candidate term before attempting tier-4 matching — this protects every
+   consumer of the shared index, not just the two call sites touched here.
+
+**Not fixed (separate, narrower limitation):** the "Egeria Project web site and to the PDR home
+page" query only extracts the first named item — multi-item support for this "X to A and to B"
+sentence shape doesn't exist (a different, existing extraction path already handles a different
+multi-item shape, "components for A, B and C"). Out of scope for this pass.
+
+**Verified:** full regression sweep across all pre-existing `_ENTITY_PATTERNS`-covered phrasings
+(unaffected) plus every new case (External Reference, Digital Product, Governance Zone, Service
+Level Objective, Naming Standard Rule, bare "blueprint") resolves correctly; gibberish input
+safely falls back to the generic default instead of a wrong confident guess. Live-verified via
+`/api/query` with the exact reported query — now produces a real "Create External Reference"
+plan step with auto-generated Qualified Name, including a transparent "I interpreted X as Y" note
+for the lower-confidence plural-phrasing case.
+
+**Commits:** (this session).
+
+---
+
 ## Current state and next steps (Jul 2026)
 
 **Phases complete:**
@@ -1681,6 +1754,7 @@ server or data is used, but is worth keeping aligned regardless.
 - Phase 20 ✓ — new `egeria_type_registry.py` fixes Act's element-type extraction truncating multi-word Egeria type names ("external references" → "External" instead of `ExternalReference`; "data products" → `DigitalProduct` via an alias for the real Egeria type name)
 - Phase 21 ✓ — consolidated Egeria connection resolution into `advisor/mcp_config.py` (env vars first, then `config/mcp_servers.json`) so switching deployments (local Egeria vs. remote demo instance) is two `.env` lines; Portal SSO and CORS cross-origin access made configurable via `.env` too
 - Phase 22 ✓ — report execution timeouts fixed at three real layers (MCP subprocess env, stale pyegeria dev checkout vs. the already-fixed installed version, three independent ~30s timeout settings); real root cause was a dropped router port-forward for `:9443`, not NAT hairpinning as first (wrongly) concluded — this machine runs its own separate local `egeria-quickstart` dev stack seeded with the same sample content, which made a GUID-mismatched wrong-server "fix" look correct until the user insisted on verifying with element GUIDs instead of matching output
+- Phase 23 ✓ — Create/plan entity-type recognition generalized from a hardcoded ~10-type list to the full ~126-command keyword index, at both the CreateRouter and entity-extraction layers; fixed a recurring "keyword search scoped to the whole query, not just the type phrase" bug that let an unrelated proper noun in the name win over the real type; fixed a latent minimum-length gap in the shared `CommandKeywordIndex` that could produce confident-looking wrong guesses for unrecognized input
 
 **What's working end-to-end (Jul 6, 2026):**
 - Full plan lifecycle exercised live against a real Dr.Egeria MCP server + Egeria REST backend + Postgres for the first time (not just synthetic testing) — surfaced and fixed six real bugs in one session (SS-6 through SS-11, see "Recent work" above and `BACKLOG.md`), including a genuine event-loop-freezing hang in the MCP client

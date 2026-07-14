@@ -67,6 +67,7 @@ class OutcomeReporter:
         execution_errors: list | None = None,
         commands_detail: list | None = None,
         materialized_display: str = "",
+        executed_by: str | None = None,
     ) -> str:
         """
         Generate a markdown Outcome section for the plan document.
@@ -144,6 +145,7 @@ class OutcomeReporter:
             validation_errors=validation_errors or [],
             execution_errors=execution_errors or [],
             materialized_display=materialized_display,
+            executed_by=executed_by,
         )
 
     # ---------------------------------------------------------------------- #
@@ -499,6 +501,7 @@ class OutcomeReporter:
         validation_errors: list | None = None,
         execution_errors: list | None = None,
         materialized_display: str = "",
+        executed_by: str | None = None,
     ) -> str:
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -512,9 +515,11 @@ class OutcomeReporter:
             guid_count = len(self._GUID_RE.findall(execution_output))
             completion = f"   **Objects created:** ~{guid_count}" if guid_count else ""
 
+        executed_by_field = f"   **Executed by:** {executed_by}" if executed_by else ""
+
         lines = [
             "## Outcome",
-            f"**Executed:** {now}   **Status:** {status}{completion}",
+            f"**Executed:** {now}   **Status:** {status}{completion}{executed_by_field}",
             "",
             "### Summary",
             "",

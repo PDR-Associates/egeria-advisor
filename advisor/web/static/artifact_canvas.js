@@ -17,9 +17,18 @@
  *     // Data adapter — called by canvas to fetch and push data
  *     adapter: {
  *       fetch(id):         Promise<{title, items, meta}>
- *       patch(id, items):  Promise<void>
+ *       patch(id, items):  Promise<void | {warnings?: string[], items?: Array}>
+ *                          // optional return lets the server surface validation
+ *                          // corrections; see onSyncWarnings below
  *       fieldUrl(type):    string   // URL for /api/templates/{type}/fields
  *     },
+ *
+ *     // Called when adapter.patch() returns non-empty `warnings` (optional)
+ *     onSyncWarnings(warnings): void,
+ *
+ *     // Called when adapter.fetch() throws during refresh() (optional) — without
+ *     // this the failure is console-only and the canvas silently stays empty
+ *     onRefreshError(id, error): void,
  *
  *     // Item adapter — called to extract display properties from an item
  *     itemAdapter: {
@@ -89,6 +98,7 @@ class ArtifactCanvas {
       this._items = this._data.items || [];
     } catch (e) {
       console.error('ArtifactCanvas: refresh failed for', id, e);
+      if (this._opts.onRefreshError) this._opts.onRefreshError(id, e);
       return;
     }
     this._render();
@@ -435,7 +445,8 @@ class ArtifactCanvas {
       return;
     }
     try {
-      await this._opts.adapter.patch(this._id, this._items);
+      const result = await this._opts.adapter.patch(this._id, this._items);
+      this._applySyncResult(result);
     } catch (e) {
       console.warn('ArtifactCanvas: sync failed', e);
     }
@@ -444,9 +455,26 @@ class ArtifactCanvas {
   /** Explicitly persist pending edits — for autoSync: false canvases (e.g. a Save button). */
   async flush() {
     if (!this._id || !this._dirty) return;
-    await this._opts.adapter.patch(this._id, this._items);
+    const result = await this._opts.adapter.patch(this._id, this._items);
+    this._applySyncResult(result);
     this._dirty = false;
     if (this._opts.onDirtyChange) this._opts.onDirtyChange(false);
+  }
+
+  /**
+   * Handle a generic { warnings, items } result from adapter.patch(). Adapters
+   * that don't return this shape (e.g. ReportSpecCanvas) are unaffected — result
+   * is falsy/shape-mismatched and this is a no-op.
+   */
+  _applySyncResult(result) {
+    if (!result) return;
+    if (Array.isArray(result.warnings) && result.warnings.length && this._opts.onSyncWarnings) {
+      this._opts.onSyncWarnings(result.warnings);
+    }
+    if (Array.isArray(result.items)) {
+      this._items = result.items;
+      this._render();
+    }
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────

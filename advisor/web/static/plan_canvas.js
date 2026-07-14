@@ -37,11 +37,17 @@ const _planDraftAdapter = {
   },
 
   async patch(draftId, items) {
-    await fetch(`/api/drafts/${encodeURIComponent(draftId)}/commands`, {
+    const r = await fetch(`/api/drafts/${encodeURIComponent(draftId)}/commands`, {
       method:  'PATCH',
       headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
       body:    JSON.stringify({ commands: items }),
     });
+    if (!r.ok) return null;
+    const data = await r.json().catch(() => null);
+    if (!data) return null;
+    // Translate the draft-commands-specific response shape to the generic
+    // {warnings, items} shape ArtifactCanvas expects.
+    return { warnings: data.warnings, items: data.commands };
   },
 };
 
@@ -199,10 +205,16 @@ function _dispatchItemAdapter() {
 
 // ── PlanCanvas singleton ──────────────────────────────────────────────────────
 
+// Set by onRender() below whenever the open document-mode plan is in the
+// outbox — already-executed plans are immutable (DocumentManager.update()
+// only writes to inbox), so Save/Execute must not be offered for them; only
+// Recover (outbox -> inbox) makes editing possible again.
+let _planCanvasIsOutbox = false;
+
 function _updateSaveButton(dirty) {
   const btn = document.getElementById('pcanvas-save-btn');
   if (!btn) return;
-  btn.classList.toggle('hidden', !_planCanvasDocMode);
+  btn.classList.toggle('hidden', !_planCanvasDocMode || _planCanvasIsOutbox);
   btn.disabled = !dirty;
   btn.textContent = dirty ? 'Save*' : 'Save';
 }
@@ -223,14 +235,25 @@ const PlanCanvas = (() => {
       itemAdapter:  _planItemAdapter,
       autoSync:     true,
       onDirtyChange(dirty) { _updateSaveButton(dirty); },
+      onSyncWarnings(warnings) {
+        _showToast('Auto-corrected: ' + warnings.join('; '));
+      },
+      onRefreshError(id, e) {
+        alert(`Could not open plan "${id}": ${e.message}`);
+      },
       onRender(data) {
         // Show Validate + Execute buttons and hide Generate Plan when plan document has been generated
         const docId = data?.meta?.doc_id;
+        const isOutbox = data?.meta?.folder === 'outbox';
+        _planCanvasIsOutbox = isOutbox;
         const titleEl = document.getElementById('pcanvas-title');
         if (titleEl) titleEl.dataset.docId = docId || '';
         document.getElementById('pcanvas-generate-btn')?.classList.toggle('hidden', !!docId);
         document.getElementById('pcanvas-validate-btn')?.classList.toggle('hidden', !docId);
-        document.getElementById('pcanvas-execute-btn')?.classList.toggle('hidden', !docId);
+        // Execute posts to the inbox-only /execute endpoint — never valid for an
+        // already-executed outbox plan (use Recover, then Execute, instead).
+        document.getElementById('pcanvas-execute-btn')?.classList.toggle('hidden', !docId || isOutbox);
+        document.getElementById('pcanvas-recover-btn')?.classList.toggle('hidden', !isOutbox);
         _updateSaveButton(false);
       },
     });
@@ -314,9 +337,42 @@ const PlanCanvas = (() => {
     try {
       await canvas.flush();
     } catch (e) {
-      alert(`Could not save plan: ${e.message}`);
+      // A save failure here usually means the plan moved out from under this
+      // canvas — e.g. executed from another browser tab, or via chat, since
+      // this canvas was opened. Don't retry the write blind (risks clobbering
+      // whatever changed it) — reopen via the draft, which resolves the
+      // current doc_id, so the user sees accurate state instead of a dead end.
+      alert(
+        `Could not save plan: ${e.message}\n\n` +
+        `This can happen if the plan changed elsewhere (e.g. executed in another ` +
+        `tab) since this canvas was opened. Reopening with the current version — ` +
+        `your last edit was not saved and may need to be redone.`
+      );
+      if (_draftId) await open(_draftId);
     }
   }
 
-  return { open, openDocument, close, refresh, addStep, addNote, toggleMode, save };
+  // Outbox plans are immutable (DocumentManager.update() only writes inbox) —
+  // move it back to inbox first, then reopen the canvas on the new inbox
+  // doc_id so Save/Execute become available again. Mirrors plan_editor.js's
+  // pedRecoverForEditing().
+  async function recover() {
+    const docId = document.getElementById('pcanvas-title')?.dataset?.docId;
+    if (!docId) return;
+    if (!confirm(`Recover "${docId}" for editing?\nThis moves it back to inbox so you can edit, validate, and re-execute.`)) return;
+    try {
+      const r = await fetch(`/api/plans/${encodeURIComponent(docId)}/recover`, {
+        method: 'POST', headers: Auth.getHeaders(),
+      });
+      if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
+      const res = await r.json();
+      await openDocument(res.doc_id, _draftId);
+      if (typeof loadPlans === 'function') loadPlans();
+      if (typeof _showToast === 'function') _showToast('Plan recovered — you can now edit, validate, and execute.');
+    } catch (e) {
+      alert(`Recovery failed: ${e.message}`);
+    }
+  }
+
+  return { open, openDocument, close, refresh, addStep, addNote, toggleMode, save, recover };
 })();

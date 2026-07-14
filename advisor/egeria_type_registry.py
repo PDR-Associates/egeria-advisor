@@ -86,6 +86,16 @@ def _load_registry() -> Dict[str, str]:
     return registry
 
 
+def invalidate() -> None:
+    """Clear the cached registry so the next lookup rebuilds from disk.
+
+    Call after report_specs_annotated.json has been regenerated/edited so a
+    running process picks up the change without a restart. Wired to
+    POST /api/admin/maintenance/invalidate_index.
+    """
+    _load_registry.cache_clear()
+
+
 def known_type_names() -> List[str]:
     """Return the distinct canonical (PascalCase) type names in the registry."""
     return sorted(set(_load_registry().values()))

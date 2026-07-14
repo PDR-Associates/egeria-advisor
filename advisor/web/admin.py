@@ -9,7 +9,9 @@ Endpoints:
   GET  /api/admin/jobs                  → list recent jobs (last 20)
   GET  /api/admin/jobs/{job_id}         → single job status + output
   POST /api/admin/maintenance/{action}  → refresh_perspectives | refresh_specs |
-                                          clear_cache | invalidate_index
+                                          clear_cache | invalidate_index |
+                                          refresh_templates | check_draft_doc_ids |
+                                          repair_draft_doc_ids
 """
 from __future__ import annotations
 
@@ -396,8 +398,29 @@ async def maintenance_action(action: str) -> Dict[str, Any]:
 
     if action == "invalidate_index":
         from advisor.report_pipeline import _question_index
+        from advisor.egeria_type_registry import invalidate as invalidate_type_registry
         _question_index.invalidate()
-        return {"status": "ok", "message": "QuestionSpecIndex invalidated — will rebuild on next search"}
+        invalidate_type_registry()
+        return {"status": "ok", "message": "QuestionSpecIndex and type registry invalidated — will rebuild on next use"}
+
+    if action == "refresh_templates":
+        from advisor.command_keyword_index import get_command_keyword_index
+        get_command_keyword_index().invalidate()
+        return {"status": "ok", "message": "Dr.Egeria command/template index invalidated — will rescan on next lookup"}
+
+    if action in ("check_draft_doc_ids", "repair_draft_doc_ids"):
+        from advisor.governance_draft import get_draft_manager
+        report = get_draft_manager().check_doc_ids(repair=(action == "repair_draft_doc_ids"))
+        stale = [r for r in report if r["status"] in ("unresolved", "repaired")]
+        repaired = [r for r in stale if r["status"] == "repaired"]
+        unresolved = [r for r in stale if r["status"] == "unresolved"]
+        if not stale:
+            message = f"All {len(report)} draft(s) checked — no stale doc_ids found"
+        elif action == "check_draft_doc_ids":
+            message = f"{len(stale)} of {len(report)} draft(s) have a stale doc_id — run Repair to fix"
+        else:
+            message = f"Repaired {len(repaired)} draft(s)" + (f"; {len(unresolved)} need manual review" if unresolved else "")
+        return {"status": "ok", "message": message, "report": report}
 
     raise HTTPException(status_code=400, detail=f"Unknown action '{action}'")
 

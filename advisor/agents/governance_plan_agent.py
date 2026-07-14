@@ -161,7 +161,7 @@ class GovernancePlanAgent:
         spec = dm.load(draft_id)
         if spec is None:
             return _error_result(draft_id, f"Draft `{draft_id}` not found.")
-        doc_id = spec.get("doc_id")
+        doc_id = dm.resolve_live_doc_id(draft_id, spec=spec)
         if not doc_id:
             return _error_result(draft_id, "Plan has not been generated yet — complete the Q&A first.")
         content = get_doc_manager().load(doc_id)
@@ -525,6 +525,7 @@ class GovernancePlanAgent:
             execution_errors=ex_exe_errs,
             commands_detail=ex_counts.get('detail', []),
             materialized_display=materialized_display,
+            executed_by=(egeria_credentials or {}).get("user_id"),
         )
 
         # Append raw Dr.Egeria output as a separate section so it's always available.
@@ -722,9 +723,17 @@ class GovernancePlanAgent:
 
     @classmethod
     def _parse_command_steps(cls, command_section: str) -> List[Dict[str, Any]]:
-        """Parse the original Command Sequence into ordered {step, action, narrative} dicts."""
+        """Parse the original Command Sequence into ordered {step, action, narrative, fields} dicts.
+
+        `fields` (the pre-execution ### FieldName values) lets
+        _rebuild_command_sequence() fall back to what was there before when
+        Dr.Egeria's post-execution echo carries no field data for a step —
+        true for Link/relationship and View Report commands, whose echo is
+        just a result sentence or rendered report content, never a field echo.
+        """
         steps: List[Dict[str, Any]] = []
-        for m in cls._STEP_COMMENT_RE.finditer(command_section):
+        matches = list(cls._STEP_COMMENT_RE.finditer(command_section))
+        for i, m in enumerate(matches):
             step_num = int(m.group(1))
             raw_comment = m.group(2)
             action = m.group(3).strip()
@@ -736,7 +745,23 @@ class GovernancePlanAgent:
                 raw_comment[first_nl + 1:].replace("\n     ", "").strip()
                 if first_nl != -1 else ""
             )
-            steps.append({"step": step_num, "action": action, "narrative": narrative})
+
+            body_start = m.end()
+            body_end = matches[i + 1].start() if i + 1 < len(matches) else len(command_section)
+            body = command_section[body_start:body_end]
+            # Only the part before the block's closing "---" separator is field data.
+            fields_body = re.split(r'\n-{3,}\s*(?:\n|$)', body, maxsplit=1)[0]
+            fields: Dict[str, str] = {}
+            for part in re.split(r'(?m)(?=^###\s)', fields_body):
+                fm = re.match(r'^###\s+([^\n]+)\n([\s\S]*)$', part.strip())
+                if not fm:
+                    continue
+                fname = fm.group(1).strip()
+                fval = fm.group(2).strip()
+                if fval and not re.match(r'^<!--\s*TODO', fval, re.IGNORECASE):
+                    fields[fname] = fval
+
+            steps.append({"step": step_num, "action": action, "narrative": narrative, "fields": fields})
         return steps
 
     _FAILURE_STATUSES = frozenset(("failure", "failed"))
@@ -771,12 +796,13 @@ class GovernancePlanAgent:
 
             if echoed is None:
                 # Dr.Egeria didn't echo this step back (e.g. execution stopped
-                # early) — keep the original block unchanged.
+                # early) — keep the original block unchanged, including its
+                # pre-execution field values.
                 command_parts.append(self._compose_command_block(
                     {
                         "action": orig["action"],
                         "narrative": orig["narrative"],
-                        "params": {},
+                        "params": orig.get("fields", {}),
                         "template_parsed": self._load_template(orig["action"]),
                     },
                     step_num,
@@ -802,7 +828,14 @@ class GovernancePlanAgent:
             # Link X) — keep the original action name rather than adopting any
             # cosmetic rename Dr.Egeria's echo happens to use.
 
-            params = {k: v for k, v in echoed["fields"].items() if v and v != "None"}
+            echoed_params = {k: v for k, v in echoed["fields"].items() if v and v != "None"}
+            # Dr.Egeria's raw echo only carries field values for Create/Update
+            # commands — a Link/relationship command's echo is a one-line result
+            # sentence ("Linked X to Y") and View Report's is the rendered report
+            # content, neither of which include a field echo. Start from the
+            # pre-execution values so those step types don't get silently blanked
+            # on every execution; genuinely-echoed values (Create/Update) still win.
+            params = {**orig.get("fields", {}), **echoed_params}
             command_parts.append(self._compose_command_block(
                 {
                     "action": final_action,
@@ -1912,7 +1945,7 @@ GOAL:"""
         parts: List[str] = [
             f"# {title}",
             f"**Created:** {now}   **Last edited:** {now}   **Status:** Draft",
-            f"**Created by:** {creator}   **Perspective:** {perspective}",
+            f"**Created by:** {creator}   **Last edited by:** {creator}   **Perspective:** {perspective}",
             f"**Purpose:** {purpose}",
             "",
             "---",

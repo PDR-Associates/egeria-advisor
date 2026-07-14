@@ -1940,7 +1940,7 @@ this shared Coco Pharmaceuticals demo instance). Restarted `scripts/run_web.sh` 
 
 ## How to resume in a new conversation
 
-1. Read `CLAUDE.md` — full maintenance context, design rules (13–29 for LGCI)
+1. Read `CLAUDE.md` — full maintenance context, design rules (13–32 for LGCI)
 2. Read `docs/literate-governance-plan.md` — complete LGCI design including lessons
 3. Read `docs/PROJECT_SUMMARY.md` (this document) for overall phase history
 4. Run `git log --oneline -10` to see recent commits

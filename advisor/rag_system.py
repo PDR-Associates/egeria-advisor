@@ -1044,6 +1044,33 @@ class RAGSystem:
             except Exception as exc:
                 logger.warning(f"CLICommandAgent failed ({exc}), falling back to RAG")
 
+        # Egeria type-system structure ("subtypes of Collection", "project types",
+        # "classifications of Project"). Checked early and unconditionally, like
+        # the CLI Command Agent check above — the underlying phrasing ("project
+        # types") doesn't always land on the code_intel pattern classification
+        # (e.g. reversed word order isn't covered by routing.yaml substrings), so
+        # this can't rely solely on `intent == "code_intel"` downstream. Safe to
+        # try unconditionally: EgeriaTypeAgent.handle() itself is the real gate —
+        # it returns None (falls through here) unless the query both matches a
+        # type/subtype/classification phrasing AND the captured phrase resolves
+        # to a real, live-confirmed Egeria type name.
+        try:
+            from advisor.agents.egeria_type_agent import get_egeria_type_agent
+            type_result = get_egeria_type_agent().handle(user_query)
+            if type_result is not None:
+                logger.info("Routing query to EgeriaTypeAgent")
+                type_result.setdefault("routing_agent", "egeria_type_agent")
+                type_result.update({
+                    "active_perspective": active_perspective,
+                    "applied_policy_rule": applied_policy_rule,
+                    "perspective_history": perspective_history,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                })
+                return type_result
+        except Exception as exc:
+            logger.warning(f"EgeriaTypeAgent failed ({exc}), falling back")
+
         # Quantitative query shortcut
         if intent == 'quantitative':
             logger.info("Handling quantitative query with analytics module")

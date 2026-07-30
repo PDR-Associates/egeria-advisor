@@ -58,7 +58,7 @@ _HIERARCHY_SUBPROJECT_OF_RE = re.compile(
 )
 
 # Project Dependency phrasings — resolved to a standalone Link Project Dependency
-# command per pair (Child Project = dependent, Parent Project = depended-upon).
+# command per pair (Dependent Project = dependent, Depends on Project = depended-upon).
 _DEPENDENT_ON_RE = re.compile(
     r'^\s*(?:link\s+)?(.+?)\s+as\s+dependent\s+on\s+(.+?)\s*$', re.IGNORECASE
 )
@@ -1056,7 +1056,7 @@ class PlanElicitor:
                     "description":  "",
                     "rationale":    "",
                     "narrative":    f"Links {child_label} as dependent on {parent_label}.",
-                    "pre_filled":   {"Child Project": child_qn, "Parent Project": parent_qn},
+                    "pre_filled":   {"Dependent Project": child_qn, "Depends on Project": parent_qn},
                     "placeholders": {},
                 })
                 added_labels.append(f"{child_label} → {parent_label}")

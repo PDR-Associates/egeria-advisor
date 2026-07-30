@@ -212,6 +212,21 @@ query_patterns:
       - "what are the classes"
       - "classes in"
       - "classes of"
+      # Egeria metadata type-system structure — subtypes/classifications of an
+      # Egeria type (e.g. "subtypes of Collection", "project types",
+      # "classifications of Project") — routed to EgeriaTypeAgent in
+      # rag_system.py's code_intel dispatch (content-disambiguated from the
+      # code-structure patterns above at that dispatch site, not here).
+      - "subtypes of"
+      - "sub-types of"
+      - "sub types of"
+      - "subtype of"
+      - "classifications of"
+      - "classifications for"
+      - "classification of"
+      - "valid classifications"
+      - "types of"
+      - "kinds of"
     code_help:
       # How-to navigation
       - "how do i create"

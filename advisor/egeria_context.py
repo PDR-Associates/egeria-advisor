@@ -72,6 +72,7 @@ class EgeriaContext:
         self._gov_officer = None
         self._glossary_mgr = None
         self._automated_curation_client = None
+        self._valid_metadata_mgr = None
         self._zone_cache: list[str] | None = None
         self._tech_type_cache: list[str] | None = None
 
@@ -168,6 +169,15 @@ class EgeriaContext:
             except ImportError:
                 self._automated_curation_client = False
         return self._automated_curation_client or None
+
+    def _valid_metadata_manager(self):
+        if self._valid_metadata_mgr is None:
+            try:
+                from pyegeria.omvs.valid_metadata import ValidMetadataManager
+                self._valid_metadata_mgr = self._make_client(ValidMetadataManager) or False
+            except ImportError:
+                self._valid_metadata_mgr = False
+        return self._valid_metadata_mgr or None
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
